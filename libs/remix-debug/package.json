@@ -1,0 +1,64 @@
+{
+  "name": "@remix-project/remix-debug",
+  "version": "0.5.5",
+  "description": "Tool to debug Tron IDE transactions",
+  "contributors": [
+    {
+      "name": "Yann Levreau",
+      "email": "yann@ethdev.com"
+    },
+    {
+      "name": "Liana Husikyan",
+      "email": "liana@ethdev.com"
+    },
+    {
+      "name": "Iuri Matias",
+      "email": "iuri.matias@gmail.com"
+    }
+  ],
+  "main": "src/index.js",
+  "dependencies": {
+    "@remix-project/remix-astwalker": "workspace:*",
+    "@remix-project/remix-lib": "workspace:*",
+    "@tvmjs/block": "^1.0.0",
+    "@tvmjs/common": "^1.0.0",
+    "@tvmjs/tx": "^1.0.0",
+    "@tvmjs/util": "^1.0.0",
+    "@tvmjs/vm": "^1.0.0",
+    "commander": "^2.19.0",
+    "deep-equal": "^1.0.1",
+    "ethers": "^5.4.2",
+    "solc": "0.8.25",
+    "web3": "^1.5.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.4.5",
+    "@babel/plugin-transform-object-assign": "^7.2.0",
+    "@babel/preset-env": "^7.4.5",
+    "@babel/preset-es2015": "latest",
+    "@babel/preset-es2017": "latest",
+    "@babel/preset-stage-0": "^7.0.0",
+    "babelify": "^10.0.0",
+    "tape": "^4.17.0",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0"
+  },
+  "scripts": {
+    "test": "tape --require ts-node/register --require tsconfig-paths/register ./test/tests.ts"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "author": "Tron IDE Team",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": ""
+  },
+  "homepage": "",
+  "typings": "src/index.d.ts",
+  "gitHead": "df7abe1c219e361a947031d620f4ae6e3786a4d7"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "remix-ui-top-header",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/top-header/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "options": {
+        "linter": "eslint",
+        "tsConfig": ["libs/remix-ui/top-header/tsconfig.lib.json"],
+        "exclude": ["**/node_modules/**", "!libs/remix-ui/top-header/**/*"]
+      }
+    }
+  }
+}

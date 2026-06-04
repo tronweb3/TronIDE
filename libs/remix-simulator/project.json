@@ -1,0 +1,52 @@
+{
+  "name": "remix-simulator",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-simulator",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-simulator/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-simulator/.eslintrc"
+      }
+    },
+    "test": {
+      "executor": "@nrwl/workspace:run-commands",
+      "options": {
+        "commands": [
+          "./../../node_modules/.bin/npm-run-all test"
+        ],
+        "cwd": "libs/remix-simulator"
+      }
+    },
+    "build": {
+      "executor": "@nrwl/js:tsc",
+      "options": {
+        "outputPath": "build/libs/remix-simulator",
+        "tsConfig": "libs/remix-simulator/tsconfig.lib.json",
+        "packageJson": "libs/remix-simulator/package.json",
+        "main": "libs/remix-simulator/src/index.ts",
+        "assets": [
+          {
+            "glob": "ethsim",
+            "input": "libs/remix-simulator/bin/",
+            "output": "bin/"
+          },
+          {
+            "glob": "*.md",
+            "input": "libs/remix-simulator/",
+            "output": "/"
+          }
+        ],
+        "sourceMap": false
+      }
+    }
+  }
+}

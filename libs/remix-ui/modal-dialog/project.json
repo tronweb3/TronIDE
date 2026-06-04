@@ -1,0 +1,29 @@
+{
+  "name": "remix-ui-modal-dialog",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/modal-dialog/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-ui/modal-dialog/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-ui/modal-dialog/.eslintrc"
+      }
+    },
+    "test": {
+      "executor": "@nrwl/jest:jest",
+      "options": {
+        "jestConfig": "libs/remix-ui/modal-dialog/jest.config.js",
+        "tsConfig": "libs/remix-ui/modal-dialog/tsconfig.spec.json",
+        "passWithNoTests": true
+      }
+    }
+  }
+}

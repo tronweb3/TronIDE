@@ -1,0 +1,46 @@
+{
+  "name": "@remix-project/remix-url-resolver",
+  "version": "0.0.26-tron.1",
+  "description": "Solidity import url resolver engine",
+  "main": "src/index.js",
+  "types": "./src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "mocha --require ts-node/register --require tsconfig-paths/register tests/*.ts -t 300000"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "keywords": [
+    "solidity",
+    "remix",
+    "resolve",
+    "import"
+  ],
+  "author": "Tron IDE Team",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@erebos/bzz-node": "^0.13.0",
+    "axios": ">=0.21.1",
+    "solc": "0.8.25",
+    "url": "^0.11.0",
+    "valid-url": "^1.0.9"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.1.7",
+    "@types/mocha": "^5.2.5",
+    "@types/node": "^10.12.18",
+    "chai": "^4.2.0",
+    "mocha": "^5.1.0",
+    "remix-plugin": "0.0.1-alpha.2",
+    "ts-node": "^8.10.2",
+    "tslint": "^5.11.0",
+    "typescript": "^3.9.10"
+  },
+  "typings": "src/index.d.ts",
+  "gitHead": "df7abe1c219e361a947031d620f4ae6e3786a4d7"
+}

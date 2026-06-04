@@ -1,0 +1,6 @@
+{
+  "name": "remix-code-reader",
+  "sourceRoot": "libs/remix-code-reader/src",
+  "projectType": "application",
+  "targets": {}
+}

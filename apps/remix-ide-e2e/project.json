@@ -1,0 +1,16 @@
+{
+  "name": "remix-ide-e2e",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/remix-ide-e2e/src",
+  "projectType": "application",
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "options": {
+        "linter": "eslint",
+        "tsConfig": ["apps/remix-ide-e2e/tsconfig.e2e.json"],
+        "exclude": ["**/node_modules/**", "!apps/remix-ide-e2e/**/*"]
+      }
+    }
+  }
+}

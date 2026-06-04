@@ -1,0 +1,19 @@
+{
+  "packages": [
+    "build/libs/remix-analyzer",
+    "build/libs/remix-astwalker",
+    "build/libs/remix-debug",
+    "build/libs/remix-lib",
+    "build/libs/remix-simulator",
+    "build/libs/remix-solidity",
+    "build/libs/remix-tests",
+    "build/libs/remix-url-resolver"
+  ],
+  "version": "independent",
+  "command": {
+    "publish": {
+      "ignoreChanges": ["ignored-file", "*.md"],
+      "message": "remix-libs(release): publish version"
+    }
+  }
+}

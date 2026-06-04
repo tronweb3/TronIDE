@@ -1,0 +1,50 @@
+{
+  "name": "@remix-project/remix-analyzer",
+  "version": "0.5.14-tron.1",
+  "description": "Tool to perform static analysis on Solidity smart contracts",
+  "main": "src/index.js",
+  "types": ".src/index.d.ts",
+  "contributors": [
+    {
+      "name": "Alex Beregszaszi",
+      "email": "alex@rtfs.hu"
+    },
+    {
+      "name": "Iuri Matias",
+      "email": "iuri@ethereum.org"
+    },
+    {
+      "name": "Yann Levreau",
+      "email": "yann@ethdev.com"
+    }
+  ],
+  "dependencies": {
+    "@remix-project/remix-astwalker": "workspace:*",
+    "@remix-project/remix-lib": "workspace:*",
+    "fast-levenshtein": "^2.0.6"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "tape --require ts-node/register --require tsconfig-paths/register ./test/tests.ts"
+  },
+  "author": "Tron IDE Team",
+  "license": "Apache-2.0",
+  "homepage": "",
+  "devDependencies": {
+    "@babel/core": "^7.28.4",
+    "@babel/eslint-parser": "^7.28.4",
+    "@babel/preset-env": "^7.28.3",
+    "@types/node": "^13.7.0",
+    "babel-plugin-transform-object-assign": "^6.22.0",
+    "npm-install-version": "^6.0.2",
+    "tape": "^4.6.0",
+    "ts-node": "^8.10.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^3.9.10"
+  },
+  "typings": "index.d.ts",
+  "gitHead": "df7abe1c219e361a947031d620f4ae6e3786a4d7"
+}

@@ -1,0 +1,90 @@
+# See http://help.github.com/ignore-files/ for more about ignoring files.
+
+build
+dist
+node_modules
+THIRD_PARTY_LICENSES.txt
+THIRD_PARTY_LICENSES.json
+.pnpm-store
+lint.xml
+reports/*
+/docs/
+babelify-src
+docs/_build
+.DS_Store
+.tern-port
+TODO
+soljson.js
+*~
+.nx
+/cypress_cache
+
+# compiled output
+/dist
+/tmp
+/out-tsc
+
+# dependencies
+/node_modules
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# misc
+/.sass-cache
+/connect.lock
+/coverage
+/libpeerconnection.log
+npm-debug.log
+lerna-debug.log
+yarn-error.log
+testem.log
+/typings
+
+# System Files
+.DS_Store
+Thumbs.db
+
+apps/remix-ide/contracts/
+package-lock.json
+libs/remix-simulator/package-lock.json
+.npmrc
+
+# Security scan reports
+.security-reports/
+.claude/settings.local.json
+.claude/commands/
+.claude/skills/full-audit.md
+
+# Local Codex artifacts
+/.codex/
+
+# Local QA contracts
+/qa-contracts/
+
+# Environment files (use .env.example as template)
+.env
+.env.local
+.env.*.local
+
+# Playwright
+playwright-report/
+test-results/
+/apps/remix-ide-pw/playwright-report/
+/apps/remix-ide-pw/test-results/
+
+# transient agent scratch files
+.codex-tmp-*

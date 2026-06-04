@@ -1,0 +1,20 @@
+{
+    "env": {
+        "browser": true,
+        "es6": true
+    },
+    "extends": "../../.eslintrc",
+    "globals": {
+        "Atomics": "readonly",
+        "SharedArrayBuffer": "readonly",
+        "BrowserFS": "readonly"
+    },
+    "parserOptions": {
+        "ecmaVersion": 11,
+        "sourceType": "module"
+    },
+    "ignorePatterns": ["**/ace-mode-tron-solidity.js", "src/assets/js/soljson.js"],
+    "rules": {
+        "standard/no-callback-literal": "off"
+    }
+}

@@ -1,0 +1,52 @@
+{
+  "name": "remix-debug",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-debug/",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-debug/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-debug/.eslintrc"
+      }
+    },
+    "test": {
+      "executor": "@nrwl/workspace:run-commands",
+      "options": {
+        "commands": [
+          "./../../node_modules/.bin/npm-run-all test"
+        ],
+        "cwd": "libs/remix-debug"
+      }
+    },
+    "build": {
+      "executor": "@nrwl/js:tsc",
+      "options": {
+        "outputPath": "build/libs/remix-debug",
+        "tsConfig": "libs/remix-debug/tsconfig.lib.json",
+        "packageJson": "libs/remix-debug/package.json",
+        "main": "libs/remix-debug/src/index.ts",
+        "assets": [
+          {
+            "glob": "rdb",
+            "input": "libs/remix-debug/bin/",
+            "output": "bin/"
+          },
+          {
+            "glob": "*.md",
+            "input": "libs/remix-debug/",
+            "output": "/"
+          }
+        ],
+        "sourceMap": false
+      }
+    }
+  }
+}

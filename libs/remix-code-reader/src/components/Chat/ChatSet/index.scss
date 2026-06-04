@@ -1,0 +1,128 @@
+.chat-set-wrapper{
+  .explanation-list{
+    margin-bottom: 10px;
+    .item{
+      span{
+        margin-left: 10px;
+        color: var(--ai-text);
+        font-size: 12px;
+      }
+    }
+    .top-info{
+      padding-top: 10px;
+      text-align: center;
+      img{
+        width: 60px;
+        height: 60px;
+        margin-bottom: 10px;
+      }
+      h4{
+        margin: 0;
+        color: var(--ai-title);
+        margin-bottom: 10px;
+      }
+      p{
+        font-size: 12px;
+        color: var(--ai-text);
+      }
+    }
+  }
+  .ai-model-vendor-wrap{
+    margin-bottom: 20px;
+  }
+  .keySelect-title{
+    margin-right: 10px;
+  }
+  .chat-set-content{
+    padding: 0 16px;
+    overflow-y: auto;
+    max-height: calc(100vh - 146px);
+  }
+  .open-ai-title{
+    margin-bottom: 5px;
+    font-size: 13px;
+    color: var(--ai-title);
+  }
+  .ant-input-affix-wrapper{
+    background-color: var(--ai-input);
+    color: var(--ai-input-text);
+    border: 1px solid var(--ai-input-border);
+    input::-webkit-input-placeholder {
+      color: var(--ai-text);
+    }
+    input::-moz-placeholder {
+      color: var(--ai-text);
+    }
+    input:-ms-input-placeholder {
+      color: var(--ai-text);
+    }
+    input::placeholder {
+      color: var(--ai-text);
+    }
+  }
+  .ant-input{
+    box-shadow: none;
+  }
+  .key-tip{
+    font-size: 12px;
+    color: #ff4d4f;
+    margin-top: 5px;
+  }
+  .key-security-notice{
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--ai-text);
+    background-color: rgba(250, 173, 20, 0.08);
+    border-left: 3px solid #faad14;
+    padding: 8px 10px;
+    margin-top: 8px;
+    border-radius: 2px;
+  }
+  .ant-select{
+    width: 100%;
+    .ant-select-arrow{
+      color: var(--ai-input-text);
+    }
+  }
+  .ant-select-selector{
+    background-color: var(--ai-input)!important;
+    border: 1px solid var(--ai-input-border)!important;
+    color: var(--ai-input-text);
+  }
+  .ant-select-single.ant-select-open .ant-select-selection-item{
+    color: var(--ai-input-text);
+  }
+  .gpt-model-wrap{
+    margin-top: 20px;
+    p{
+      color: #7a5e0e;
+      margin-top: 5px;
+      margin-bottom: 0;
+    }
+    .ant-checkbox-label{
+      color: var(--ai-text)
+    }
+  }
+  .context-wrap{
+    margin-top: 20px;
+  }
+  .ant-select-open{
+    .tron-icon{
+      transform: rotate(180deg);
+    }
+  }
+  .collapse-wrap{
+    margin-top: 16px;
+    text-align: center;
+    color: var(--ai-title);
+    &>span{
+      cursor: pointer;
+    }
+    .tron-icon{
+      transform: rotate(180deg);
+    }
+  }
+}
+.fz12{
+  font-size: 12px;
+}

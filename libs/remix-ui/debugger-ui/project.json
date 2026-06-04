@@ -1,0 +1,29 @@
+{
+  "name": "remix-ui-debugger-ui",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/debugger-ui/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-ui/debugger-ui/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-ui/debugger-ui/.eslintrc"
+      }
+    },
+    "test": {
+      "executor": "@nrwl/jest:jest",
+      "options": {
+        "jestConfig": "libs/remix-ui/debugger-ui/jest.config.js",
+        "tsConfig": "libs/remix-ui/debugger-ui/tsconfig.spec.json",
+        "passWithNoTests": true
+      }
+    }
+  }
+}

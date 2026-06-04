@@ -1,0 +1,43 @@
+.chat-set-reminder-item {
+  margin-bottom: 10px;
+}
+.chat-set-reminder-item .dialogue-wrapper {
+  padding-top: 0 !important;
+}
+.chat-set-reminder-item .dialogue-wrapper .dialogue {
+  padding: 19px !important;
+  margin-top: 0 !important;
+  font-size: 14px;
+  line-height: 20px;
+  color: #404245;
+  border: 1px solid #B78C16;
+  background-color: #FEF8E8 !important;
+}
+.chat-set-reminder-item .dialogue-wrapper .dialogue .finger {
+  display: inline-block;
+  font-size: 20px;
+  margin-right: 8px;
+  animation: fingerAnimate 1s infinite;
+}
+.chat-set-reminder-item .dialogue-wrapper .dialogue .need-set-input-item {
+  margin: 0 4px;
+}
+.chat-set-reminder-item .dialogue-wrapper .dialogue .re-submit {
+  margin: 0 4px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+@keyframes fingerAnimate {
+  25% {
+    transform: translateX(-10px);
+  }
+  50% {
+    transform: rotate(-5px);
+  }
+  75% {
+    transform: rotate(-10px);
+  }
+  100% {
+    transform: rotate(0);
+  }
+}

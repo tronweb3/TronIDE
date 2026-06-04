@@ -1,0 +1,21 @@
+{
+  "name": "remix-ui-publish-to-storage",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/publish-to-storage/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-ui/publish-to-storage/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-ui/publish-to-storage/.eslintrc"
+      }
+    }
+  }
+}

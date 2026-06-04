@@ -1,0 +1,21 @@
+{
+  "name": "remix-ui-solidity-compiler",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/solidity-compiler/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-ui/solidity-compiler/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-ui/solidity-compiler/.eslintrc"
+      }
+    }
+  }
+}

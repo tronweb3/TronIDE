@@ -1,0 +1,28 @@
+.question-mark-icon {
+  font-size: 8px;
+  color: #101010;
+}
+
+.tooltip-learn-more a {
+  color: #E09B98 !important;
+}
+.tooltip-learn-more a:hover {
+  color: #E09B98 !important;
+}
+
+.tooltip-link-wrap a:hover {
+  color: #FF7C77 !important;
+}
+
+.tooltip-text-left {
+  text-align: left;
+}
+
+.ant-tooltip {
+  max-width: 400px;
+}
+@media screen and (max-width: 768px) {
+  .ant-tooltip {
+    max-width: 300px;
+  }
+}

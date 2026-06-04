@@ -1,0 +1,51 @@
+{
+  "name": "remixd",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remixd/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remixd/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remixd/.eslintrc"
+      }
+    },
+    "test": {
+      "executor": "@nrwl/jest:jest",
+      "options": {
+        "jestConfig": "libs/remixd/jest.config.js",
+        "tsConfig": "libs/remixd/tsconfig.spec.json",
+        "passWithNoTests": true
+      }
+    },
+    "build": {
+      "executor": "@nrwl/js:tsc",
+      "options": {
+        "outputPath": "build/libs/remixd",
+        "tsConfig": "libs/remixd/tsconfig.lib.json",
+        "packageJson": "libs/remixd/package.json",
+        "main": "libs/remixd/src/index.ts",
+        "assets": [
+          "libs/remixd/*.md",
+          "libs/remixd/src/origins.json"
+        ]
+      }
+    },
+    "serve": {
+      "executor": "nx:run-commands",
+      "dependsOn": [
+        "build"
+      ],
+      "options": {
+        "command": "REMIXD_SCRIPT_PATH='build/libs/remixd/src/bin/remixd.js'; chmod +x \"$REMIXD_SCRIPT_PATH\"; CMD_TO_RUN=\"\\\"$REMIXD_SCRIPT_PATH\\\"\"; FOLDER_ARG='{args.folder}'; if [ -n \"$FOLDER_ARG\" ]; then CMD_TO_RUN=\"$CMD_TO_RUN -s \\\"$FOLDER_ARG\\\"\"; fi; REMIX_IDE_ARG='{args.remixide}'; if [ -n \"$REMIX_IDE_ARG\" ]; then CMD_TO_RUN=\"$CMD_TO_RUN --remix-ide \\\"$REMIX_IDE_ARG\\\"\"; fi; eval \"$CMD_TO_RUN\""
+      }
+    }
+  }
+}

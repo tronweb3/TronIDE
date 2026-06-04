@@ -1,0 +1,21 @@
+{
+  "name": "remix-ui-static-analyser",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/static-analyser/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-ui/static-analyser/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-ui/static-analyser/.eslintrc"
+      }
+    }
+  }
+}

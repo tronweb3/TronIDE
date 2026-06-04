@@ -1,0 +1,85 @@
+.usage-introduction-modal {
+  width: 93% !important;
+}
+.usage-introduction-modal .ant-modal-body {
+  padding: 0 !important;
+}
+.usage-introduction-modal .modal-content-wrapper {
+  padding: 0;
+}
+.usage-introduction-modal h3 {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 24px;
+  text-align: center;
+  color: var(--ai-title);
+}
+.usage-introduction-modal .content-wrapper {
+  margin-top: 20px;
+  border-radius: 10px;
+  border: 1px solid var(--btn-border);
+}
+.usage-introduction-modal .content-wrapper .item {
+  padding: 20px;
+  border-bottom: 1px solid var(--btn-border);
+}
+.usage-introduction-modal .content-wrapper .item:last-child {
+  border-bottom: none;
+}
+.usage-introduction-modal .content-wrapper .item .tron-icon-wrapper {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  margin-right: 20px;
+  border-radius: 50%;
+  font-size: 18px;
+  text-align: center;
+  line-height: 30px;
+  background-color: #F9F9FA;
+  font-family: Roboto, Noto, Helvetica, Arial, sans-serif;
+}
+.usage-introduction-modal .content-wrapper .item .text {
+  color: var(--ai-text);
+  font-size: 14px;
+  line-height: 20px;
+}
+.usage-introduction-modal .btns-wrapper {
+  margin-top: 30px;
+  text-align: center;
+}
+.usage-introduction-modal .btns-wrapper button {
+  display: inline-block;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px;
+  outline: none;
+  border: none;
+  border-radius: 10px;
+  font-size: 16px;
+  font-family: Lato;
+  box-sizing: border-box;
+  background-color: var(--btn-bg);
+  color: var(--btn-text);
+  transition: color 0.15s ease-in-out, background-color 0.15s ease-in-out, border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+.usage-introduction-modal .btns-wrapper button:hover {
+  opacity: 0.9;
+}
+
+@media (max-width: 768px) {
+  .usage-introduction-modal {
+    width: auto !important;
+  }
+  .usage-introduction-modal .btns-wrapper button {
+    width: 100%;
+  }
+}
+#ai-panel .ant-modal-mask {
+  position: absolute;
+}
+#ai-panel .ant-modal-wrap {
+  position: absolute;
+}
+#ai-panel .usage-introduction-close {
+  color: var(--ai-title);
+}

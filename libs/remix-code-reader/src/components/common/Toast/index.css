@@ -1,0 +1,102 @@
+#snackbar {
+  visibility: hidden;
+  min-width: 250px;
+  margin-left: -125px;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 10px;
+  font-weight: 400;
+  font-size: 14px;
+  color: #fff;
+  text-align: center;
+  padding: 16px;
+  position: fixed;
+  z-index: 9999;
+  left: 50%;
+  top: 200px;
+}
+
+#snackbar.show {
+  visibility: visible;
+  -webkit-animation: fadein 0.5s, fadeout 0.5s 2.5s;
+  animation: fadein 0.5s, fadeout 0.5s 2.5s;
+}
+#snackbar.show.show5s {
+  -webkit-animation: fadein 0.5s;
+  animation: fadein 0.5s;
+}
+#snackbar.show.show-keep {
+  -webkit-animation: fadein 0.5s;
+  animation: fadein 0.5s;
+}
+#snackbar.show.upgrade-toast {
+  padding: 15px 30px;
+  line-height: 20px;
+  max-width: 400px;
+}
+#snackbar.show.upgrade-toast .relase-message {
+  line-height: 20px;
+  font-size: 12px;
+  margin-top: 4px;
+  text-align: left;
+}
+#snackbar.show.upgrade-toast .close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  font-size: 12px;
+  color: #fff;
+  cursor: pointer;
+  margin-left: 20px;
+}
+
+@-webkit-keyframes fadein {
+  from {
+    top: 0;
+    opacity: 0;
+  }
+  to {
+    top: 200px;
+    opacity: 1;
+  }
+}
+@keyframes fadein {
+  from {
+    top: 0;
+    opacity: 0;
+  }
+  to {
+    top: 200px;
+    opacity: 1;
+  }
+}
+@-webkit-keyframes fadeout {
+  from {
+    top: 200px;
+    opacity: 1;
+  }
+  to {
+    top: 0;
+    opacity: 0;
+  }
+}
+@keyframes fadeout {
+  from {
+    top: 200px;
+    opacity: 1;
+  }
+  to {
+    top: 0;
+    opacity: 0;
+  }
+}
+@media screen and (max-width: 768px) {
+  #snackbar.show.upgrade-toast {
+    max-width: none;
+    padding: 15px 20px;
+  }
+  #snackbar {
+    margin-left: 0;
+    left: 15px;
+    right: 15px;
+  }
+}

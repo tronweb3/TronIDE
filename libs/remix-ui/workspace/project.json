@@ -1,0 +1,21 @@
+{
+  "name": "remix-ui-workspace",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/workspace/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-ui/workspace/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-ui/workspace/.eslintrc"
+      }
+    }
+  }
+}

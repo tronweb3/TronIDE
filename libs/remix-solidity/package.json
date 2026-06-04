@@ -1,0 +1,62 @@
+{
+  "name": "@remix-project/remix-solidity",
+  "version": "0.4.5-tron.1",
+  "description": "Tool to load and run Solidity compiler",
+  "main": "../../build/libs/remix-solidity/src/index.js",
+  "types": "./src/index.d.ts",
+  "contributors": [
+    {
+      "name": "Yann Levreau",
+      "email": "yann@ethdev.com"
+    },
+    {
+      "name": "Liana Husikyan",
+      "email": "liana@ethdev.com"
+    }
+  ],
+  "dependencies": {
+    "@remix-project/remix-lib": "workspace:*",
+    "@tvmjs/block": "^1.0.0",
+    "@tvmjs/tx": "^1.0.0",
+    "@tvmjs/util": "^1.0.0",
+    "async": "3.2.6",
+    "eslint-scope": "^5.0.0",
+    "ethers": "5.8.0",
+    "solc": "0.8.25",
+    "string-similarity": "4.0.4",
+    "web3": "1.10.4",
+    "webworkify-webpack": "2.1.5"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.4.5",
+    "@babel/plugin-transform-object-assign": "^7.2.0",
+    "@babel/preset-env": "^7.4.5",
+    "@babel/preset-es2015": "latest",
+    "@babel/preset-es2017": "latest",
+    "@babel/preset-stage-0": "^7.0.0",
+    "@types/node": "^13.1.1",
+    "babel-eslint": "^10.0.0",
+    "babelify": "^10.0.0",
+    "tape": "^4.6.0",
+    "typescript": "^3.9.10"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "./../../node_modules/.bin/tape ./test/tests.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "author": "Tron IDE Team",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": ""
+  },
+  "homepage": "",
+  "typings": "src/index.d.ts",
+  "gitHead": "df7abe1c219e361a947031d620f4ae6e3786a4d7"
+}

@@ -1,0 +1,91 @@
+.usage-introduction-modal {
+    width: 93%!important;
+    .ant-modal-body{
+        padding: 0!important;
+    }
+  .modal-content-wrapper {
+    padding: 0;
+  }
+  h3 {
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 24px;
+    text-align: center;
+    color: var(--ai-title);
+  }
+
+  .content-wrapper {
+    margin-top: 20px;
+    border-radius: 10px;
+    border: 1px solid var(--btn-border);
+    .item{
+        padding: 20px;
+        border-bottom: 1px solid var(--btn-border);
+        &:last-child{
+            border-bottom: none;
+        }
+        .tron-icon-wrapper{
+            flex-shrink: 0;
+            width: 30px;
+            height: 30px;
+            margin-right: 20px;
+            border-radius: 50%;
+            font-size: 18px;
+            text-align: center;
+            line-height: 30px;
+            background-color: #F9F9FA;
+            font-family: Roboto,Noto,Helvetica,Arial,sans-serif;
+        }
+        .text{
+            color: var(--ai-text);
+            font-size: 14px;
+            line-height: 20px;
+        }
+    }
+  }
+  .btns-wrapper {
+    margin-top: 30px;
+    text-align: center;
+    button {
+      display: inline-block;
+      width: 100%;
+      min-height: 40px;
+      padding: 8px;
+      outline: none;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-family: Lato;
+      box-sizing: border-box;
+      background-color: var(--btn-bg);
+      color: var(--btn-text);
+      transition: color 0.15s ease-in-out, background-color 0.15s ease-in-out,
+      border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+      &:hover{
+        opacity: 0.9;
+      }
+    }
+  }
+}
+
+@media (max-width: 768px) {
+    .usage-introduction-modal {
+        width: auto!important;
+        .btns-wrapper {
+          button{
+            width: 100%;
+          }
+        }
+    }
+}
+#ai-panel{
+  .ant-modal-mask{
+    position: absolute;
+  }
+  .ant-modal-wrap{
+    position: absolute;
+  }
+  .usage-introduction-close{
+    color: var(--ai-title);
+  }
+}

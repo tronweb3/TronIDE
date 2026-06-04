@@ -1,0 +1,123 @@
+.chat-set-wrapper .explanation-list {
+  margin-bottom: 10px;
+}
+.chat-set-wrapper .explanation-list .item span {
+  margin-left: 10px;
+  color: var(--ai-text);
+  font-size: 12px;
+}
+.chat-set-wrapper .explanation-list .top-info {
+  padding-top: 10px;
+  text-align: center;
+}
+.chat-set-wrapper .explanation-list .top-info img {
+  width: 60px;
+  height: 60px;
+  margin-bottom: 10px;
+}
+.chat-set-wrapper .explanation-list .top-info h4 {
+  margin: 0;
+  color: var(--ai-title);
+  margin-bottom: 10px;
+}
+.chat-set-wrapper .explanation-list .top-info p {
+  font-size: 12px;
+  color: var(--ai-text);
+}
+.chat-set-wrapper .ai-model-vendor-wrap {
+  margin-bottom: 20px;
+}
+.chat-set-wrapper .keySelect-title {
+  margin-right: 10px;
+}
+.chat-set-wrapper .chat-set-content {
+  padding: 0 16px;
+  overflow-y: auto;
+  max-height: calc(100vh - 146px);
+}
+.chat-set-wrapper .open-ai-title {
+  margin-bottom: 5px;
+  font-size: 13px;
+  color: var(--ai-title);
+}
+.chat-set-wrapper .ant-input-affix-wrapper {
+  background-color: var(--ai-input);
+  color: var(--ai-input-text);
+  border: 1px solid var(--ai-input-border);
+}
+.chat-set-wrapper .ant-input-affix-wrapper input::-webkit-input-placeholder {
+  color: var(--ai-text);
+}
+.chat-set-wrapper .ant-input-affix-wrapper input::-moz-placeholder {
+  color: var(--ai-text);
+}
+.chat-set-wrapper .ant-input-affix-wrapper input:-ms-input-placeholder {
+  color: var(--ai-text);
+}
+.chat-set-wrapper .ant-input-affix-wrapper input::placeholder {
+  color: var(--ai-text);
+}
+.chat-set-wrapper .ant-input {
+  box-shadow: none;
+}
+.chat-set-wrapper .key-tip {
+  font-size: 12px;
+  color: #ff4d4f;
+  margin-top: 5px;
+}
+.chat-set-wrapper .key-security-notice {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ai-text);
+  background-color: rgba(250, 173, 20, 0.08);
+  border-left: 3px solid #faad14;
+  padding: 8px 10px;
+  margin-top: 8px;
+  border-radius: 2px;
+}
+.chat-set-wrapper .ant-select {
+  width: 100%;
+}
+.chat-set-wrapper .ant-select .ant-select-arrow {
+  color: var(--ai-input-text);
+}
+.chat-set-wrapper .ant-select-selector {
+  background-color: var(--ai-input) !important;
+  border: 1px solid var(--ai-input-border) !important;
+  color: var(--ai-input-text);
+}
+.chat-set-wrapper .ant-select-single.ant-select-open .ant-select-selection-item {
+  color: var(--ai-input-text);
+}
+.chat-set-wrapper .gpt-model-wrap {
+  margin-top: 20px;
+}
+.chat-set-wrapper .gpt-model-wrap p {
+  color: #7a5e0e;
+  margin-top: 5px;
+  margin-bottom: 0;
+}
+.chat-set-wrapper .gpt-model-wrap .ant-checkbox-label {
+  color: var(--ai-text);
+}
+.chat-set-wrapper .context-wrap {
+  margin-top: 20px;
+}
+.chat-set-wrapper .ant-select-open .tron-icon {
+  transform: rotate(180deg);
+}
+.chat-set-wrapper .collapse-wrap {
+  margin-top: 16px;
+  text-align: center;
+  color: var(--ai-title);
+}
+.chat-set-wrapper .collapse-wrap > span {
+  cursor: pointer;
+}
+.chat-set-wrapper .collapse-wrap .tron-icon {
+  transform: rotate(180deg);
+}
+
+.fz12 {
+  font-size: 12px;
+}

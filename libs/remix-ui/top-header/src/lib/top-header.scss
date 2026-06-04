@@ -1,0 +1,103 @@
+.top-header-wrapper{
+    --header-base-text: var(--text, var(--ai-title, #24263a));
+    --header-base-bg: var(--body-bg, var(--ai-top-bg, #ffffff));
+    --header-accent: var(--primary, #C8302D);
+    --header-control-bg: color-mix(in srgb, var(--header-base-text) 6%, transparent);
+    --header-control-hover-bg: color-mix(in srgb, var(--header-base-text) 12%, transparent);
+    --header-control-border: color-mix(in srgb, var(--header-base-text) 28%, transparent);
+    --header-control-hover-border: color-mix(in srgb, var(--header-accent) 58%, var(--header-base-text) 16%);
+    --header-control-text: color-mix(in srgb, var(--header-base-text) 90%, var(--header-accent) 10%);
+    --header-control-muted: color-mix(in srgb, var(--header-base-text) 74%, transparent);
+    --header-control-icon: var(--header-accent);
+    --header-menu-bg: var(--header-base-bg);
+    --header-menu-text: var(--header-base-text);
+    --header-menu-muted: color-mix(in srgb, var(--header-base-text) 68%, transparent);
+    --header-menu-border: color-mix(in srgb, var(--header-base-text) 20%, transparent);
+    --header-menu-divider: color-mix(in srgb, var(--header-base-text) 14%, transparent);
+    --header-menu-primary-bg: color-mix(in srgb, var(--header-base-text) 7%, var(--header-base-bg) 93%);
+    --header-menu-primary-hover-bg: color-mix(in srgb, var(--header-base-text) 12%, var(--header-base-bg) 88%);
+    --header-menu-primary-text: var(--header-base-text);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 46px;
+    border-bottom: 1px solid var(--ai-input-border);
+    overflow: visible;
+    position: relative;
+    z-index: 1030;
+    .settings-icon-wrapper{
+      width: 30px;
+      height: 30px;
+      margin-right: 12px;
+      margin-left: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--header-control-border);
+      border-radius: 6px;
+      background: var(--header-control-bg);
+      color: var(--header-control-text);
+      cursor: pointer;
+      &:hover,
+      &:focus{
+        border-color: var(--header-control-hover-border);
+        background: var(--header-control-hover-bg);
+        color: var(--header-control-text);
+        outline: none;
+      }
+      i{
+        font-size: 14px;
+      }
+    }
+    .theme-wrapper{
+      margin-right: 12px;
+      .theme-label{
+        margin-right: 6px;
+        font-size: 14px;
+        color: var(--ai-text);
+      }
+    }
+}
+
+.top-header-wrapper .homeIcon {
+  display: block;
+  margin-left: 12px;
+  cursor: pointer;
+  svg{
+    width: 120px;
+    height: 27px;
+  }
+}
+.top-header-wrapper .homeIcon svg rect {
+  fill: var(--primary);
+}
+.top-header-wrapper .homeIcon svg circle {
+  fill: var(--primary);
+}
+.top-header-wrapper .homeIcon svg path {
+  fill: var(--primary);
+}
+.top-header-wrapper .homeIcon svg polygon {
+  fill: var(--primary);
+}
+
+.top-header-wrapper  .header-version{
+    display: inline-block;
+    margin-left: 12px;
+    margin-right: 12px;
+    font-size: 14px;
+    line-height: 1;
+    color: var(--ai-text);
+    border: 1px solid var(--ai-input-border);
+    padding: 6px 10px;
+    border-radius: 4px;
+  }
+
+.top-header-wrapper .ai-show-btn{
+    margin-right: 10px;
+    font-size: 28px;
+    color: #DC062B;
+    cursor: pointer;
+    vertical-align: middle;
+    margin-top: 2px;
+}

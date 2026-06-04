@@ -1,0 +1,28 @@
+{
+  "name": "remix-ui-clipboard",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/clipboard/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "options": {
+        "linter": "eslint",
+        "tsConfig": [
+          "libs/remix-ui/clipboard/tsconfig.lib.json",
+          "libs/remix-ui/clipboard/tsconfig.spec.json"
+        ],
+        "exclude": ["**/node_modules/**", "!libs/remix-ui/clipboard/**/*"]
+      }
+    },
+    "test": {
+      "executor": "@nrwl/jest:jest",
+      "options": {
+        "jestConfig": "libs/remix-ui/clipboard/jest.config.js",
+        "tsConfig": "libs/remix-ui/clipboard/tsconfig.spec.json",
+        "passWithNoTests": true
+      }
+    }
+  }
+}

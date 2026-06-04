@@ -1,0 +1,114 @@
+.code-reader-wrapper {
+  width: 100%;
+  // position: fixed;
+  // left: 0;
+  // right: 0;
+  // bottom: 40px;
+  // top:60px;
+  // height:100%;
+  // padding: 0 20px;
+  // min-width: 1000px;
+  &.when-switch-networks{
+    top:115px;
+    height: calc(100% - 55px);
+  }
+  .container{
+    height:100%;
+  }
+  .route-title{
+    color: #101010;
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 20px;
+    margin-bottom: 0;
+    display: flex;
+    align-items: center;
+    .new-icon-header{
+      width: 39px;
+      height: 16px;
+      margin-left: 6px;
+    }
+  }
+  .code-reader-top-info {
+    font-size: 14px;
+    margin:8px 0 0px;
+    span {
+      color: #73787b;
+    }
+    a {
+      margin-left: 6px;
+      color: #c23631;
+      span{
+        color: #c23631;
+      }
+    }
+  }
+  .code-reader-content {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    height: 100%;
+    overflow: hidden;
+    .keySelect {
+        width: 388px;
+        flex-shrink:0;
+    }
+  }
+  .right-part-wrapper {
+    flex: 1;
+    height: 100%;
+    width: calc(100% - 388px); 
+  }
+  .tron-feedback-container {
+    bottom: 94px;
+  }
+}
+
+.flex-center{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.flex-start{
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+.flex-between{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.a-icon {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
+  fill: currentColor;
+  overflow: hidden;
+}
+
+// @media (min-width: 768px) and (max-width: 1400px) {
+//   .code-reader-wrapper {
+//     .right-part-wrapper {
+//       width: 650px;
+//     }
+//   }
+// }
+@media  (max-width: 768px) {
+  .code-reader-wrapper {
+    min-width: 100%;
+    bottom: 0;
+    padding: 0;
+    .right-part-wrapper {
+      display: none;
+    }
+    .code-reader-content{
+      padding: 0 20px;
+      overflow: auto;
+      overflow: visible;
+        .keySelect{
+            width: 100%;
+        }
+    }
+  }
+}

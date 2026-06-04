@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "outDir": "../../build/out-tsc",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "declaration": true,
+    "importHelpers": false,
+    "rootDir": "./",
+    "types": ["node", "tape"],
+    "sourceMap": false,
+    "inlineSourceMap": true,
+    "inlineSources": true
+  },
+  "exclude": [
+    "**/*.spec.js",
+    "test/"
+  ],
+  "include": ["**/*.ts"]
+}
+  

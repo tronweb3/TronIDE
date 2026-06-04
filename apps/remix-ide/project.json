@@ -1,0 +1,108 @@
+{
+  "name": "remix-ide",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/remix-ide/src",
+  "projectType": "application",
+  "generators": {},
+  "implicitDependencies": ["debugger"],
+  "targets": {
+    "build": {
+      "executor": "@nrwl/webpack:webpack",
+      "outputs": ["{options.outputPath}"],
+      "defaultConfiguration": "development",
+      "options": {
+        "compiler": "babel",
+        "outputPath": "build/apps/remix-ide",
+        "index": "apps/remix-ide/src/index.html",
+        "baseHref": "/",
+        "main": "apps/remix-ide/src/main.js",
+        "sourceMap": false,
+        "polyfills": "apps/remix-ide/src/polyfills.ts",
+        "tsConfig": "apps/remix-ide/tsconfig.app.json",
+        "assets": [
+          "apps/remix-ide/src/assets",
+          "apps/remix-ide/src/index.html",
+          "apps/remix-ide/src/404.html",
+          "apps/remix-ide/src/favicon.ico"
+        ],
+        "styles": [],
+        "scripts": [],
+        "webpackConfig": "apps/remix-ide/webpack.config.js"
+      },
+      "configurations": {
+        "development": {
+          "optimization": false,
+          "generateIndexHtml": true,
+          "extractCss": false
+        },
+        "production": {
+          "optimization": true,
+          "generateIndexHtml": true,
+          "extractCss": false,
+          "vendorChunk": false,
+          "baseHref": "./"
+        },
+        "desktop": {
+          "optimization": false,
+          "generateIndexHtml": true,
+          "extractCss": false,
+          "vendorChunk": false,
+          "baseHref": "./"
+        }
+      }
+    },
+    "serve": {
+      "executor": "@nrwl/webpack:dev-server",
+      "options": {
+        "buildTarget": "remix-ide:build",
+        "port": 8080,
+        "exclude": [
+          "**/node_modules/**",
+          "apps/remix-ide/build/**/*.js",
+          "apps/remix-ide/src/app/editor/mode-solidity.js",
+          "apps/remix-ide/js/**/*.js",
+          "apps/remix-ide/src/assets/js/**/*.js"
+        ]
+      },
+      "configurations": {
+        "development": {
+          "buildTarget": "remix-ide:build:development",
+          "host": "0.0.0.0",
+          "port": 8080
+        },
+        "hot": {
+          "buildTarget": "remix-ide:build:development",
+          "port": 8080,
+          "hmr": true
+        },
+        "production": {
+          "buildTarget": "remix-ide:build:production",
+          "port": 8080
+        }
+      }
+    },
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": ["apps/remix-ide/src/app/**/*.{ts,tsx,js,jsx}","apps/remix-ide/src/blockchain/**/*.{ts,tsx,js,jsx}","apps/remix-ide/src/lib/**/*.{ts,tsx,js,jsx}","apps/remix-ide/src/global/**/*.{ts,tsx,js,jsx}","apps/remix-ide/src/*.js"],
+        "eslintConfig": "apps/remix-ide/.eslintrc",
+        "exclude": [
+          "**/node_modules/**",
+          "apps/remix-ide/src/app/editor/mode-solidity.js",
+          "apps/remix-ide/src/assets/js/**/*.js"
+        ]
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          {
+            "command": "csslint && node apps/remix-ide/test/index.js"
+          }
+        ]
+      }
+    }
+  }
+}

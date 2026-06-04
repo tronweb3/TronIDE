@@ -1,0 +1,247 @@
+// Available variables in Bootstrap.
+// This should be here just to know what variables we have available and colors.
+
+// custom variables for tron application
+// Color system
+$light-grey: #e5e5e5;
+$dark-grey: #2c2c2c;
+
+
+$white:    #fff !default;
+$gray-100: #f8f9fa !default;
+$gray-200: #F8F5F0 !default;
+$gray-300: #DFD7CA !default;
+$gray-400: #ced4da !default;
+$gray-500: #98978B !default;
+$gray-600: #8E8C84 !default;
+$gray-700: #495057 !default;
+$gray-800: #3E3F3A !default;
+$gray-900: #212529 !default;
+$black:    #000 !default;
+
+$blue:    #325D88 !default;
+$indigo:  #6610f2 !default;
+$purple:  #6f42c1 !default;
+$pink:    #e83e8c !default;
+$red:     #d9534f !default;
+$orange:  #F47C3C !default;
+$yellow:  #ffc107 !default;
+$green:   #93C54B !default;
+$teal:    #20c997 !default;
+$cyan:    #29ABE0 !default;
+
+$primary:       $blue !default;
+$secondary:     $gray-600 !default;
+$success:       $green !default;
+$info:          $cyan !default;
+$warning:       $orange !default;
+$danger:        $red !default;
+$light:         $gray-200 !default;
+$dark:          $gray-800 !default;
+
+$yiq-contrasted-threshold:  170 !default;
+
+// Body
+
+$body-color:                $gray-800 !default;
+
+// Links
+
+$link-color:                $success !default;
+
+// Fonts
+
+
+$font-size-base:              0.875rem !default;
+$headings-font-weight:        400 !default;
+
+
+// Navs
+
+$nav-link-padding-x:                0.9rem !default;
+$nav-link-disabled-color:           $gray-300 !default;
+
+$nav-tabs-border-color:             $gray-300 !default;
+$nav-tabs-link-hover-border-color:  $gray-300 !default;
+$nav-tabs-link-active-bg:           $white !default;
+
+$nav-pills-link-active-color:       $gray-600 !default;
+$nav-pills-link-active-bg:          $gray-200 !default;
+
+// Navbar
+
+$navbar-dark-hover-color:           $white !default;
+
+$navbar-light-hover-color:          $black !default;
+$navbar-light-active-color:         $black !default;
+
+// Pagination
+
+$pagination-color:                  $gray-600 !default;
+$pagination-bg:                     $gray-200 !default;
+$pagination-border-color:           $gray-300 !default;
+
+$pagination-hover-color:            $pagination-color !default;
+
+$pagination-active-color:           $pagination-color !default;
+$pagination-active-bg:              $gray-300 !default;
+$pagination-active-border-color:    $gray-300 !default;
+
+$pagination-disabled-color:         $gray-300 !default;
+$pagination-disabled-bg:            $gray-200 !default;
+$pagination-disabled-border-color:  $pagination-border-color !default;
+
+// Cards
+
+$card-border-color:                 rgba($gray-300, .75) !default;
+$card-cap-bg:                       rgba($gray-200, .25) !default;
+
+// Popovers
+
+$popover-header-bg:                 $gray-200 !default;
+
+// Modals
+
+$modal-content-border-color:        $gray-300 !default;
+
+$modal-header-border-color:         $modal-content-border-color !default;
+
+// Progress bars
+
+$progress-bg:                       $gray-300 !default;
+$progress-border-radius:            10px !default;
+$progress-bar-color:                $primary !default;
+
+// List group
+
+$list-group-border-color:           $gray-300 !default;
+
+$list-group-hover-bg:               $gray-200 !default;
+$list-group-active-color:           $body-color !default;
+$list-group-active-bg:              $gray-200 !default;
+$list-group-active-border-color:    $gray-300 !default;
+
+$list-group-disabled-color:         $gray-500 !default;
+$list-group-disabled-bg:            $white !default;
+
+$list-group-action-color:           $list-group-active-color !default;
+
+$list-group-action-active-color:    $list-group-active-color !default;
+$list-group-action-active-bg:       $gray-300 !default;
+
+// Close
+
+$close-text-shadow:                 none !default;
+
+
+// ico new theme
+$main-red: #C23631;
+$gold: #D0AC6E; // 覆盖 btn 样式
+
+$text-block: #D2D1D1;
+$text-block-dark: #999999;
+
+$bg-color-lightst: #fafafa;
+$bg-color-lighter: #F3F3F3;
+$bg-color: #333333;
+$bg-color-dark: #0C0000;
+
+$border-color: #666;
+$border-color-lighter: #d8d8d8;
+$border-color-lightst: rgba(255, 255, 255, 0.1);
+
+// tronscan padding margin
+$padding-margin-5px : 5px;
+$padding-margin-10px : 10px;
+$padding-margin-12px : 12px;
+$padding-margin-14px : 14px;
+$padding-margin-15px : 15px;
+$padding-margin-16px : 16px;
+$padding-margin-20px : 20px;
+$padding-margin-24px : 24px;
+$padding-margin-30px : 30px;
+$padding-margin-40px : 40px;
+
+
+// tronscan font size
+$font-size-10px : 10px;
+$font-size-12px : 12px;
+$font-size-14px : 14px;
+$font-size-16px : 16px;
+$font-size-18px : 18px;
+$font-size-20px : 20px;
+$font-size-22px : 22px;
+$font-size-24px : 24px;
+$font-size-30px : 30px;
+$font-size-60px : 60px;
+
+$font-weight-600 : 600;
+
+// tronscan  color  Normative 2021-07-13
+/* red */
+$color-red-darker:#611B18;
+$color-red-dark:#912925;
+$color-red-default:#C23631;
+$color-red-light:#E09B98;
+$color-red-lighter:#F0CDCB;
+$color-red-lighter3:#F4E6E6;
+$color-red-lighter2:#F9EBEA;
+$color-red-lighter1:#FCF5F5;
+
+
+
+/* gray */
+$color-gray-darker:#616568;
+$color-gray-dark:#91979D;
+$color-gray-default:#C2C9D1;
+$color-gray-light:#E0E4E8;
+$color-gray-lighter:#F0F2F3;
+$color-gray-lighter2:#F9FAFA;
+$color-gray-lighter1:#FCFCFD;
+
+/* black */
+$color-black-default:#101010;
+$color-black-light:#878787;
+$color-black2:#404245;
+$color-black-lighter:#C3C3C3;
+$color-black-lighter2:#E7E7E7;
+$color-black-lighter1:#F3F3F3;
+$color-black-lighter3:#979CA4;
+$color-black-level3:#73787B;
+$color-black-level2:#404245;
+
+
+/* white */
+$color-white-default:#FFFFFF;
+$color-white-dark:#B2B2B2;
+$color-white-darker:#808080;
+$color-white-darker2:#595959;
+$color-white-darker1:#404040;
+
+
+/* Success */
+$color-success-darker:#1E601E;
+$color-success-dark:#2D912C;
+$color-success-default:#3CC13B;
+$color-success-light:#9DE09D;
+$color-success-lighter:#CEEFCE;
+$color-success-lighter2:#EBF9EB;
+$color-success-lighter1:#F5FCF5;
+
+
+
+/* Warning */
+$color-warning-darker:#7F471C;
+$color-warning-dark:#BE6B2B;
+$color-warning-default:#FD8E39;
+$color-warning-light:#FEC79C;
+$color-warning-lighter:#FFE3CD;
+$color-warning-lighter2:#FFF4EB;
+$color-warning-lighter1:#FFF9F5;
+
+
+/* table td*/
+$color-table-td-text:#404245;
+$color-table-th-text:#73787B;
+
+

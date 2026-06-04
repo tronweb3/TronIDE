@@ -1,0 +1,52 @@
+{
+  "name": "remix-tests",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-tests/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-tests/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-tests/.eslintrc"
+      }
+    },
+    "build": {
+      "executor": "@nrwl/js:tsc",
+      "outputs": [
+        "{options.outputPath}"
+      ],
+      "options": {
+        "outputPath": "build/libs/remix-tests",
+        "tsConfig": "libs/remix-tests/tsconfig.lib.json",
+        "packageJson": "libs/remix-tests/package.json",
+        "updateBuildableProjectDepsInPackageJson": false,
+        "main": "libs/remix-tests/src/index.ts",
+        "assets": [
+          {
+            "glob": "remix-tests",
+            "input": "libs/remix-tests/bin/",
+            "output": "bin/"
+          },
+          {
+            "glob": "*.md",
+            "input": "libs/remix-tests/",
+            "output": "/"
+          }
+        ]
+      }
+    },
+    "test": {
+      "executor": "@nrwl/jest:jest",
+      "options": {
+        "jestConfig": "libs/remix-tests/jest.config.js"
+      }
+    }
+  }
+}

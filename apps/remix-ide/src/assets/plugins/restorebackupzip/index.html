@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>Upload zip to TronIDE</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css"
+        integrity="sha512-iBBXm8fW90+nuLcSKlbmrPcLa0OT92xO1BIsZ+ywDWZCvqsWgccV3gFoRBv0z+8dLJgyAHIhR35VZc2oM/gI1w=="
+        crossorigin="anonymous" />
+    <style>
+        .importfile {
+            cursor: pointer;
+            list-style-type: none;
+        }
+
+        .btn {
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container-fluid">
+        <h1 class="pt-2">Restore TronIDE Backup Zip</h1>
+        <div class="alert alert-primary">
+            Restore your TronIDE Zip backups to a workspace.
+            <br>This only applies to zip files you created by using the 'Download Backup' in the File Explorer.
+        </div>
+
+        <br>
+        <h5>Upload a zip file</h5><br>
+        <div>Workspaces in this zip will be displayed below.</div>
+        <input class="btn btn-primary" type="file" id="file-input" accept="application/zip">
+        <br><br>
+        <h5 style="display: none;" id="files">Your workspaces</h5>
+        <ul id="file-list" class="empty">
+        </ul>
+        <br>
+        <h5 style="display: none;" id="log">Log</h5>
+        <ul id="log-entry" class="empty">
+        </ul>
+
+
+
+    </div>
+
+
+    <!-- Modal -->
+    <div class="modal fade" id="confirmImport" tabindex="-1" role="dialog" aria-labelledby="exampleModalLabel"
+        aria-hidden="true">
+        <div class="modal-dialog" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="exampleModalLabel">Import this workspace?</h5>
+                    <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    Create this workspace and import the files?
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-dismiss="modal">No</button>
+                    <button type="button" class="btn btn-primary">Yes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/javascript" src="/assets/plugins/restorebackupzip/bundle.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,34 @@
+{
+  "name": "remix-lib",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-lib/",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-lib/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-lib/.eslintrc"
+      }
+    },
+    "build": {
+      "executor": "@nrwl/js:tsc",
+      "options": {
+        "outputPath": "build/libs/remix-lib",
+        "tsConfig": "libs/remix-lib/tsconfig.lib.json",
+        "packageJson": "libs/remix-lib/package.json",
+        "main": "libs/remix-lib/src/index.ts",
+        "assets": [
+          "libs/remix-lib/*.md"
+        ],
+        "sourceMap": false
+      }
+    }
+  }
+}

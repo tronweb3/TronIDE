@@ -1,0 +1,21 @@
+{
+  "name": "remix-ui-toaster",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/toaster/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-ui/toaster/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-ui/toaster/.eslintrc"
+      }
+    }
+  }
+}

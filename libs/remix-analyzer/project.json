@@ -1,0 +1,36 @@
+{
+  "name": "remix-analyzer",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-analyzer/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": ["libs/remix-analyzer/**/*.ts"],
+        "eslintConfig": "libs/remix-analyzer/.eslintrc"
+      }
+    },
+    "test": {
+      "executor": "@nrwl/workspace:run-commands",
+      "options": {
+        "commands": ["./../../node_modules/.bin/npm-run-all test"],
+        "cwd": "libs/remix-analyzer"
+      }
+    },
+    "build": {
+      "executor": "@nrwl/js:tsc",
+      "options": {
+        "outputPath": "build/libs/remix-analyzer",
+        "tsConfig": "libs/remix-analyzer/tsconfig.lib.json",
+        "packageJson": "libs/remix-analyzer/package.json",
+        "main": "libs/remix-analyzer/src/index.ts",
+        "assets": ["libs/remix-analyzer/*.md"],
+        "sourceMap": false,
+        "updateBuildableProjectDepsInPackageJson": false
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "remix-ui-settings",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/settings/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-ui/settings/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-ui/settings/.eslintrc"
+      }
+    }
+  }
+}

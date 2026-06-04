@@ -1,0 +1,86 @@
+name: Deploy (GitHub Pages)
+
+# Builds the static SPA and publishes it to GitHub Pages.
+#
+# No external credentials are required: GitHub Pages is deployed with the
+# built-in GITHUB_TOKEN (scoped to this repo, minted per run). There is no
+# Cloudflare/AWS token to store or rotate.
+#
+# One-time setup (repo admin): Settings -> Pages -> Build and deployment ->
+# Source = "GitHub Actions". Then trigger this workflow from the Actions tab.
+#
+# Custom domain: leave the `custom_domain` input empty for the first run and
+# verify on the https://<org>.github.io/<repo>/ URL. Once DNS for tronide.io
+# points at GitHub Pages, re-run with custom_domain=tronide.io to serve it at
+# the apex with an auto-provisioned Let's Encrypt certificate.
+on:
+  workflow_dispatch:
+    inputs:
+      custom_domain:
+        description: Custom domain (empty = serve on the github.io URL; set to tronide.io once DNS is ready)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # build.sh runs the production nx build (baseHref "./", path-agnostic) and
+      # normalises index.html. Output: build/apps/remix-ide.
+      - name: Build
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: bash build.sh
+
+      # Pages serves a CNAME file as the custom domain. Pass the value via env
+      # rather than interpolating into the shell.
+      - name: Set custom domain
+        if: ${{ inputs.custom_domain != '' }}
+        env:
+          CUSTOM_DOMAIN: ${{ inputs.custom_domain }}
+        run: echo "$CUSTOM_DOMAIN" > build/apps/remix-ide/CNAME
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/apps/remix-ide
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

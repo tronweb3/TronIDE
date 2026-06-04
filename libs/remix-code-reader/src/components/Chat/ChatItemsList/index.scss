@@ -1,0 +1,16 @@
+.chat-wapper {
+    .chat-content-outerlayer-wrapper {
+        .chat-content-wrapper {
+            .ant-list {
+                padding-bottom: 20px;
+                .ant-list-items {
+                    .ant-list-item {
+                        border-block-end: none;
+                        display: block;
+                        padding: 0;
+                    }   
+                }
+            }
+        }
+    }
+}

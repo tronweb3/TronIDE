@@ -1,0 +1,35 @@
+{
+  "name": "remix-astwalker",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-astwalker/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": ["libs/remix-astwalker/**/*.ts"],
+        "eslintConfig": "libs/remix-astwalker/.eslintrc"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": ["./../../node_modules/.bin/npm-run-all test"],
+        "cwd": "libs/remix-astwalker"
+      }
+    },
+    "build": {
+      "executor": "@nrwl/js:tsc",
+      "options": {
+        "outputPath": "build/libs/remix-astwalker",
+        "tsConfig": "libs/remix-astwalker/tsconfig.lib.json",
+        "packageJson": "libs/remix-astwalker/package.json",
+        "main": "libs/remix-astwalker/src/index.ts",
+        "assets": ["libs/remix-astwalker/*.md"],
+        "sourceMap": false
+      }
+    }
+  }
+}

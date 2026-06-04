@@ -1,0 +1,226 @@
+.common-modal .ant-modal-content {
+  border-radius: 20px;
+  overflow: hidden;
+  background-color: var(--ai-top-bg);
+}
+.common-modal .ant-btn-two-chinese-chars > *:not(.anticon) {
+  letter-spacing: 0;
+}
+.common-modal .ant-modal-header {
+  padding: 30px 30px 20px;
+  text-align: center;
+  border: none;
+  border-top-left-radius: 20px;
+  border-top-right-radius: 20px;
+}
+.common-modal .ant-modal-header .ant-modal-title {
+  font-family: "Lato";
+  font-weight: 700;
+  font-size: 20px;
+  line-height: 24px;
+  color: #101010;
+}
+@keyframes loading {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.common-modal .tron-loading-icon {
+  font-size: 60px;
+  animation: loading 1s infinite linear;
+}
+.common-modal .common-modal-loading-wrapper {
+  margin: 60px auto 30px;
+  text-align: center;
+}
+.common-modal .tron-icon.close-icon-disabled {
+  color: #C2C9D1;
+  cursor: not-allowed;
+}
+.common-modal .warn-content-img {
+  width: 60px;
+  height: 60px;
+  margin: 30px auto;
+}
+.common-modal .warn-content-text {
+  font-family: "Lato";
+  font-weight: 400;
+  font-size: 20px;
+  line-height: 24px;
+  color: #101010;
+  margin-bottom: 30px;
+}
+.common-modal .warn-content-btn {
+  width: 100%;
+  height: 40px;
+  background: #101010 !important;
+  border-radius: 10px;
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 40px;
+  color: #FFFFFF;
+  font-family: "Lato";
+  border: none;
+  cursor: pointer;
+}
+.common-modal .btns {
+  text-align: center;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.common-modal .btns > span {
+  display: inline-block;
+  box-sizing: border-box;
+  flex: 1;
+  height: 40px;
+  border: 1px solid var(--btn-border);
+  border-radius: 10px;
+  font-size: 16px;
+  line-height: 40px;
+  font-weight: 400;
+  color: var(--btn-text-light);
+  cursor: pointer;
+}
+.common-modal .btns .cancel-btn:hover {
+  border-color: #D78382;
+  color: #C23631;
+}
+@keyframes loading {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+.common-modal .btns .confirm-btn {
+  background: var(--btn-bg);
+  border: none;
+  color: var(--btn-text);
+  margin-left: 20px;
+}
+.common-modal .btns .confirm-btn .loading-icon {
+  margin-left: 4px;
+  animation: loading 1s linear infinite forwards;
+}
+.common-modal .btns .confirm-btn:not(.disabled-btn):hover {
+  background-color: #C23631;
+  color: #fff;
+}
+.common-modal .btns .disabled-btn {
+  background-color: #C2C9D1;
+  cursor: not-allowed;
+}
+.common-modal .notice-icon {
+  margin-top: 60px;
+  text-align: center;
+}
+.common-modal .notice-icon img {
+  width: 60px;
+  height: 60px;
+}
+.common-modal .notice-icon .iconfont {
+  font-size: 60px;
+  line-height: 1;
+}
+.common-modal .notice-title {
+  margin-top: 30px;
+  font-weight: 700;
+  font-size: 20px;
+  line-height: 24px;
+  color: #101010;
+  text-align: center;
+}
+.common-modal .notice-desc {
+  margin-top: 12px;
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 20px;
+  color: #73787B;
+  text-align: center;
+}
+.common-modal .notice-word {
+  color: #101010;
+}
+.common-modal .notice-border-btn,
+.common-modal .notice-btn {
+  height: 40px;
+  margin-top: 30px;
+  border-radius: 10px;
+  background: #101010;
+  font-size: 16px;
+  line-height: 40px;
+  font-weight: 400;
+  color: #FFFFFF;
+  cursor: pointer;
+  text-align: center;
+}
+.common-modal .notice-border-btn:hover,
+.common-modal .notice-btn:hover {
+  background-color: #C23631;
+}
+.common-modal .notice-border-btn.disabled-btn,
+.common-modal .notice-btn.disabled-btn {
+  background-color: #C2C9D1;
+  cursor: not-allowed;
+}
+.common-modal .notice-border-btn {
+  color: #101010;
+  background-color: #fff;
+  border: 1px solid #91979D;
+}
+.common-modal .notice-border-btn:hover {
+  background-color: #fff;
+  border-color: #C23631;
+  color: #C23631;
+}
+.common-modal .notice-border-btn.disabled-btn {
+  background-color: #C2C9D1;
+  border-color: #C2C9D1;
+  color: #fff;
+}
+@media screen and (max-width: 767px) {
+  .common-modal .ant-modal-body {
+    padding: 0 15px 30px !important;
+  }
+}
+
+.common-modal-footer-fixed .ant-modal-body {
+  display: flex;
+  flex-direction: column;
+  padding: 0 0 30px 0 !important;
+}
+.common-modal-footer-fixed .common-modal-content-wrapper {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 30px;
+}
+.common-modal-footer-fixed .common-modal-footer-wrapper {
+  padding: 0 30px;
+}
+@media screen and (max-width: 767px) {
+  .common-modal-footer-fixed .common-modal-content-wrapper {
+    padding: 0 15px;
+  }
+  .common-modal-footer-fixed .common-modal-footer-wrapper {
+    padding: 0 15px;
+  }
+}
+
+.modal-dialog-suspected {
+  border-radius: 20px;
+}
+.modal-dialog-suspected .ant-modal-content {
+  padding: 30px 30px 0;
+}
+.modal-dialog-suspected .ant-modal-content .btns .confirm-btn:not(:disabled):hover {
+  background: #C23631;
+}
+.modal-dialog-suspected .ant-modal-content .btns .cancel-btn:hover {
+  color: #C23631;
+  border-color: #D78382;
+}

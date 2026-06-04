@@ -1,0 +1,75 @@
+{
+  "name": "debugger",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/debugger/src",
+  "projectType": "application",
+  "generators": {},
+  "targets": {
+    "build": {
+      "executor": "@nrwl/webpack:webpack",
+      "outputs": ["{options.outputPath}"],
+      "defaultConfiguration": "development",
+      "options": {
+        "compiler": "babel",
+        "outputPath": "build/apps/debugger",
+        "index": "apps/debugger/src/index.html",
+        "baseHref": "/",
+        "main": "apps/debugger/src/main.tsx",
+        "sourceMap": false,
+        "polyfills": "apps/debugger/src/polyfills.ts",
+        "tsConfig": "apps/debugger/tsconfig.app.json",
+        "assets": [
+          "apps/debugger/src/assets",
+          "apps/debugger/src/index.html",
+          "apps/debugger/src/favicon.ico"
+        ],
+        "styles": ["apps/debugger/src/styles.css"],
+        "scripts": [],
+        "webpackConfig": "apps/debugger/webpack.config.js",
+        "maxWorkers": 2
+      },
+      "configurations": {
+        "production": {
+          "fileReplacements": [
+            {
+              "replace": "apps/debugger/src/environments/environment.ts",
+              "with": "apps/debugger/src/environments/environment.prod.ts"
+            }
+          ],
+          "optimization": true,
+          "outputHashing": "all",
+          "sourceMap": false,
+          "extractCss": true,
+          "namedChunks": false,
+          "extractLicenses": true,
+          "vendorChunk": false,
+          "budgets": [
+            {
+              "type": "initial",
+              "maximumWarning": "2mb",
+              "maximumError": "5mb"
+            }
+          ]
+        }
+      }
+    },
+    "serve": {
+      "executor": "@nrwl/web:dev-server",
+      "options": {
+        "buildTarget": "debugger:build"
+      },
+      "configurations": {
+        "production": {
+          "buildTarget": "debugger:build:production"
+        }
+      }
+    },
+    "lint": {
+      "executor": "@angular-devkit/build-angular:tslint",
+      "options": {
+        "tsConfig": ["apps/debugger/tsconfig.app.json"],
+        "exclude": ["**/node_modules/**", "!apps/debugger/**/*"]
+      }
+    }
+  }
+}

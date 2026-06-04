@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, 'release/**']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Pre-existing lint debt across several libs (lint was historically disabled on main);
+    # report but don't block the build gate. Tighten back to blocking once the debt is cleared.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint libs
+        run: pnpm lint:libs
+
+      - name: Check compiler source consistency
+        run: pnpm lint:compiler-source
+
+      - name: Check Remix IDE entry consistency
+        run: pnpm lint:remix-ide-entry
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build libs
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm build:libs
+
+  e2e-smoke:
+    name: Playwright smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Lightweight headless Playwright smoke covering the critical user flows.
+    # Informational for now — kept off the blocking gate.
+    continue-on-error: true
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Pre-build libs so the Playwright webServer (nx serve) boots faster.
+      - name: Build libs
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm build:libs
+
+      # Playwright manages its own Chromium — no selenium/chromedriver version matching.
+      - name: Install Playwright Chromium
+        run: pnpm test:pw:install
+
+      - name: Playwright smoke
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm test:pw

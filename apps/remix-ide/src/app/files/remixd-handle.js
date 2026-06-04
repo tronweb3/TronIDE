@@ -1,0 +1,199 @@
+/*
+ * Original work Copyright © 2018-2021 Remix Team
+ * Licensed under the MIT License.
+ *
+ * Modifications Copyright © 2022 TronIDE
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import isElectron from 'is-electron'
+import { WebsocketPlugin } from '@remixproject/engine-web'
+import * as packageJson from '../../../../../package.json'
+import { version as remixdVersion } from '../../../../../libs/remixd/package.json'
+var yo = require('yo-yo')
+var modalDialog = require('../ui/modaldialog')
+var modalDialogCustom = require('../ui/modal-dialog-custom')
+var copyToClipboard = require('../ui/copy-to-clipboard')
+
+function createSessionToken () {
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const bytes = new Uint8Array(16)
+    crypto.getRandomValues(bytes)
+    return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+  return String(Date.now()) + String(Math.random()).slice(2)
+}
+
+var csjs = require('csjs-inject')
+
+var css = csjs`
+  .dialog {
+    display: flex;
+    flex-direction: column;
+  }
+  .dialogParagraph {
+    margin-bottom: 2em;
+    word-break: break-word;
+  }
+`
+const LOCALHOST = ' - connect to localhost - '
+
+const profile = {
+  name: 'remixd',
+  displayName: 'RemixD',
+  url: 'ws://127.0.0.1:65520',
+  methods: ['folderIsReadOnly', 'resolveDirectory', 'get', 'exists', 'isFile', 'set', 'rename', 'remove', 'isDirectory', 'list', 'createDir'],
+  events: [],
+  description: 'Using Remixd daemon, allow to access file system',
+  kind: 'other',
+  version: packageJson.version
+}
+
+export class RemixdHandle extends WebsocketPlugin {
+  constructor (localhostProvider, appManager) {
+    super(profile)
+    this.localhostProvider = localhostProvider
+    this.appManager = appManager
+  }
+
+  deactivate () {
+    if (super.socket) super.deactivate()
+    // this.appManager.deactivatePlugin('git') // plugin call doesn't work.. see issue https://github.com/ethereum/remix-plugin/issues/342
+    if (this.appManager.actives.includes('hardhat')) this.appManager.deactivatePlugin('hardhat')
+    if (this.appManager.actives.includes('slither')) this.appManager.deactivatePlugin('slither')
+    this.localhostProvider.close((error) => {
+      if (error) console.log(error)
+    })
+  }
+
+  activate () {
+    this.connectToLocalhost()
+  }
+
+  async canceled () {
+    // await this.appManager.deactivatePlugin('git') // plugin call doesn't work.. see issue https://github.com/ethereum/remix-plugin/issues/342
+    await this.appManager.deactivatePlugin('remixd')
+  }
+
+  /**
+    * connect to localhost if no connection and render the explorer
+    * disconnect from localhost if connected and remove the explorer
+    *
+    * @param {String} txHash - hash of the transaction
+    */
+  async connectToLocalhost () {
+    const connection = (error) => {
+      if (error) {
+        console.log(error)
+        modalDialogCustom.alert(
+          'Cannot connect to the remixd daemon. ' +
+          'Please make sure you have the remixd running in the background.'
+        )
+        this.canceled()
+      } else {
+        const intervalId = setInterval(() => {
+          if (!this.socket || (this.socket && this.socket.readyState === 3)) { // 3 means connection closed
+            clearInterval(intervalId)
+            console.log(error)
+            modalDialogCustom.alert(
+              'Connection to remixd terminated. ' +
+              'Please make sure remixd is still running in the background.'
+            )
+            this.canceled()
+          }
+        }, 3000)
+        this.localhostProvider.init(() => {
+          this.call('filePanel', 'setWorkspace', { name: LOCALHOST, isLocalhost: true }, true)
+        })
+        this.call('manager', 'activatePlugin', 'hardhat')
+        this.call('manager', 'activatePlugin', 'slither')
+      }
+    }
+    if (this.localhostProvider.isConnected()) {
+      this.deactivate()
+    } else if (!isElectron()) {
+      // warn the user only if he/she is in the browser context
+      modalDialog(
+        'Connect to localhost',
+        remixdDialog(),
+        {
+          label: 'Connect',
+          fn: () => {
+            try {
+              this.localhostProvider.preInit()
+              const token = createSessionToken()
+              this.profile.url = `ws://127.0.0.1:65520?remixdToken=${encodeURIComponent(token)}`
+              super.activate()
+              setTimeout(() => {
+                if (!this.socket || (this.socket && this.socket.readyState === 3)) { // 3 means connection closed
+                  connection(new Error('Connection with daemon failed.'))
+                } else {
+                  connection()
+                }
+              }, 3000)
+            } catch (error) {
+              connection(error)
+            }
+          }
+        },
+        {
+          label: 'Cancel',
+          fn: () => {
+            this.canceled()
+          }
+        }
+      )
+    } else {
+      try {
+        const token = createSessionToken()
+        this.profile.url = `ws://127.0.0.1:65520?remixdToken=${encodeURIComponent(token)}`
+        super.activate()
+        setTimeout(() => { connection() }, 2000)
+      } catch (error) {
+        connection(error)
+      }
+    }
+  }
+}
+
+function remixdDialog () {
+  const commandText = 'remixd -s <path-to-the-shared-folder> -u <remix-ide-instance-URL>'
+  return yo`
+    <div class=${css.dialog}>
+      <div class=${css.dialogParagraph}>
+        Access your local file system from TronIDE using <a target="_blank" rel="noopener noreferrer" href="https://www.npmjs.com/package/@remix-project/remixd">Remixd NPM package</a>.<br/><br/>
+        Remixd needs to be running in the background to load the files in localhost workspace. For more info, please check the <a target="_blank" rel="noopener noreferrer" href="https://remix-ide.readthedocs.io/en/latest/remixd.html">Remixd tutorial</a>.
+      </div>
+      <div class=${css.dialogParagraph}>
+        If you are just looking for the remixd command, here it is:
+        <br><br><b>${commandText}</b>
+        <span class="">${copyToClipboard(() => commandText)}</span>
+      </div>
+      <div class=${css.dialogParagraph}>
+        When connected, a session will be started between <em>${window.location.origin}</em> and your local file system at <i>ws://127.0.0.1:65520</i>.
+         The shared folder will be in the "File Explorers" workspace named "localhost".
+        <br/>Read more about other <a target="_blank" rel="noopener noreferrer" href="https://remix-ide.readthedocs.io/en/latest/remixd.html#ports-usage">Remixd ports usage</a>
+      </div>
+      <div class=${css.dialogParagraph}>
+        This feature is still in Alpha. We recommend to keep a backup of the shared folder.
+      </div>
+      <div class=${css.dialogParagraph}>
+        <h6 class="text-danger">
+          Before using, make sure remixd version is latest i.e. <b>${remixdVersion}</b>
+          <br><a target="_blank" rel="noopener noreferrer" href="https://remix-ide.readthedocs.io/en/latest/remixd.html#update-to-the-latest-remixd">Read here how to update it</a>
+        </h6>
+      </div>
+    </div>
+  `
+}

@@ -1,0 +1,28 @@
+{
+  "migrations": [
+    {
+      "version": "15.7.0-beta.0",
+      "description": "Split global configuration files into individual project.json files. This migration has been added automatically to the beginning of your migration set to retroactively make them work with the new version of Nx.",
+      "cli": "nx",
+      "implementation": "./src/migrations/update-15-7-0/split-configuration-into-project-json-files",
+      "package": "@nrwl/workspace",
+      "name": "15-7-0-split-configuration-into-project-json-files"
+    },
+    {
+      "cli": "nx",
+      "version": "16.0.0-beta.1",
+      "description": "Replace @nrwl/eslint-plugin-nx with @nx/eslint-plugin",
+      "implementation": "./src/migrations/update-16-0-0-add-nx-packages/update-16-0-0-add-nx-packages",
+      "package": "@nrwl/eslint-plugin-nx",
+      "name": "update-16-0-0-add-nx-packages"
+    },
+    {
+      "cli": "nx",
+      "version": "17.2.6-beta.1",
+      "description": "Rename workspace rules from @nx/workspace/name to @nx/workspace-name",
+      "implementation": "./src/migrations/update-17-2-6-rename-workspace-rules/rename-workspace-rules",
+      "package": "@nrwl/eslint-plugin-nx",
+      "name": "update-17-2-6-rename-workspace-rules"
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "rootDir": ".",
+    "sourceMap": false,
+    "declaration": false,
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "importHelpers": true,
+    "target": "es2015",
+    "module": "commonjs",
+    "typeRoots": ["node_modules/@types", "libs/**/*.d.ts"],
+    "lib": ["es2017", "es2019", "dom"],
+    "skipLibCheck": true,
+    "skipDefaultLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@remix-project/core-plugin": ["libs/remix-core-plugin/src/index.ts"],
+      "@remix-project/remix-analyzer": ["libs/remix-analyzer/src/index.ts"],
+      "@remix-project/remix-astwalker": ["libs/remix-astwalker/src/index.ts"],
+      "@remix-project/remix-debug": ["libs/remix-debug/src/index.ts"],
+      "@remix-project/remix-lib": ["libs/remix-lib/src/index.ts"],
+      "@remix-project/remix-simulator": ["libs/remix-simulator/src/index.ts"],
+      "@remix-project/remix-solidity": ["libs/remix-solidity/src/index.ts"],
+      "@remix-project/remix-solidity-ts": ["libs/remix-solidity/src/index.ts"],
+      "@remix-project/remix-tests": ["libs/remix-tests/src/index.ts"],
+      "@remix-project/remix-url-resolver": ["libs/remix-url-resolver/src/index.ts"],
+      "@remix-project/remixd": ["libs/remixd/src/index.ts"],
+      "@remix-ui/checkbox": ["libs/remix-ui/checkbox/src/index.ts"],
+      "@remix-ui/clipboard": ["libs/remix-ui/clipboard/src/index.ts"],
+      "@remix-ui/debugger-ui": ["libs/remix-ui/debugger-ui/src/index.ts"],
+      "@remix-ui/file-explorer": ["libs/remix-ui/file-explorer/src/index.ts"],
+      "@remix-ui/modal-dialog": ["libs/remix-ui/modal-dialog/src/index.ts"],
+      "@remix-ui/publish-to-storage": [
+        "libs/remix-ui/publish-to-storage/src/index.ts"
+      ],
+      "@remix-ui/renderer": ["libs/remix-ui/renderer/src/index.ts"],
+      "@remix-ui/settings": ["libs/remix-ui/settings/src/index.ts"],
+      "@remix-ui/solidity-compiler": [
+        "libs/remix-ui/solidity-compiler/src/index.ts"
+      ],
+      "@remix-ui/static-analyser": [
+        "libs/remix-ui/static-analyser/src/index.ts"
+      ],
+      "@remix-ui/toaster": ["libs/remix-ui/toaster/src/index.ts"],
+      "@remix-ui/tree-view": ["libs/remix-ui/tree-view/src/index.ts"],
+      "@remix-ui/utils": ["libs/remix-ui/utils/src/index.ts"],
+      "@remix-ui/workspace": ["libs/remix-ui/workspace/src/index.ts"],
+      "@remixproject/debugger-plugin": ["apps/debugger/src/index.ts"],
+      "@remix-code-reader": ["libs/remix-code-reader/src/index.js"],
+      "@remix-ui/top-header": ["libs/remix-ui/top-header/src/index.ts"],
+    }
+  },
+  "exclude": ["node_modules", "tmp"],
+  "ts-node": {
+    "compilerOptions": {
+      "module": "commonjs",
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "name": "@remix-project/remix-lib",
+  "version": "0.5.5-tron.1",
+  "description": "Library to various Remix tools",
+  "contributors": [
+    {
+      "name": "Yann Levreau",
+      "email": "yann@ethdev.com"
+    },
+    {
+      "name": "Liana Husikyan",
+      "email": "liana@ethdev.com"
+    }
+  ],
+  "main": "src/index.js",
+  "dependencies": {
+    "@tvmjs/block": "^1.0.0",
+    "@tvmjs/tx": "^1.0.0",
+    "@tvmjs/util": "^1.0.0",
+    "@tvmjs/vm": "^1.0.0",
+    "async": "^3.2.6",
+    "ethers": "^5.4.2",
+    "ethjs-util": "^0.1.5",
+    "solc": "0.8.25",
+    "string-similarity": "^4.0.4",
+    "web3": "^1.5.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.4.5",
+    "@babel/plugin-transform-object-assign": "^7.2.0",
+    "@babel/preset-env": "^7.4.5",
+    "@babel/preset-es2015": "latest",
+    "@babel/preset-es2017": "latest",
+    "@babel/preset-stage-0": "^7.0.0",
+    "babelify": "^10.0.0",
+    "tape": "^4.6.0",
+    "tsconfig-paths": "^4.2.0"
+  },
+  "scripts": {
+    "test": "tape --require ts-node/register --require tsconfig-paths/register ./test/tests.ts --evm shanghai"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "author": "Tron IDE Team",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": ""
+  },
+  "homepage": "",
+  "typings": "src/index.d.ts",
+  "gitHead": "df7abe1c219e361a947031d620f4ae6e3786a4d7"
+}

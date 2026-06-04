@@ -1,0 +1,51 @@
+{
+  "name": "@remix-project/remix-astwalker",
+  "version": "0.0.35-tron.1",
+  "description": "Tool to walk through Solidity AST",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "./../../node_modules/.bin/nyc --reporter=lcov --require ts-node/register --require tsconfig-paths/register ./../../node_modules/.bin/tape ./tests/*.ts | ./../../node_modules/.bin/tap-spec; ./../../node_modules/.bin/nyc report ---reporter=text"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "keywords": [
+    "Solidity",
+    "AST",
+    "remix"
+  ],
+  "author": "Tron IDE Team",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": ""
+  },
+  "homepage": "",
+  "nyc": {
+    "include": [
+      "src/**/*.ts"
+    ],
+    "extension": [
+      ".ts"
+    ]
+  },
+  "dependencies": {
+    "@remix-project/remix-lib": "workspace:*",
+    "events": "^3.0.0"
+  },
+  "devDependencies": {
+    "tape": "^4.10.1",
+    "@types/tape": "^4.2.33",
+    "ts-node": "^8.10.2",
+    "tap-spec": "^5.0.0",
+    "typescript": "^3.9.10",
+    "nyc": "^13.3.0"
+  },
+  "typings": "src/index.d.ts",
+  "gitHead": "df7abe1c219e361a947031d620f4ae6e3786a4d7",
+  "types": "./src/index.d.ts"
+}

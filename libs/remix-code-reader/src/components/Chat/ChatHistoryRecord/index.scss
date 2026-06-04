@@ -1,0 +1,61 @@
+@import "../../../styles/variables.scss";
+
+.chat-history-menu-wrapper.ant-dropdown-menu{
+    padding: 0.625rem 10px;
+    background: var(--body-bg, #FFFFFF);
+    border: 1px solid var(--light, #DDE3EA);
+    box-shadow: 0px 20px 30px rgba(16, 16, 16, 0.16);
+    border-radius: 10px;
+    .ant-dropdown-menu-item{
+      padding: 0.625rem 10px;
+      font-size: .875rem;
+      line-height: 1.25rem;
+      color: var(--text, #101010);
+      transition: none;
+      &:nth-of-type(2) {
+        color: #D4726F;
+      }
+      &:not(.menu-item-divider):hover{
+        background: var(--secondary-bg, rgba(194, 201, 209, 0.14));
+        border-radius: 6px;
+        color: $color-red-default;
+      }
+    }
+}
+.chat-history-record-wrapper {
+  position: absolute;
+  right: 47px;
+  top: 10px;
+  z-index: 300;
+  .camera-icon {
+    background: var(--body-bg, rgb(240, 242, 245));
+    border: 1px solid var(--light, #DDE3EA);
+    border-radius: 6px;
+    color: var(--text, rgb(115, 120, 123));
+    height: 26px;
+    line-height: 21px;
+    padding: 3px;
+    text-align: center;
+    width: 30px;
+    cursor: pointer;
+    .tron-icon-camera{
+      font-size: 14px;
+    }
+    .camera-icon-active {
+      color: $color-red-default;
+    }
+    &:hover {
+      .tron-icon-camera {
+        color: $color-red-default !important;
+      }
+    }
+  }
+}
+
+@media (max-width:768px) {
+  .chat-history-record-wrapper {
+    position: absolute;
+    right: 16px;
+    top: 16px;
+  }
+}

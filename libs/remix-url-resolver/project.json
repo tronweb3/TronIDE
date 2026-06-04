@@ -1,0 +1,43 @@
+{
+  "name": "remix-url-resolver",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-url-resolver/src/",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-url-resolver/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-url-resolver/.eslintrc"
+      }
+    },
+    "test": {
+      "executor": "@nrwl/workspace:run-commands",
+      "options": {
+        "commands": [
+          "./../../node_modules/.bin/npm-run-all test"
+        ],
+        "cwd": "libs/remix-url-resolver"
+      }
+    },
+    "build": {
+      "executor": "@nrwl/js:tsc",
+      "options": {
+        "outputPath": "build/libs/remix-url-resolver",
+        "tsConfig": "libs/remix-url-resolver/tsconfig.lib.json",
+        "packageJson": "libs/remix-url-resolver/package.json",
+        "main": "libs/remix-url-resolver/src/index.ts",
+        "assets": [
+          "libs/remix-url-resolver/*.md"
+        ],
+        "sourceMap": false
+      }
+    }
+  }
+}

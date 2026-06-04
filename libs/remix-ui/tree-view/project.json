@@ -1,0 +1,29 @@
+{
+  "name": "remix-ui-tree-view",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/remix-ui/tree-view/src",
+  "projectType": "library",
+  "generators": {},
+  "targets": {
+    "lint": {
+      "executor": "@nrwl/linter:eslint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "libs/remix-ui/tree-view/**/*.{ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-ui/tree-view/.eslintrc"
+      }
+    },
+    "test": {
+      "executor": "@nrwl/jest:jest",
+      "options": {
+        "jestConfig": "libs/remix-ui/tree-view/jest.config.js",
+        "tsConfig": "libs/remix-ui/tree-view/tsconfig.spec.json",
+        "passWithNoTests": true
+      }
+    }
+  }
+}

@@ -1,0 +1,59 @@
+.chat-greet-item .dialogue-wrapper {
+  padding-top: 0 !important;
+}
+.chat-greet-item .dialogue-wrapper .dialogue {
+  margin-top: 0 !important;
+  overflow-x: hidden !important;
+}
+.chat-greet-item .dialogue-wrapper .hi-there {
+  margin-right: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 18px;
+  color: #c2c9d1;
+}
+.chat-greet-item .dialogue-wrapper .greet {
+  display: inline-block;
+  font-size: 16px;
+  animation: greetAnimate 0.8s linear infinite;
+  transform-origin: bottom right;
+}
+.chat-greet-item .dialogue-wrapper .ant-carousel {
+  margin-top: 12px;
+}
+.chat-greet-item .dialogue-wrapper .view {
+  margin-top: 5px;
+  font-size: 16px;
+  color: var(--ai-title);
+  font-weight: 600;
+}
+@keyframes greetAnimate {
+  0% {
+    transform: rotate(0);
+  }
+  25% {
+    transform: rotate(-10deg);
+  }
+  50% {
+    transform: rotate(0);
+  }
+  75% {
+    transform: rotate(10deg);
+  }
+  100% {
+    transform: rotate(0);
+  }
+}
+
+@media (max-width: 768px) {
+  .chat-greet-item {
+    margin-top: 6px !important;
+  }
+  .chat-greet-item .dialogue-wrapper .hi-there {
+    font-size: 14px;
+  }
+  .chat-greet-item .dialogue-wrapper .view {
+    font-size: 14px;
+    font-weight: 500;
+  }
+}

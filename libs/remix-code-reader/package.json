@@ -1,0 +1,17 @@
+{
+  "name": "remix-code-reader",
+  "version": "0.0.1",
+  "description": "remix-code-reader is a conversational tool that uses AI to analyze code.",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "sass src:src --no-source-map"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.0",
+    "@google/genai": "^1.30.0",
+    "highlight.js": "^11.9.0",
+    "highlightjs-solidity": "^2.0.6"
+  }
+}
