@@ -598,7 +598,24 @@ export const FileExplorer = (props: FileExplorerProps) => {
             )
             return
           }
-          const success = await filesProvider.set(name, event.target.result)
+          // Decode the upload as UTF-8 text. If the bytes are not valid UTF-8 the
+          // file is binary, so store it as a base64 data URL: the file storage and
+          // workspace backup are string-based, and reading binary as text (the old
+          // readAsText path) silently corrupted the bytes (finding WS-BIN-1).
+          const buffer = event.target.result as ArrayBuffer
+          let content: string
+          try {
+            content = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(buffer))
+          } catch (e) {
+            const bytes = new Uint8Array(buffer)
+            let binary = ''
+            const chunkSize = 0x8000
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+              binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize) as unknown as number[])
+            }
+            content = 'data:application/octet-stream;base64,' + btoa(binary)
+          }
+          const success = await filesProvider.set(name, content)
 
           if (!success) {
             return modal(
@@ -613,12 +630,12 @@ export const FileExplorer = (props: FileExplorerProps) => {
 
           if (
             config.get('currentFile') === name &&
-            editor.currentContent() !== event.target.result
+            editor.currentContent() !== content
           ) {
-            editor.setText(event.target.result)
+            editor.setText(content)
           }
         }
-        fileReader.readAsText(file)
+        fileReader.readAsArrayBuffer(file)
       }
       const name = `${parentFolder}/${file.name}`
 

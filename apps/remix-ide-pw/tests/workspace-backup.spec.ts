@@ -69,11 +69,10 @@ test.describe('Workspace backup integrity', () => {
     }
   })
 
-  // KNOWN FAILING (finding WS-BIN-1): file upload reads every file with
-  // FileReader.readAsText (file-explorer.tsx:621) and stores a UTF-8 string, so
-  // binary bytes are corrupted on import — the backup faithfully zips the already
-  // mangled content. Kept as a reproducing test until upload is made binary-safe.
-  test.fixme('TC-WS-004: binary files survive backup byte-for-byte (no text mangling)', async ({ page }) => {
+  // WS-BIN-1 fix: uploads are read as ArrayBuffer; binary (non-UTF-8) files are
+  // stored as base64 data URLs and the backup writes their real bytes, so they
+  // round-trip byte-for-byte instead of being corrupted by text re-encoding.
+  test('TC-WS-004: binary files survive backup byte-for-byte (no text mangling)', async ({ page }) => {
     // Bytes that a text round-trip would corrupt: full 0x00..0xFF plus high bytes.
     const binBuf = Buffer.concat([
       Buffer.from(Array.from({ length: 256 }, (_, i) => i)),

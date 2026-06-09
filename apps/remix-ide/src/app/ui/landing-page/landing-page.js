@@ -948,7 +948,12 @@ export class LandingPage extends ViewPlugin {
       const fileProviders = globalRegistry.get('fileproviders').api
       const zip = new JSZip()
       await fileProviders.browser.copyFolderToJson('/', ({ path, content }) => {
-        zip.file(`tronideBackup${path}`, content)
+        if (typeof content === 'string' && content.startsWith('data:') && content.includes(';base64,')) {
+          // binary files are stored as base64 data URLs; write the real bytes
+          zip.file(`tronideBackup${path}`, content.slice(content.indexOf(';base64,') + 8), { base64: true })
+        } else {
+          zip.file(`tronideBackup${path}`, content)
+        }
       })
       zip.generateAsync({ type: 'blob' }).then(function (blob) {
         saveAs(blob, 'tronideBackup.zip')
@@ -1163,7 +1168,12 @@ export class LandingPage extends ViewPlugin {
         const fileProviders = globalRegistry.get('fileproviders').api
         const zip = new JSZip()
         await fileProviders.browser.copyFolderToJson('/', ({ path, content }) => {
-          zip.file(`tronideBackup${path}`, content)
+          if (typeof content === 'string' && content.startsWith('data:') && content.includes(';base64,')) {
+            // binary files are stored as base64 data URLs; write the real bytes
+            zip.file(`tronideBackup${path}`, content.slice(content.indexOf(';base64,') + 8), { base64: true })
+          } else {
+            zip.file(`tronideBackup${path}`, content)
+          }
         })
         const blob = await zip.generateAsync({ type: 'blob' })
         saveAs(blob, 'tronideBackup.zip')
