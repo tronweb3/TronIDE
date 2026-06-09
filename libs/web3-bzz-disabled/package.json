@@ -1,0 +1,8 @@
+{
+  "name": "web3-bzz",
+  "version": "1.10.4-tronide.0",
+  "description": "TronIDE no-op replacement for the unused web3.bzz Swarm module",
+  "license": "LGPL-3.0",
+  "main": "index.js",
+  "types": "index.d.ts"
+}

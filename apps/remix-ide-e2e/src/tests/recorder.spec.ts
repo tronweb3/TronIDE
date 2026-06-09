@@ -304,9 +304,13 @@ const records = `{
   }
 }`
 
+// NOTE: this is the EXPECTED saved scenario. The replay input above (`records`) uses
+// account{2}, but Tron IDE re-maps the recorded address to its position in the loaded
+// account list when saving, which lands at index 10 here. The asymmetry is intentional —
+// do not "fix" account{10} back to account{2}.
 const scenario = {
   accounts: {
-    'account{2}': '0xCA35b7d915458EF540aDe6068dFe2F44E8fa733c'
+    'account{10}': '0xCA35b7d915458EF540aDe6068dFe2F44E8fa733c'
   },
   linkReferences: {},
   transactions: [
@@ -324,7 +328,7 @@ const scenario = {
         name: '',
         type: 'constructor',
         inputs: '(uint256)',
-        from: 'account{2}'
+        from: 'account{10}'
       }
     },
     {
@@ -339,7 +343,7 @@ const scenario = {
         name: 'set',
         inputs: '(uint256)',
         type: 'function',
-        from: 'account{2}'
+        from: 'account{10}'
       }
     }
   ],

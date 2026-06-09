@@ -170,14 +170,14 @@ class RecorderUI extends Plugin {
     promptCb(path, input => {
       var fileProvider = this.fileManager.fileProviderOf(path)
       if (!fileProvider) return
-      var newFile = path + '/' + input
+      var newFile = path === '/' ? input : path + '/' + input
       // helper.createNonClashingName(newFile, fileProvider, (error, newFile) => {
       //   if (error) return cb('Failed to create file. ' + newFile + ' ' + error)
       //   if (!fileProvider.set(newFile, txJSON)) return cb('Failed to create file ' + newFile)
       //   this.fileManager.open(newFile)
       // })
 
-      helper.createNonClashingName(newFile, fileProvider, (error, finalNewFile) => { // 重命名回调参数以区分
+      const saveFile = (error, finalNewFile) => {
         if (error) {
           console.error('Error from createNonClashingName:', error, 'Proposed file was:', newFile)
           return cb('Failed to create file. ' + newFile + ' ' + error)
@@ -189,7 +189,29 @@ class RecorderUI extends Plugin {
         // console.log('[SAVE SCENARIO] Path returned by createNonClashingName:', finalNewFile)
         // console.log('[SAVE SCENARIO] JSON content length:', txJSON.length)
 
-        const setResult = fileProvider.set(finalNewFile, txJSON)
+        let completed = false
+        let setCallbackCalled = false
+        const finish = (error) => {
+          if (completed) return
+          completed = true
+          return cb(error)
+        }
+        const openSavedScenario = () => {
+          try {
+            if (this.fileManager.openFileContent && this.fileManager.openFileContent(finalNewFile, txJSON)) return finish()
+            Promise.resolve(this.fileManager.open(finalNewFile))
+              .then(() => finish())
+              .catch((e) => finish('Failed to open file ' + finalNewFile + ' ' + (e.message || e)))
+          } catch (e) {
+            return finish('Failed to open file ' + finalNewFile + ' ' + (e.message || e))
+          }
+        }
+
+        const setResult = fileProvider.set(finalNewFile, txJSON, (setError) => {
+          setCallbackCalled = true
+          if (setError) return finish('Failed to create file ' + finalNewFile + ' ' + (setError.message || setError))
+          openSavedScenario()
+        })
         // console.log('[SAVE SCENARIO] Result of fileProvider.set():', setResult)
 
         if (!setResult) {
@@ -197,13 +219,43 @@ class RecorderUI extends Plugin {
           if (fileProvider.lastError) {
             console.error('[SAVE SCENARIO] fileProvider lastError:', fileProvider.lastError)
           }
-          return cb('Failed to create file ' + finalNewFile)
+          if (!setCallbackCalled) return finish('Failed to create file ' + finalNewFile)
         }
-        this.fileManager.open(finalNewFile)
-        cb() // 如果成功也需要回调，确保调用
-      })
+        if (setResult && typeof setResult.then === 'function') {
+          setResult.then(() => {
+            if (!setCallbackCalled) openSavedScenario()
+          }).catch((setError) => {
+            return finish('Failed to create file ' + finalNewFile + ' ' + (setError.message || setError))
+          })
+        } else if (!setCallbackCalled) {
+          openSavedScenario()
+        }
+      }
+
+      const finalNewFile = createNonClashingNameSync(newFile, fileProvider)
+      if (finalNewFile) return saveFile(null, finalNewFile)
+      helper.createNonClashingName(newFile, fileProvider, saveFile)
     })
   }
+}
+
+function createNonClashingNameSync (name, fileProvider) {
+  if (!fileProvider || fileProvider.type === 'localhost' || typeof fileProvider._exists !== 'function') return null
+  if (!name) name = 'Undefined'
+  var counter = ''
+  var ext = 'sol'
+  var reg = /(.*)\.([^.]+)/g
+  var split = reg.exec(name)
+  if (split) {
+    name = split[1]
+    ext = split[2]
+  }
+  var candidate = name + counter + '.' + ext
+  while (fileProvider._exists(candidate)) {
+    counter = (counter | 0) + 1
+    candidate = name + counter + '.' + ext
+  }
+  return candidate
 }
 
 module.exports = RecorderUI

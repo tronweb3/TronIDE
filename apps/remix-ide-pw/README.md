@@ -10,8 +10,10 @@ worth the extra dep.
 ## Layout
 
 - `playwright.config.ts` — single-browser (Chromium) config; auto-starts
-  `pnpm nx serve remix-ide --configuration=development` on port 8080
-  unless `TRONIDE_PW_REUSE_SERVER=1` is set.
+  `pnpm nx serve remix-ide --configuration=development` on port 18080
+  unless `TRONIDE_PW_REUSE_SERVER=1` is set. Use
+  `TRONIDE_PW_BASE_URL=http://localhost:<port>` when iterating against a
+  different external server.
 - `tests/*.spec.ts` — smoke specs. Today: home loads, GitHub token modal
   storage regression.
 
@@ -24,8 +26,8 @@ pnpm test:pw:install
 # Headless run — boots its own dev server, runs, tears down
 pnpm test:pw
 
-# Iterate against an already-running `pnpm serve`
-TRONIDE_PW_REUSE_SERVER=1 pnpm test:pw
+# Iterate against an already-running server
+TRONIDE_PW_REUSE_SERVER=1 TRONIDE_PW_BASE_URL=http://localhost:18080 pnpm test:pw
 
 # Headed / debug
 pnpm test:pw:headed

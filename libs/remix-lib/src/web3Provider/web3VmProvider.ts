@@ -43,13 +43,13 @@ function toQuantityHex (value) {
 }
 
 // The current @tvmjs generation passes byte payloads (calldata, return data,
-// code, logs, memory) as Uint8Array. ethereumjs-util's bufferToHex calls
-// value.toString('hex'), which only emits hex for a Buffer — a plain Uint8Array
-// yields a comma-joined decimal string and corrupts everything downstream
-// (e.g. memory-backed Solidity locals). Normalise to a Buffer first.
+// code, logs, memory) as Uint8Array. Normalise plain typed arrays to Buffer so
+// VM receipts, event logs, and debugger locals always receive canonical hex
+// instead of comma-joined decimal strings.
 function toBytesHex (value) {
   if (value === undefined || value === null) return '0x'
-  return bufferToHex(Buffer.isBuffer(value) ? value : Buffer.from(value))
+  if (Buffer.isBuffer(value)) return bufferToHex(value)
+  return bufferToHex(Buffer.from(value))
 }
 
 function toVmLogHex (value) {

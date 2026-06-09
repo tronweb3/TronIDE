@@ -23,10 +23,17 @@ const { Common, Mainnet } = require('@tvmjs/common')
 const { getOpcodesForHF, paramsTVM } = require('@tvmjs/tvm')
 
 export function nameOpCodes (raw, hardfork) {
+  // The disassembled bytecode is always TVM bytecode, so resolve opcodes under the
+  // 'tron' hardfork (the incoming `hardfork` can be undefined at construction time).
   // paramsTVM supplies the opcode gas schedule (stopGas, …); without it the
   // @tvmjs v7-generation Common.param() throws 'Missing parameter value for …'.
-  const common = new Common({ chain: Mainnet, hardfork, params: paramsTVM })
-  const opcodes = getOpcodesForHF(common)
+  const common = new Common({ chain: Mainnet, hardfork: 'tron', params: paramsTVM })
+  // @tvmjs getOpcodesForHF returns { opcodes: Map, opcodeMap, ... } — the actual
+  // opcode Map is `.opcodes`. Calling `.get()` on the wrapper threw for every byte,
+  // so every instruction decoded as INVALID, PUSH data was never skipped, and the
+  // pc→instruction-index map degenerated to identity — corrupting every source-map
+  // lookup (wrong/empty debugger locals, revert mapped to the wrong function).
+  const opcodes = getOpcodesForHF(common).opcodes
 
   let pushData = ''
   const codeMap = {}
@@ -68,7 +75,7 @@ type Opcode = {
  */
 export function parseCode (raw) {
   const common = new Common({ chain: Mainnet, hardfork: 'tron', params: paramsTVM })
-  const opcodes = getOpcodesForHF(common)
+  const opcodes = getOpcodesForHF(common).opcodes
 
   const code = []
   for (let i = 0; i < raw.length; i++) {

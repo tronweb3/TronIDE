@@ -615,32 +615,61 @@ class FileManager extends Plugin {
 
   openFile (file) {
     const _openFile = (file) => {
-      this.saveCurrentFile()
-      const provider = this.fileProviderOf(file)
-      if (!provider) return console.error(`no provider for ${file}`)
-      file = provider.getPathFromUrl(file) || file // in case an external URL is given as input, we resolve it to the right internal path
-      this._deps.config.set('currentFile', file)
-      this.openedFiles[file] = file
-      provider.get(file, (error, content) => {
-        if (error) {
-          console.log(error)
-        } else {
-          if (provider.isReadOnly(file)) {
-            this.editor.openReadOnly(file, content)
-          } else {
-            this.editor.open(file, content)
-          }
-          // TODO: Only keep `this.emit` (issue#2210)
-          this.emit('currentFileChanged', file)
-          this.events.emit('currentFileChanged', file)
+      return new Promise((resolve) => {
+        this.saveCurrentFile()
+        const provider = this.fileProviderOf(file)
+        if (!provider) {
+          console.error(`no provider for ${file}`)
+          return resolve(false)
         }
+        file = provider.getPathFromUrl(file) || file // in case an external URL is given as input, we resolve it to the right internal path
+        this._deps.config.set('currentFile', file)
+        this.openedFiles[file] = file
+        provider.get(file, (error, content) => {
+          if (error) {
+            console.log(error)
+            return resolve(false)
+          } else {
+            if (provider.isReadOnly(file)) {
+              this.editor.openReadOnly(file, content)
+            } else {
+              this.editor.open(file, content)
+            }
+            // TODO: Only keep `this.emit` (issue#2210)
+            this.emit('currentFileChanged', file)
+            this.events.emit('currentFileChanged', file)
+            return resolve(true)
+          }
+        })
       })
     }
     if (file) return _openFile(file)
     else {
       this.emit('noFileSelected')
       this.events.emit('noFileSelected')
+      return Promise.resolve(false)
     }
+  }
+
+  openFileContent (file, content) {
+    this.saveCurrentFile()
+    const provider = this.fileProviderOf(file)
+    if (!provider) {
+      console.error(`no provider for ${file}`)
+      return false
+    }
+    file = provider.getPathFromUrl(file) || file // in case an external URL is given as input, we resolve it to the right internal path
+    this._deps.config.set('currentFile', file)
+    this.openedFiles[file] = file
+    if (provider.isReadOnly(file)) {
+      this.editor.openReadOnly(file, content)
+    } else {
+      this.editor.open(file, content)
+    }
+    // TODO: Only keep `this.emit` (issue#2210)
+    this.emit('currentFileChanged', file)
+    this.events.emit('currentFileChanged', file)
+    return true
   }
 
   /**

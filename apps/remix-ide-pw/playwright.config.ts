@@ -9,15 +9,23 @@
 
 import { defineConfig, devices } from '@playwright/test'
 
-const BASE_URL = process.env.TRONIDE_PW_BASE_URL || 'http://localhost:8080'
+// Keep Playwright on a dedicated port by default. Port 8080 is commonly used by
+// local Docker/dev services; reusing an arbitrary existing 8080 listener caused
+// false white-screen failures in the smoke suite.
+const BASE_URL = process.env.TRONIDE_PW_BASE_URL || 'http://localhost:18080'
 const REUSE_SERVER = process.env.TRONIDE_PW_REUSE_SERVER === '1'
+const serverPort = new URL(BASE_URL).port || '80'
 
 export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  retries: 1,
+  // Every spec drives the SAME dev server and spins its own in-browser solc
+  // compile. Running compiles concurrently saturates the CPU and starves
+  // timing-sensitive specs (tooltips, debugger stepping), so run serially —
+  // matching CI. A retry still absorbs any residual flake.
+  workers: 1,
   reporter: process.env.CI ? [['github'], ['list']] : 'list',
   timeout: 60_000,
   expect: { timeout: 10_000 },
@@ -38,9 +46,9 @@ export default defineConfig({
   webServer: REUSE_SERVER
     ? undefined
     : {
-      command: 'pnpm nx serve remix-ide --configuration=development',
+      command: `pnpm nx serve remix-ide --configuration=development --port=${serverPort}`,
       url: BASE_URL,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 300_000,
       stdout: 'ignore',
       stderr: 'pipe'

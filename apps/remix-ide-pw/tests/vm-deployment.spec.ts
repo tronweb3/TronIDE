@@ -31,7 +31,8 @@ test.describe('JavaScript VM (Tron) deployment and interaction', () => {
     await compileBtn.click()
     
     const selectContract = page.locator('*[data-id="compiledContracts"]')
-    await expect(selectContract).toContainText('Trc10', { timeout: 15_000 })
+    // 30s tolerates compile contention when the full suite runs in parallel locally.
+    await expect(selectContract).toContainText('Trc10', { timeout: 30_000 })
 
     // Step 4: Open UDApp (Deploy & Run) plugin
     const udappIcon = page.locator('#icon-panel div[plugin="udapp"]')

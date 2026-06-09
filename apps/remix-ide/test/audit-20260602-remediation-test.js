@@ -8,8 +8,10 @@ var fs = require('fs')
 var path = require('path')
 var test = require('tape')
 
+var root = path.join(__dirname, '..', '..', '..')
+
 function readRoot (relativePath) {
-  return fs.readFileSync(path.join(__dirname, '..', '..', '..', relativePath), 'utf8')
+  return fs.readFileSync(path.join(root, relativePath), 'utf8')
 }
 
 function readIdeSource (relativePath) {
@@ -108,5 +110,69 @@ test('Maintained TRON execution code reduces type-suppression escapes', function
   t.notOk(/@ts-ignore/.test(txRunner), 'txRunnerWeb3 no longer suppresses _jsonInterfaceMethodToString type checking')
   t.notOk(/as any/.test(compilerWorker), 'compiler worker importScripts path uses a precise worker scope type')
   t.notOk(/as any/.test(tronAnalyzer), 'TRON analyzer config assignment no longer casts literal values to any')
+  t.end()
+})
+
+test('Production dependency audit overrides are explicit and release-scoped', function (t) {
+  const rootPackage = JSON.parse(readRoot('package.json'))
+  const overrides = rootPackage.pnpm && rootPackage.pnpm.overrides ? rootPackage.pnpm.overrides : {}
+
+  t.notOk(Object.prototype.hasOwnProperty.call(rootPackage.dependencies, 'eth-lib'), 'unused eth-lib direct production dependency is removed')
+  t.equal(overrides['web3-bzz'], 'link:libs/web3-bzz-disabled', 'unused web3.bzz Swarm module is replaced by a local disabled adapter')
+  t.equal(overrides['web3-eth-accounts>uuid'], '11.1.1', 'web3 account UUID generation uses a maintained uuid release')
+  t.equal(overrides['web3-core-subscriptions'], 'link:libs/web3-core-subscriptions-patched', 'web3 subscription prototype-pollution advisory is patched locally')
+  t.equal(overrides['elliptic'], 'link:libs/elliptic-patched', 'elliptic RFC6979 nonce advisory is patched locally')
+
+  const bzzPackage = JSON.parse(readRoot('libs/web3-bzz-disabled/package.json'))
+  const bzzSource = readRoot('libs/web3-bzz-disabled/index.js')
+  t.equal(bzzPackage.name, 'web3-bzz', 'disabled Swarm adapter keeps the original package name for web3 compatibility')
+  t.ok(/web3\.bzz is disabled in TronIDE/.test(bzzSource), 'disabled Swarm adapter fails closed with an explicit message')
+  t.end()
+})
+
+test('Patched web3-core-subscriptions rejects prototype-polluting names', function (t) {
+  const Subscriptions = require(path.join(root, 'libs/web3-core-subscriptions-patched/lib')).subscriptions
+  const before = Object.prototype.tronideAuditPolluted
+  const unsafeNames = [
+    '__proto__.tronideAuditPolluted',
+    'prototype.tronideAuditPolluted',
+    'constructor.tronideAuditPolluted',
+    'eth.__proto__',
+    'eth.prototype',
+    'eth.constructor'
+  ]
+
+  unsafeNames.forEach(function (name) {
+    const subscriptions = new Subscriptions({ name, type: 'eth', subscriptions: {} })
+    t.throws(function () {
+      subscriptions.attachToObject({})
+    }, /Invalid subscription name/, `${name} is rejected before object assignment`)
+  })
+
+  t.equal(Object.prototype.tronideAuditPolluted, before, 'unsafe subscription names do not mutate Object.prototype')
+  delete Object.prototype.tronideAuditPolluted
+
+  const target = {}
+  new Subscriptions({ name: 'eth.subscribe', type: 'eth', subscriptions: {} }).attachToObject(target)
+  t.equal(typeof target.eth.subscribe, 'function', 'safe nested subscription names still attach normally')
+  t.end()
+})
+
+test('Patched elliptic keeps RFC6979 nonce candidates at curve-order byte length', function (t) {
+  const ellipticSource = readRoot('libs/elliptic-patched/lib/elliptic/ec/index.js')
+  const ellipticPackage = JSON.parse(readRoot('libs/elliptic-patched/package.json'))
+
+  t.equal(ellipticPackage.name, 'elliptic', 'patched elliptic adapter keeps the original package name')
+  t.equal(ellipticPackage.version, '6.7.0-tronide.0', 'patched elliptic version is outside the vulnerable advisory range')
+  t.ok(/CVE-2025-14505/.test(ellipticSource), 'elliptic patch documents the covered advisory')
+  t.ok(/_truncateToN\(k,\s*true,\s*bytes\s*\*\s*8\)/.test(ellipticSource), 'RFC6979 k candidates are truncated with the full curve-order byte length')
+  t.notOk(/_truncateToN\(k,\s*true\);/.test(ellipticSource), 'elliptic no longer infers k bit length from a leading-zero-stripped BN')
+
+  const elliptic = require(path.join(root, 'libs/elliptic-patched'))
+  const ec = new elliptic.ec('secp256k1')
+  const privateKey = Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex')
+  const message = Buffer.from('0101010101010101010101010101010101010101010101010101010101010101', 'hex')
+  const signature = ec.sign(message, privateKey, { canonical: true })
+  t.ok(ec.verify(message, signature, ec.keyFromPrivate(privateKey).getPublic()), 'patched elliptic still signs and verifies secp256k1 messages')
   t.end()
 })

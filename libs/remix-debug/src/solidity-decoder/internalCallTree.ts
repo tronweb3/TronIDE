@@ -19,6 +19,7 @@
 
 'use strict'
 import { AstWalker } from '@remix-project/remix-astwalker'
+import { ethers } from 'ethers'
 import { util } from '@remix-project/remix-lib'
 import { SourceLocationTracker } from '../source/sourceLocationTracker'
 import { EventManager } from '../eventManager'
@@ -181,8 +182,9 @@ export class InternalCallTree {
   }
 }
 
-async function buildTree (tree, step, scopeId, isExternalCall, isCreation) {
+async function buildTree (tree, step, scopeId, isExternalCall, isCreation, entryFunctionDefinition = null) {
   let subScope = 1
+  let pendingEntryFunctionDefinition = entryFunctionDefinition
   tree.scopeStarts[step] = scopeId
   tree.scopes[scopeId] = { firstStep: step, locals: {}, isCreation }
 
@@ -225,7 +227,10 @@ async function buildTree (tree, step, scopeId, isExternalCall, isCreation) {
     // we are checking if we are jumping in a new CALL or in an internal function
     if (isCallInstrn || sourceLocation.jump === 'i') {
       try {
-        const externalCallResult = await buildTree(tree, step + 1, scopeId === '' ? subScope.toString() : scopeId + '.' + subScope, isCallInstrn, isCreateInstrn)
+        const childEntryFunctionDefinition = !isCallInstrn && tree.includeLocalVariables
+          ? await resolveEntryFunctionDefinition(tree, step, sourceLocation, scopeId)
+          : null
+        const externalCallResult = await buildTree(tree, step + 1, scopeId === '' ? subScope.toString() : scopeId + '.' + subScope, isCallInstrn, isCreateInstrn, childEntryFunctionDefinition)
         if (externalCallResult.error) {
           return { outStep: step, error: 'InternalCallTree - ' + externalCallResult.error }
         } else {
@@ -243,7 +248,8 @@ async function buildTree (tree, step, scopeId, isExternalCall, isCreation) {
       // if not, we are in the current scope.
       // We check in `includeVariableDeclaration` if there is a new local variable in scope for this specific `step`
       if (tree.includeLocalVariables) {
-        await includeVariableDeclaration(tree, step, sourceLocation, scopeId, newLocation, previousSourceLocation)
+        const entryRegistered = await includeVariableDeclaration(tree, step, sourceLocation, scopeId, newLocation, previousSourceLocation, pendingEntryFunctionDefinition)
+        if (entryRegistered) pendingEntryFunctionDefinition = null
       }
       previousSourceLocation = sourceLocation
       step++
@@ -264,7 +270,7 @@ function getGeneratedSources (tree, scopeId, contractObj) {
   return null
 }
 
-async function includeVariableDeclaration (tree, step, sourceLocation, scopeId, newLocation, previousSourceLocation) {
+async function includeVariableDeclaration (tree, step, sourceLocation, scopeId, newLocation, previousSourceLocation, entryFunctionDefinition = null) {
   const contractObj = await tree.solidityProxy.contractObjectAt(step)
   let states = null
   const generatedSources = getGeneratedSources(tree, scopeId, contractObj)
@@ -300,13 +306,13 @@ async function includeVariableDeclaration (tree, step, sourceLocation, scopeId, 
 
   // we check here if we are at the beginning inside a new function.
   // if that is the case, we have to add to locals tree the inputs and output params
-  const functionDefinition = resolveFunctionDefinition(tree, previousSourceLocation, generatedSources)
-  if (!functionDefinition) return
+  const functionDefinition = entryFunctionDefinition || resolveFunctionDefinition(tree, previousSourceLocation, generatedSources)
+  if (!functionDefinition || tree.functionDefinitionsByScope[scopeId]) return false
 
   const previousIsJumpDest2 = isJumpDestInstruction(tree.traceManager.trace[step - 2])
   const previousIsJumpDest1 = isJumpDestInstruction(tree.traceManager.trace[step - 1])
   const isConstructor = functionDefinition.kind === 'constructor'
-  if (newLocation && (previousIsJumpDest1 || previousIsJumpDest2 || isConstructor)) {
+  if (entryFunctionDefinition || (newLocation && (previousIsJumpDest1 || previousIsJumpDest2 || isConstructor))) {
     tree.functionCallStack.push(step)
     const functionDefinitionAndInputs = { functionDefinition, inputs: [] }
     // means: the previous location was a function definition && JUMPDEST
@@ -339,6 +345,23 @@ async function includeVariableDeclaration (tree, step, sourceLocation, scopeId, 
     }
 
     tree.functionDefinitionsByScope[scopeId] = functionDefinitionAndInputs
+    return true
+  }
+  return false
+}
+
+async function resolveEntryFunctionDefinition (tree, step, sourceLocation, scopeId) {
+  try {
+    const contractObj = await tree.solidityProxy.contractObjectAt(step)
+    const generatedSources = getGeneratedSources(tree, scopeId, contractObj)
+    const functionDefinition = resolveFunctionDefinition(tree, sourceLocation, generatedSources)
+    if (functionDefinition && functionDefinition.kind !== 'constructor') return functionDefinition
+    return scopeId === '' && isJumpInstruction(tree.traceManager.trace[step])
+      ? resolveFunctionDefinitionFromCalldata(tree, step, sourceLocation, generatedSources, contractObj)
+      : functionDefinition
+  } catch (error) {
+    console.log(error)
+    return null
   }
 }
 
@@ -359,6 +382,12 @@ function resolveVariableDeclaration (tree, sourceLocation, generatedSources) {
 // this extract all the function definition for a given ast and file
 // and keep this in a cache
 function resolveFunctionDefinition (tree, sourceLocation, generatedSources) {
+  const functionDefinitions = functionDefinitionsForFile(tree, sourceLocation, generatedSources)
+  if (!functionDefinitions) return null
+  return functionDefinitions[sourceLocation.start + ':' + sourceLocation.length + ':' + sourceLocation.file]
+}
+
+function functionDefinitionsForFile (tree, sourceLocation, generatedSources) {
   if (!tree.functionDefinitionByFile[sourceLocation.file]) {
     const ast = tree.solidityProxy.ast(sourceLocation, generatedSources)
     if (ast) {
@@ -367,13 +396,64 @@ function resolveFunctionDefinition (tree, sourceLocation, generatedSources) {
       return null
     }
   }
-  return tree.functionDefinitionByFile[sourceLocation.file][sourceLocation.start + ':' + sourceLocation.length + ':' + sourceLocation.file]
+  return tree.functionDefinitionByFile[sourceLocation.file]
+}
+
+function resolveFunctionDefinitionFromCalldata (tree, step, sourceLocation, generatedSources, contractObj) {
+  if (!contractObj || !contractObj.contract || !contractObj.contract.abi) return null
+  const calldata = getCalldataAt(tree, step)
+  if (!calldata || calldata.length < 10) return null
+  const selector = calldata.substr(0, 10).toLowerCase()
+  const functionAbi = resolveAbiFunctionFromSelector(contractObj.contract.abi, selector)
+  if (!functionAbi) return null
+  const functionDefinitions = functionDefinitionsForFile(tree, sourceLocation, generatedSources)
+  if (!functionDefinitions) return null
+  return Object.keys(functionDefinitions)
+    .map(key => functionDefinitions[key])
+    .find((functionDefinition) => {
+      if (!functionDefinition || functionDefinition.nodeType !== 'FunctionDefinition') return false
+      if (functionDefinition.kind === 'constructor') return false
+      if (functionDefinition.functionSelector) return functionDefinition.functionSelector.toLowerCase() === selector.replace('0x', '')
+      const inputs = functionDefinition.parameters && functionDefinition.parameters.parameters
+      return functionDefinition.name === functionAbi.name &&
+        inputs &&
+        inputs.length === (functionAbi.inputs || []).length
+    }) || null
+}
+
+function isJumpInstruction (step) {
+  return step && (step.op === 'JUMP' || step.op === 'JUMPI')
+}
+
+function getCalldataAt (tree, step) {
+  try {
+    const calldata = tree.traceManager.getCallDataAt(step)
+    return (calldata && calldata[0]) || (tree.traceManager.tx && tree.traceManager.tx.input)
+  } catch (error) {
+    return tree.traceManager.tx && tree.traceManager.tx.input
+  }
+}
+
+function resolveAbiFunctionFromSelector (abi, selector) {
+  for (const abiItem of abi) {
+    if (!abiItem || abiItem.type !== 'function') continue
+    try {
+      const iface = new ethers.utils.Interface([abiItem])
+      if (iface.getSighash(abiItem.name).toLowerCase() === selector) return abiItem
+    } catch (error) {
+      console.log(error)
+    }
+  }
+  return null
 }
 
 function extractVariableDeclarations (ast, astWalker) {
   const ret = {}
   astWalker.walkFull(ast, (node) => {
-    if (node.nodeType === 'VariableDeclaration' || node.nodeType === 'YulVariableDeclaration') {
+    // Intentionally divergent from upstream Remix: state variables are excluded from the
+    // local-variable map. They don't live on the stack, so including them yields a bogus
+    // stackDepth and corrupts solidityLocals. Keep this filter when rebasing on upstream.
+    if ((node.nodeType === 'VariableDeclaration' && !node.stateVariable) || node.nodeType === 'YulVariableDeclaration') {
       ret[node.src] = [node]
     }
     const hasChild = node.initialValue && (node.nodeType === 'VariableDeclarationStatement' || node.nodeType === 'YulVariableDeclarationStatement')
