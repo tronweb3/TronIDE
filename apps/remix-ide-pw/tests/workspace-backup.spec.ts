@@ -42,6 +42,44 @@ async function exportBackupZip (page: Page, destPath: string) {
   expect(fs.existsSync(destPath)).toBe(true)
 }
 
+async function restoreBackupZip (page: Page, zipPath: string, expectInLog: string) {
+  await page.locator('#icon-panel div[plugin="pluginManager"]').click()
+  const search = page.locator('[data-id="pluginManagerComponentSearchInput"]')
+  await search.waitFor({ state: 'visible', timeout: 5000 })
+  await search.fill('restorebackupzip')
+  const activate = page.locator('[data-id="pluginManagerComponentActivateButtonrestorebackupzip"]')
+  await activate.waitFor({ state: 'visible', timeout: 5000 })
+  await activate.click()
+
+  const iframeEl = page.locator('iframe#plugin-restorebackupzip')
+  await iframeEl.waitFor({ state: 'visible', timeout: 10_000 })
+  const iframe = page.frameLocator('iframe#plugin-restorebackupzip')
+  await iframe.locator('#file-input').setInputFiles(zipPath)
+  const importBtn = iframe.locator('.importfile')
+  await importBtn.waitFor({ state: 'visible', timeout: 10_000 })
+
+  // Accept permission/confirm modals in the parent while importing.
+  let importing = true
+  const clicker = (async () => {
+    while (importing) {
+      try {
+        const remember = page.locator('#remember')
+        if (await remember.isVisible() && !await remember.isChecked()) await remember.click()
+        const ok = page.locator('#modal-footer-ok')
+        if (await ok.isVisible()) await ok.click()
+      } catch (e) { /* ignore */ }
+      await page.waitForTimeout(300)
+    }
+  })()
+  await importBtn.click()
+  try {
+    await expect(iframe.locator('#log-entry')).toContainText(expectInLog, { timeout: 25_000 })
+  } finally {
+    importing = false
+    await clicker
+  }
+}
+
 test.beforeAll(() => fs.mkdirSync(tmpDir, { recursive: true }))
 
 test.describe('Workspace backup integrity', () => {
@@ -98,6 +136,55 @@ test.describe('Workspace backup integrity', () => {
       expect(actualSha).toBe(expectedSha)
     } finally {
       for (const p of [srcPath, zipPath]) if (fs.existsSync(p)) fs.unlinkSync(p)
+    }
+  })
+
+  // WS-BIN-1 restore side: the restore plugin reads each zip entry as bytes and
+  // re-stores binary as a base64 data URL. The restore OVERWRITES the workspace
+  // file, so backing up again and checking the bytes proves the restore read the
+  // binary correctly (a corrupted restore would taint the second backup).
+  test('TC-WS-004b: binary survives the backup -> restore round-trip', async ({ page }) => {
+    page.on('dialog', (d) => d.accept().catch(() => {}))
+    const binBuf = Buffer.concat([
+      Buffer.from(Array.from({ length: 256 }, (_, i) => i)),
+      Buffer.from([0xff, 0xfe, 0x00, 0x80, 0xc0, 0xe2, 0x28, 0xa1])
+    ])
+    const expectedSha = crypto.createHash('sha256').update(binBuf).digest('hex')
+    const srcPath = path.join(tmpDir, 'asset.bin')
+    fs.writeFileSync(srcPath, binBuf)
+    const zip1 = path.join(tmpDir, 'backup_rt_1.zip')
+
+    try {
+      await createWorkspace(page, 'ws-bin-rt')
+      await uploadFile(page, srcPath)
+      await expect(page.locator('[data-id="treeViewLitreeViewItemasset.bin"]')).toBeVisible({ timeout: 15_000 })
+      await exportBackupZip(page, zip1)
+
+      // Restore the backup; the restore reads asset.bin from the zip and
+      // overwrites the workspace copy with whatever it read.
+      await restoreBackupZip(page, zip1, 'ws-bin-rt/asset.bin')
+
+      // Open the restore-overwritten file and confirm its stored content is the
+      // base64 data URL whose payload decodes back to the original bytes.
+      await page.locator('#icon-panel div[plugin="filePanel"]').click()
+      const select = page.locator('select[data-id="workspacesSelect"]')
+      await select.waitFor({ state: 'visible', timeout: 10_000 })
+      await select.selectOption('ws-bin-rt')
+      await expect(select).toHaveValue('ws-bin-rt', { timeout: 10_000 })
+      const fileItem = page.locator('[data-id="treeViewLitreeViewItemasset.bin"]')
+      await expect(fileItem).toBeVisible({ timeout: 15_000 })
+      await fileItem.click()
+      await page.waitForTimeout(1000)
+
+      const stored = await page.evaluate(() => {
+        const el = document.getElementById('input') as any
+        return el && el.editor ? el.editor.session.getValue() : ''
+      })
+      expect(stored.startsWith('data:'), 'restored binary stored as data URL').toBeTruthy()
+      const b64 = stored.slice(stored.indexOf(';base64,') + 8)
+      expect(crypto.createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex')).toBe(expectedSha)
+    } finally {
+      for (const p of [srcPath, zip1]) if (fs.existsSync(p)) fs.unlinkSync(p)
     }
   })
 })
