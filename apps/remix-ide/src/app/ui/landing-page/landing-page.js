@@ -2069,6 +2069,22 @@ export class LandingPage extends ViewPlugin {
       }
     })
 
+    // Keep the "Most used plugins" cards in sync with the real plugin state.
+    // Opening a plugin (e.g. "Open Verification") activates it via a path that did
+    // not refresh the card, so the toggle stayed at "Activate"; clicking it then
+    // deactivated the now-active plugin and left an empty side panel. Refresh the
+    // cards whenever any plugin is activated/deactivated so the toggle is correct.
+    if (this.appManager && this.appManager.event && this.appManager.event.on) {
+      const refreshPluginCards = () => {
+        if (!this._landingActive) return
+        refreshHomeSection('landingMostUsedPlugins', renderMostUsedPlugins)
+      }
+      ;['activate', 'deactivate'].forEach((eventName) => {
+        this.appManager.event.on(eventName, refreshPluginCards)
+        this._fileEventSubscriptions.push({ emitter: this.appManager.event, eventName, handler: refreshPluginCards })
+      })
+    }
+
     if (this.on) {
       const handleWorkspaceChanged = () => {
         scheduleWorkspaceStatusRefresh()
