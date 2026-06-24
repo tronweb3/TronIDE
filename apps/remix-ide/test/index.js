@@ -27,17 +27,12 @@ require('./playwright-config-test')
 require('./query-params-test')
 require('./search/workspace-search-test')
 require('./timer-listener-teardown-test')
-// Internal security-audit remediation suites. These files are stripped from
-// the public (open-source) build, so require them only when present.
-const fs = require('fs')
-const path = require('path')
-;[
-  './audit-20260520-remediation-test',
-  './audit-20260527-remediation-test',
-  './audit-20260602-remediation-test',
-  './audit-20260622-remediation-test'
-].forEach((name) => {
-  if (fs.existsSync(path.join(__dirname, `${name}.js`))) require(name)
-})
+// Internal remediation suites are stripped from the public (open-source)
+// build; load any that ship with this checkout.
+require('fs')
+  .readdirSync(__dirname)
+  .filter((f) => /^audit-.*-remediation-test\.js$/.test(f))
+  .sort()
+  .forEach((f) => require(`./${f}`))
 
 require('./remix-220-home-parity-test')
