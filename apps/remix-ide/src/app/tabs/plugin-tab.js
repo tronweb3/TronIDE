@@ -37,16 +37,34 @@ class PluginTab {
   constructor (json) {
     this.el = null
     this.data = { json }
+    // Validate the plugin URL as soon as the tab is created (the URL is already
+    // known here), not only when render() is first called. This surfaces an
+    // illegal URL up front instead of after the user has opened/activated the
+    // tab and is staring at the rendered warning. render() keeps its own check
+    // below as a defence-in-depth fallback; this is purely an earlier signal.
+    this.safeSrc = safePluginUrl(json && json.url)
+    if (!this.safeSrc) {
+      console.warn(
+        `Refusing to load plugin "${(json && json.name) || ''}": URL must be http(s). ` +
+        `Got: ${(json && json.url) || '(none)'}`
+      )
+    }
   }
 
   render () {
     if (this.el) return this.el
 
-    const src = safePluginUrl(this.data.json.url)
+    // Reuse the result computed in the constructor; recompute defensively if a
+    // PluginTab were ever constructed without going through it. The validation
+    // (safePluginUrl) and the refusal behaviour are intentionally unchanged.
+    const src = this.safeSrc !== undefined ? this.safeSrc : safePluginUrl(this.data.json.url)
     if (!src) {
+      const rawUrl = (this.data.json && this.data.json.url) || '(none)'
       this.el = yo`
         <div class="${css.pluginTabView}" id="pluginView">
-          <p class="text-warning">Refusing to load plugin: URL must be http(s).</p>
+          <p class="text-warning">
+            Refusing to load plugin: URL must be http(s). Got: ${rawUrl}
+          </p>
         </div>`
       return this.el
     }

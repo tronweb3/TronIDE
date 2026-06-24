@@ -44,9 +44,12 @@ const contextOptionsData = [
 
 const aiModelVendor={
   'Anthropic':{
-    defaultValue:'claude-opus-4-7',
+    defaultValue:'claude-opus-4-8',
     findMyAPIKeyUrl:'https://console.anthropic.com/settings/keys',
     models:[{
+      value:'claude-opus-4-8',
+      label:'Claude Opus 4.8',
+    },{
       value:'claude-opus-4-7',
       label:'Claude Opus 4.7',
     },{
@@ -61,9 +64,15 @@ const aiModelVendor={
     }]
   },
   'OpenAI':{
-    defaultValue:'gpt-5',
+    defaultValue:'gpt-5.5',
     findMyAPIKeyUrl:'https://help.openai.com/en/articles/4936850-where-do-i-find-my-secret-api-key',
     models:[{
+      value:'gpt-5.5',
+      label:'GPT-5.5',
+    },{
+      value:'gpt-5.4',
+      label:'GPT-5.4',
+    },{
       value:'gpt-5',
       label:'GPT-5',
     },{
@@ -90,6 +99,10 @@ const aiModelVendor={
     defaultValue:'',
     findMyAPIKeyUrl:'https://aistudio.google.com/app/api-keys',
     models:[{
+      // TODO: confirm the real Gemini 3.0 Pro model id against Google GenAI docs once published
+      value:'gemini-3.0-pro',
+      label:'Gemini 3.0 Pro',
+    },{
       value:'gemini-2.5-pro',
       label:'Gemini 2.5 Pro',
     },{
@@ -134,6 +147,10 @@ const aiModelVendor={
     defaultValue:'',
     findMyAPIKeyUrl:'https://www.alibabacloud.com/help/zh/model-studio/first-api-call-to-qwen#5058e161041ps',
     models:[{
+      // TODO: confirm the real Qwen 3.7 model id against DashScope docs once published
+      value:'qwen3.7',
+      label:'Qwen 3.7',
+    },{
       value:'qwen3-max',
       label:'Qwen3 Max',
     },{
@@ -147,6 +164,8 @@ const aiModelVendor={
 }
 
 export const aiModelName={
+  'gpt-5.5':'GPT-5.5',
+  'gpt-5.4':'GPT-5.4',
   'gpt-5':'GPT-5',
   'gpt-5-mini':'GPT-5 mini',
   'gpt-4.1':'GPT-4.1',
@@ -154,10 +173,12 @@ export const aiModelName={
   'gpt-4o':'GPT-4o',
   'gpt-4':'GPT-4',
   'gpt-3.5-turbo':'GPT-3.5',
+  'claude-opus-4-8':'Claude Opus 4.8',
   'claude-opus-4-7':'Claude Opus 4.7',
   'claude-sonnet-4-6':'Claude Sonnet 4.6',
   'claude-sonnet-4-5':'Claude Sonnet 4.5',
   'claude-haiku-4-5-20251001':'Claude Haiku 4.5',
+  'gemini-3.0-pro':'Gemini 3.0 Pro',
   'gemini-2.5-pro':'Gemini 2.5 Pro',
   'gemini-2.5-flash':'Gemini 2.5 Flash',
   'gemini-2.5-flash-lite':'Gemini 2.5 Flash Lite',
@@ -167,6 +188,7 @@ export const aiModelName={
   'grok-code-fast-1':'Grok Code Fast 1',
   // 'deepseek-reasoner':'DeepSeek R1',
   // 'deepseek-chat':'DeepSeek V3',
+  'qwen3.7':'Qwen 3.7',
   'qwen3-max':'Qwen3 Max',
   'qwen3-coder-plus':'Qwen3 Coder Plus',
   'qwen3-coder-flash':'Qwen3 Coder Flash',

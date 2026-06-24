@@ -33,7 +33,10 @@ export const WALLET_ERROR_MESSAGES = {
   [WALLET_ERROR_CODES.WALLET_CONNECTION_REJECTED]: 'Connection request was rejected.',
   [WALLET_ERROR_CODES.USER_REJECTED]: 'Confirmation declined by user.',
   [WALLET_ERROR_CODES.WALLET_LOCKED]: 'Please unlock TronLink and try again.',
-  [WALLET_ERROR_CODES.WALLET_UNAUTHORIZED]: 'Please connect TronLink to this site.',
+  // A locked wallet and an unauthorized site are indistinguishable from the
+  // page (TronLink reports ready=false with no address in both cases), so
+  // this message covers both states (TC-WAL-002/003).
+  [WALLET_ERROR_CODES.WALLET_UNAUTHORIZED]: 'Please unlock TronLink and approve the connection to this site.',
   [WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT]: 'Wallet request timed out. Please try again.',
   [WALLET_ERROR_CODES.WALLET_UNAVAILABLE]: 'TronLink is not available in this browser.',
   [WALLET_ERROR_CODES.WALLET_ACCOUNT_CHANGED]: 'Wallet account changed. Please reconnect TronLink.',
@@ -56,7 +59,35 @@ export interface NormalizedWalletError {
   originalError?: unknown
 }
 
+// TronLink's tron_requestAccounts never settles when the bridge is dead — the
+// extension was disabled or removed but window.tronLink / window.tronWeb still
+// linger on the page until a reload. Without a bound the request hangs forever,
+// so the module-level pendingConnectionRequest guard below never clears and
+// every later caller (askPermission → connectInjectedTronWeb sign/deploy) is
+// handed the same stuck promise. Cap the wait so the guard always releases and
+// the connection can be retried (mirrors top-header's requestTronAccountsWithTimeout).
+const WALLET_CONNECT_TIMEOUT_MS = 60000
+
 let pendingConnectionRequest: Promise<string[]> | null = null
+
+function requestAccountsWithTimeout (tronLink: any, scope: any, timeoutMs = WALLET_CONNECT_TIMEOUT_MS): Promise<unknown> {
+  const setTimer = (scope && scope.setTimeout) || (typeof setTimeout !== 'undefined' ? setTimeout : undefined)
+  const clearTimer = (scope && scope.clearTimeout) || (typeof clearTimeout !== 'undefined' ? clearTimeout : undefined)
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const timer = setTimer
+      ? setTimer(() => {
+        if (settled) return
+        settled = true
+        reject(createWalletError(WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT))
+      }, timeoutMs)
+      : undefined
+    Promise.resolve()
+      .then(() => tronLink.request({ method: 'tron_requestAccounts' }))
+      .then((value: unknown) => { if (settled) return; settled = true; if (clearTimer && timer !== undefined) clearTimer(timer); resolve(value) })
+      .catch((error: unknown) => { if (settled) return; settled = true; if (clearTimer && timer !== undefined) clearTimer(timer); reject(error) })
+  })
+}
 
 export function getInjectedWalletProvider (scope: any = typeof window !== 'undefined' ? window : undefined) {
   if (!scope) return { tronLink: null, tronWeb: null }
@@ -93,7 +124,7 @@ export async function requestInjectedWalletAccounts (scope: any = typeof window 
   pendingConnectionRequest = Promise.resolve()
     .then(async () => {
       if (!tronLink.request) throw createWalletError(WALLET_ERROR_CODES.WALLET_UNAVAILABLE)
-      await tronLink.request({ method: 'tron_requestAccounts' })
+      await requestAccountsWithTimeout(tronLink, scope)
       const connectedAccount = tronWeb.defaultAddress && tronWeb.defaultAddress.base58
       if (!connectedAccount) throw createWalletError(WALLET_ERROR_CODES.WALLET_UNAUTHORIZED)
       return [connectedAccount]
@@ -115,6 +146,25 @@ export function createWalletError (code: WalletErrorCode, originalError?: unknow
   error.code = finalCode
   error.originalError = originalError
   return error
+}
+
+// Bound an injected-provider call that can hang forever against a zombie bridge
+// (the extension was disabled/removed but window.tronWeb lingers, so the signing
+// popup never answers and the await never settles). A hang rejects with a wallet
+// timeout error — which the caller surfaces, clearing any stuck "pending…" /
+// "Signing…" / blank-balance state so the user can retry — while a normal, fast
+// call passes straight through. Timeouts are generous so a real slow op (an
+// interactive signature, a congested node) is never cut short; only a genuinely
+// dead bridge trips them. Shared by the injected provider and txRunner.
+export const WALLET_SIGN_TIMEOUT_MS = 120000 // interactive: the user approves in the popup
+export const WALLET_NODE_TIMEOUT_MS = 90000 // non-interactive node calls (balance, build, broadcast)
+
+export function withWalletTimeout (operation: Promise<any>, timeoutMs: number, timeoutCode: WalletErrorCode): Promise<any> {
+  let timer: ReturnType<typeof setTimeout>
+  const timeout = new Promise<any>((resolve, reject) => {
+    timer = setTimeout(() => reject(createWalletError(timeoutCode)), timeoutMs)
+  })
+  return Promise.race([operation, timeout]).finally(() => clearTimeout(timer))
 }
 
 export function normalizeWalletError (errorLike: any): NormalizedWalletError {

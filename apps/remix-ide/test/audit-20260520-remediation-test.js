@@ -103,8 +103,15 @@ test('production ws advisory is pinned to patched ws version', function (t) {
   const packageJson = JSON.parse(readRoot('package.json'))
   const lockfile = readRoot('pnpm-lock.yaml')
 
-  t.equal(packageJson.pnpm.overrides.ws, '8.20.1', 'pnpm override pins ws to patched version')
-  t.ok(/ws@8\.20\.1:/.test(lockfile), 'lockfile contains patched ws package entry')
-  t.notOk(/ws@8\.17\.1:|ws@8\.18\.0:|ws@8\.20\.0:/.test(lockfile), 'lockfile no longer resolves vulnerable ws 8.x versions')
+  // Pin must stay an exact version, but accept forward patch bumps: CVE-2024-37890
+  // is fixed in 8.17.1, so any version >= 8.17.1 is acceptable (don't hardcode the
+  // current patch level or this test goes red every time ws is upgraded).
+  const wsOverride = packageJson.pnpm.overrides.ws
+  t.ok(/^\d+\.\d+\.\d+$/.test(wsOverride), `ws override is pinned to an exact version (${wsOverride})`)
+  const [maj, min, pat] = wsOverride.split('.').map(Number)
+  const patched = maj > 8 || (maj === 8 && (min > 17 || (min === 17 && pat >= 1)))
+  t.ok(patched, `ws override ${wsOverride} is at or above the patched 8.17.1`)
+  t.ok(new RegExp('ws@' + wsOverride.replace(/\./g, '\\.') + ':').test(lockfile), 'lockfile resolves the overridden ws version')
+  t.notOk(/ws@8\.17\.0:|ws@8\.18\.0:|ws@8\.20\.0:/.test(lockfile), 'lockfile no longer resolves vulnerable ws 8.x versions')
   t.end()
 })

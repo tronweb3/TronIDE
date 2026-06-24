@@ -21,7 +21,7 @@ import React, { useEffect, useState, useRef, useReducer } from 'react' // eslint
 import semver from 'semver'
 import { CompilerContainerProps, ConfigurationSettings } from './types'
 import * as helper from '../../../../../apps/remix-ide/src/lib/helper'
-import { canUseWorker, baseURLTron, urlFromVersion, pathToURL, promisedMiniXhr, maybeMockCompilerSourceURL } from '@remix-project/remix-solidity'
+import { canUseWorker, baseURLTron, urlFromVersion, pathToURL, promisedMiniXhr, maybeMockCompilerSourceURL, assertAllowedCompilerURL, normalizeRuns, parseOptimizeParam, normalizeEvmVersion } from '@remix-project/remix-solidity'
 import { compilerReducer, compilerInitialState } from './reducers/compiler'
 import { resetEditorMode, listenToEvents } from './actions/compiler'
 import { OverlayTrigger, Tooltip } from 'react-bootstrap' // eslint-disable-line
@@ -86,7 +86,7 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
     if (compileTabLogic && compileTabLogic.compiler) {
       setState(prevState => {
         const params = queryParams.get()
-        const optimize = params.optimize === 'false' ? false : params.optimize === 'true' ? true : null
+        const optimize = parseOptimizeParam(params.optimize)
         const runs = params.runs
         const evmVersion = params.evmVersion
 
@@ -96,8 +96,8 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
           autoCompile: config.get('autoCompile') || false,
           includeNightlies: config.get('includeNightlies') || false,
           optimise: (optimize !== null) && (optimize !== undefined) ? optimize : config.get('optimise') || false,
-          runs: (runs !== null) && (runs !== 'null') && (runs !== undefined) && (runs !== 'undefined') ? runs : 200,
-          evmVersion: (evmVersion !== null) && (evmVersion !== 'null') && (evmVersion !== undefined) && (evmVersion !== 'undefined') ? evmVersion : 'default'
+          runs: String(normalizeRuns(runs)),
+          evmVersion: normalizeEvmVersion(evmVersion) || 'default'
         }
       })
     }
@@ -407,6 +407,17 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
   const addCustomCompiler = () => {
     const url = promptMessageInput.current.value
 
+    // Reject a disallowed origin up front: show a clear message and leave the
+    // current compiler selected, instead of throwing uncaught deeper in the
+    // load path and leaving the rejected URL shown as the active version
+    // (CMP-CUSTOMURL-1).
+    try {
+      assertAllowedCompilerURL(url)
+    } catch (e) {
+      tooltip(`Custom compiler URL not allowed: ${(e && e.message) || url}`)
+      return
+    }
+
     setState(prevState => {
       return { ...prevState, selectedVersion: url }
     })
@@ -414,12 +425,29 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
   }
 
   const handleLoadVersion = (value) => {
+    warnIfChromiumIncompatible(value)
     setState(prevState => {
       return { ...prevState, selectedVersion: value }
     })
     updateCurrentVersion(value)
     _updateVersionSelector(value)
     _updateLanguageSelector()
+  }
+
+  // 0.4.x are asm.js builds that overflow the V8 call stack on compile in
+  // Chromium ("Maximum call stack size exceeded"). The full dropdown still
+  // offers them, so warn up front rather than letting the compile crash
+  // unexplained. Never blocks selection (Firefox can compile 0.4.x fine).
+  const warnIfChromiumIncompatible = (value) => {
+    try {
+      const v = _retrieveVersion(value)
+      if (!v || !/^0\.4\./.test(v)) return
+      const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+      const isChromium = /Chrome|Chromium|Edg\//.test(ua) && !/Firefox/.test(ua)
+      if (isChromium) {
+        tooltip(`Solidity ${v} (0.4.x) is an asm.js build that crashes the compiler on Chromium-based browsers. Use Firefox, or pick a 0.5.x+ version.`)
+      }
+    } catch (e) { /* a warning must never block selection */ }
   }
 
   const _updateLanguageSelector = () => {
@@ -445,7 +473,7 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
     config.set('optimise', checked)
     compileTabLogic.setOptimize(checked)
     if (compileTabLogic.optimize) {
-      compileTabLogic.setRuns(parseInt(state.runs))
+      compileTabLogic.setRuns(state.runs)
     } else {
       compileTabLogic.setRuns(200)
     }
@@ -458,7 +486,7 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
   const onChangeRuns = (value) => {
     const runs = value
 
-    compileTabLogic.setRuns(parseInt(runs))
+    compileTabLogic.setRuns(runs)
     state.autoCompile && compile()
     setState(prevState => {
       return { ...prevState, runs }

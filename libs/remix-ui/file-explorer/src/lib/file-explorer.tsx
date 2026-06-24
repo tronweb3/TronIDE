@@ -345,11 +345,18 @@ export const FileExplorer = (props: FileExplorerProps) => {
       }
     }
 
+    // Clear the multi-select modifier whenever the window loses focus: a Shift
+    // keyup delivered to the editor iframe / another app / an OS shortcut is
+    // never seen here, which would otherwise leave ctrlKey stuck true and turn
+    // every plain click into a multi-select (files/folders unselectable).
+    const resetCtrlKey = () => setState(prevState => (prevState.ctrlKey ? { ...prevState, ctrlKey: false } : prevState))
     document.addEventListener('keydown', keyPressHandler)
     document.addEventListener('keyup', keyUpHandler)
+    window.addEventListener('blur', resetCtrlKey)
     return () => {
       document.removeEventListener('keydown', keyPressHandler)
       document.removeEventListener('keyup', keyUpHandler)
+      window.removeEventListener('blur', resetCtrlKey)
     }
   }, [])
 
@@ -659,30 +666,48 @@ export const FileExplorer = (props: FileExplorerProps) => {
         })
         .catch(error => {
           if (error) console.log(error)
+          modal(
+            'File Upload Failed',
+            `Failed to upload file ${name}: ${typeof error === 'string' ? error : (error && error.message) || 'could not check if the file already exists'}`,
+            'Close',
+            async () => {}
+          )
         })
     })
   }
 
-  const copyFile = (src: string, dest: string) => {
+  const copyFile = async (src: string, dest: string) => {
     const fileManager = state.fileManager
 
     try {
-      fileManager.copyFile(src, dest)
+      await fileManager.copyFile(src, dest)
     } catch (error) {
       console.log(
         'Oops! An error ocurred while performing copyFile operation.' + error
       )
+      modal(
+        'Copy File Failed',
+        `Failed to copy file ${src}: ${typeof error === 'string' ? error : error.message}`,
+        'Close',
+        () => {}
+      )
     }
   }
 
-  const copyFolder = (src: string, dest: string) => {
+  const copyFolder = async (src: string, dest: string) => {
     const fileManager = state.fileManager
 
     try {
-      fileManager.copyDir(src, dest)
+      await fileManager.copyDir(src, dest)
     } catch (error) {
       console.log(
         'Oops! An error ocurred while performing copyDir operation.' + error
+      )
+      modal(
+        'Copy Folder Failed',
+        `Failed to copy folder ${src}: ${typeof error === 'string' ? error : error.message}`,
+        'Close',
+        () => {}
       )
     }
   }
@@ -700,8 +725,8 @@ export const FileExplorer = (props: FileExplorerProps) => {
 
   const pushChangesToGist = (path?: string, type?: string) => {
     modal(
-      'Create a public gist',
-      'Are you sure you want to push changes to remote gist file on github.com?',
+      'Update gist',
+      'Are you sure you want to push your changes to the remote gist on github.com?',
       'OK',
       () => toGist(path, type),
       'Cancel',
@@ -735,12 +760,39 @@ export const FileExplorer = (props: FileExplorerProps) => {
     const filesProvider = fileSystem.provider.provider
     const proccedResult = function (error, data) {
       if (error) {
-        modal(
-          'Publish to gist Failed',
-          'Failed to manage gist: ' + error,
-          'Close',
-          () => {}
-        )
+        // Try to give a cause-specific message instead of the generic "Failed to manage gist".
+        // The error may be a thrown Error (e.g. from getOriginalFiles), a fetch/network failure,
+        // or a rejection from the gists library which carries a statusCode/status and a message.
+        const status = error.statusCode || error.status || 0
+        const rawMessage =
+          (typeof error === 'string' ? error : (error && error.message)) || ''
+        // Surface the GitHub response body when the library provides one (more specific than the message).
+        const body =
+          error && error.body
+            ? typeof error.body === 'string'
+              ? error.body
+              : (error.body.message || '')
+            : ''
+        const detail = [rawMessage, body].filter(Boolean).join(' ').trim()
+        let message: string
+
+        if (status === 404 || /\b404\b|Not Found/i.test(detail)) {
+          message =
+            'The gist could not be found. It may have been deleted, or the configured access token does not have permission to read it.'
+        } else if (status === 401 || status === 403 || /\b401\b|\b403\b|Bad credentials|rate limit/i.test(detail)) {
+          message =
+            'GitHub rejected the request. Please check that your gist access token is valid and has gist permission (settings tab). ' +
+            detail
+        } else if (
+          error instanceof TypeError ||
+          /Failed to fetch|NetworkError|network/i.test(detail)
+        ) {
+          message =
+            'A network error occurred while contacting github.com. Please check your connection and try again.'
+        } else {
+          message = 'Failed to manage gist: ' + (detail || error)
+        }
+        modal('Publish to gist Failed', message, 'Close', () => {})
       } else {
         if (data.html_url) {
           modal(
@@ -774,13 +826,23 @@ export const FileExplorer = (props: FileExplorerProps) => {
      * This function is to get the original content of given gist
      * @params id is the gist id to fetch
      */
-    const getOriginalFiles = async id => {
+    const getOriginalFiles = async (id, accessToken?) => {
       if (!id) {
         return []
       }
 
       const url = `https://api.github.com/gists/${id}`
-      const res = await fetch(url)
+      // Authenticate with the configured gist token so this update-path read shares the higher
+      // GitHub rate limit (anonymous reads were hitting "API rate limit exceeded"). The caller
+      // only reaches here once a token is present, but stay safe if it is ever called without one.
+      const res = await fetch(url, accessToken ? { headers: { Authorization: `token ${accessToken}` } } : undefined)
+      // A 404 (gist does not exist) or 401/403 (no permission) still returns a JSON body, but it is a
+      // GitHub *error* object with no `files` key. Parsing it and falling back to `data.files || []`
+      // silently yields `[]`, which the update flow then treats as a successful empty read and the
+      // user is left hanging on "Saving gist...". Surface the failure instead of swallowing it.
+      if (!res.ok) {
+        throw new Error(`GitHub gist ${id} 不可读: ${res.status}`)
+      }
       const data = await res.json()
       return data.files || []
     }
@@ -822,40 +884,46 @@ export const FileExplorer = (props: FileExplorerProps) => {
           const gists = new Gists({ token: accessToken })
 
           if (id) {
-            const originalFileList = await getOriginalFiles(id)
-            // Telling the GIST API to remove files
-            const updatedFileList = Object.keys(packaged)
-            const allItems = Object.keys(originalFileList)
-              .filter(fileName => updatedFileList.indexOf(fileName) === -1)
-              .reduce(
-                (acc, deleteFileName) => ({
-                  ...acc,
-                  [deleteFileName]: null
-                }),
-                originalFileList
-              )
-            // adding new files
-            updatedFileList.forEach(file => {
-              const _items = file.split('/')
-              const _fileName = _items[_items.length - 1]
-              allItems[_fileName] = packaged[file]
-            })
+            try {
+              const originalFileList = await getOriginalFiles(id, accessToken)
+              // Telling the GIST API to remove files
+              const updatedFileList = Object.keys(packaged)
+              const allItems = Object.keys(originalFileList)
+                .filter(fileName => updatedFileList.indexOf(fileName) === -1)
+                .reduce(
+                  (acc, deleteFileName) => ({
+                    ...acc,
+                    [deleteFileName]: null
+                  }),
+                  originalFileList
+                )
+              // adding new files
+              updatedFileList.forEach(file => {
+                const _items = file.split('/')
+                const _fileName = _items[_items.length - 1]
+                allItems[_fileName] = packaged[file]
+              })
 
-            toast('Saving gist (' + id + ') ...')
-            gists.edit(id,
-              {
-                description: description,
-                public: true,
-                files: allItems
-              }
-            ).then((result) => {
-              proccedResult(null, result.body)
-              for (const key in allItems) {
-                if (allItems[key] === null) delete allItems[key]
-              }
-            }).catch(error => {
+              toast('Saving gist (' + id + ') ...')
+              await gists.edit(id,
+                {
+                  description: description,
+                  public: true,
+                  files: allItems
+                }
+              ).then((result) => {
+                proccedResult(null, result.body)
+                for (const key in allItems) {
+                  if (allItems[key] === null) delete allItems[key]
+                }
+              })
+            } catch (error) {
+              // Clear the "Saving gist..." toast so it does not linger next to the error modal,
+              // then surface a clear failure (e.g. the gist id does not exist or token lacks access)
+              // instead of leaving the user stuck on the loading message forever.
+              toast('')
               proccedResult(error, {})
-            })
+            }
           } else {
             // id is not existing, need to create a new gist
             toast('Creating a new gist ...')
@@ -868,6 +936,9 @@ export const FileExplorer = (props: FileExplorerProps) => {
             ).then(result => {
               proccedResult(null, result.body)
             }).catch(error => {
+              // Clear the "Creating a new gist..." toast first so it does not linger
+              // behind the error modal (avoids a stacked toast + modal).
+              toast('')
               proccedResult(error, {})
             })
           }
@@ -880,7 +951,12 @@ export const FileExplorer = (props: FileExplorerProps) => {
     const filesProvider = fileSystem.provider.provider
 
     filesProvider.get(path, (error, content: string) => {
-      if (error) return console.log(error)
+      if (error) {
+        console.log(error)
+        return toast(
+          `Failed to run script ${path}: ${typeof error === 'string' ? error : error.message}`
+        )
+      }
       plugin.call('scriptRunner', 'execute', content)
     })
   }
@@ -928,12 +1004,12 @@ export const FileExplorer = (props: FileExplorerProps) => {
     })
   }
 
-  const handleClickFile = (path: string, type: string) => {
+  const handleClickFile = (path: string, type: string, multiSelect = false) => {
     path =
       path.indexOf(props.name + '/') === 0
         ? path.replace(props.name + '/', '')
         : path
-    if (!state.ctrlKey) {
+    if (!multiSelect) {
       state.fileManager.open(path)
       setState(prevState => {
         return { ...prevState, focusElement: [{ key: path, type }] }
@@ -961,8 +1037,8 @@ export const FileExplorer = (props: FileExplorerProps) => {
     }
   }
 
-  const handleClickFolder = async (path: string, type: string) => {
-    if (state.ctrlKey) {
+  const handleClickFolder = async (path: string, type: string, multiSelect = false) => {
+    if (multiSelect) {
       if (state.focusElement.findIndex(item => item.key === path) !== -1) {
         setState(prevState => {
           return {
@@ -1290,7 +1366,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
           label={label(file)}
           onClick={e => {
             e.stopPropagation()
-            if (state.focusEdit.element !== file.path) { handleClickFolder(file.path, file.type) }
+            if (state.focusEdit.element !== file.path) { handleClickFolder(file.path, file.type, e.shiftKey || e.ctrlKey || e.metaKey) }
           }}
           onContextMenu={e => {
             e.preventDefault()
@@ -1342,7 +1418,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
           label={label(file)}
           onClick={e => {
             e.stopPropagation()
-            if (state.focusEdit.element !== file.path) { handleClickFile(file.path, file.type) }
+            if (state.focusEdit.element !== file.path) { handleClickFile(file.path, file.type, e.shiftKey || e.ctrlKey || e.metaKey) }
           }}
           onContextMenu={e => {
             e.preventDefault()
@@ -1516,14 +1592,21 @@ async function packageFiles (filesProvider, directory, callback) {
   } else {
     try {
       await filesProvider.copyFolderToJson(directory, ({ path, content }) => {
-        if (/^\s+$/.test(content) || !content.length) {
-          content =
-            '// this line is added to create a gist. Empty file is not allowed.'
-        }
         if (path.indexOf('gist-') === 0) {
           path = path.split('/')
           path.shift()
           path = path.join('/')
+        }
+        // Don't pack the resolved dependency cache (.deps/npm/...) into the gist.
+        // On reload those files are written back into the workspace and, because
+        // the import resolver prefers an existing local file over a fresh fetch,
+        // a stale cached file (e.g. utils/Arrays.sol) shadows the version a newer
+        // contract expects -> "Declaration ... not found" version-skew. Deps are
+        // always re-resolved on compile, so they don't belong in the gist.
+        if (path === '.deps' || path.indexOf('.deps/') === 0 || path.indexOf('/.deps/') !== -1) return
+        if (/^\s+$/.test(content) || !content.length) {
+          content =
+            '// this line is added to create a gist. Empty file is not allowed.'
         }
         path = path.replace(/\//g, '...')
         ret[path] = { content }

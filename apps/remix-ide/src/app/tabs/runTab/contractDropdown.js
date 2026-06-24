@@ -81,8 +81,28 @@ class ContractDropdownUI {
   syncLastCompilation () {
     const compiler = this.dropdownLogic && this.dropdownLogic.compilersArtefacts && this.dropdownLogic.compilersArtefacts.__last
     if (!compiler) return
+    // M3: only reuse the cached __last compilation when it actually corresponds
+    // to the file currently open in the editor. Otherwise a fast file switch
+    // would briefly render the previous file's contract list against this file.
+    if (!this.lastCompilationMatchesCurrentFile(compiler)) return
     const compilerFullName = Object.keys(this.dropdownLogic.compilersArtefacts).find((name) => name !== '__last' && this.dropdownLogic.compilersArtefacts[name] === compiler)
     this.updateCompiledContracts(true, compiler, compilerFullName)
+  }
+
+  lastCompilationMatchesCurrentFile (compiler) {
+    const config = this.dropdownLogic && this.dropdownLogic.config
+    if (!config || typeof config.get !== 'function') return true
+    const currentFile = config.get('currentFile')
+    // No file open yet: nothing to mismatch against, keep prior behaviour.
+    if (!currentFile) return true
+    // An .abi file uses the At Address flow, not the cached .sol compilation.
+    if (/.(.abi)$/.exec(currentFile)) return false
+    const source = compiler && typeof compiler.getSourceCode === 'function' ? compiler.getSourceCode() : null
+    const compiledFile = source && source.target
+    // If we can't determine which file the cached compilation came from, fall
+    // back to the legacy behaviour rather than hiding a valid contract list.
+    if (!compiledFile) return true
+    return compiledFile === currentFile
   }
 
   listenToContextChange () {
@@ -228,7 +248,6 @@ class ContractDropdownUI {
       this.abiLabel.textContent = currentFile
       this.selectContractNames.style.display = 'none'
       this.enableContractNames(true)
-      this.enableAtAddress(true)
     } else if (/.(.sol)$/.exec(currentFile) ||
         /.(.vy)$/.exec(currentFile) || // vyper
         /.(.lex)$/.exec(currentFile) || // lexon
@@ -239,7 +258,6 @@ class ContractDropdownUI {
       this.loadType = 'sol'
       this.selectContractNames.style.display = 'block'
       this.abiLabel.style.display = 'none'
-      if (this.selectContractNames.value === '') this.enableAtAddress(false)
     } else {
       this.loadType = 'other'
       this.createPanel.style.display = 'none'
@@ -248,6 +266,12 @@ class ContractDropdownUI {
       this.contractNamesContainer.style.display = 'none'
       this.abiLabel.style.display = 'none'
     }
+    // M3: the file (and therefore loadType / the available compilation) just
+    // changed, so re-evaluate the At Address button against the *new* file's
+    // context instead of leaving it enabled from the previous file. Routing
+    // through atAddressChanged() keeps a single source of truth for the gating
+    // (empty input, sol-needs-compiled-contract, abi-always-allowed).
+    this.atAddressChanged()
   }
 
   setInputParamsPlaceHolder () {

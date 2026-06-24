@@ -49,7 +49,13 @@ class InjectedProvider {
     }
     if (this.executionContext.web3().trx?.getBalance) {
       try {
-        const res = await this.executionContext.web3().trx.getBalance(address)
+        // Bound the call so a dead/zombie bridge can't leave the balance hanging
+        // blank forever; on timeout the catch surfaces a clear error instead.
+        const res = await walletProviderAdapter.withWalletTimeout(
+          this.executionContext.web3().trx.getBalance(address),
+          walletProviderAdapter.WALLET_NODE_TIMEOUT_MS,
+          walletProviderAdapter.WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT
+        )
         cb(null, Web3.utils.fromWei(res.toString(10), 'picoether'))
       } catch (error) {
         const normalized = walletProviderAdapter.normalizeWalletError(error)
@@ -66,7 +72,14 @@ class InjectedProvider {
 
   async signMessage (message, account, _passphrase, cb) {
     try {
-      const signedData = await this.executionContext.web3().trx.signMessageV2(message)
+      // The signing popup can hang forever against a dead/zombie bridge; bound it
+      // so the callback always fires (timeout -> catch -> cb(error)) and the
+      // confirmation dialog isn't left stuck with no answer.
+      const signedData = await walletProviderAdapter.withWalletTimeout(
+        this.executionContext.web3().trx.signMessageV2(message),
+        walletProviderAdapter.WALLET_SIGN_TIMEOUT_MS,
+        walletProviderAdapter.WALLET_ERROR_CODES.WALLET_SIGN_TIMEOUT
+      )
       const messageHash = '0x' + hashPersonalMessage(Buffer.from(message)).toString('hex')
       cb(null, messageHash, signedData)
     } catch (error) {

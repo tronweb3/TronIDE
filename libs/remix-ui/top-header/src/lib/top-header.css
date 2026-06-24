@@ -57,14 +57,18 @@
   gap: 8px;
   margin-right: 14px;
 }
+.top-header-wrapper .header-right-cluster {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-left: 12px;
+}
 .top-header-wrapper .header-layout-toggles {
-  position: absolute;
-  left: calc(50% + 285px);
-  top: 50%;
-  transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
   gap: 10px;
+  margin-right: 12px;
+  flex: none;
 }
 .top-header-wrapper .header-workspace-menu {
   position: absolute;
@@ -457,20 +461,27 @@
   margin-top: 2px;
 }
 
-@media (max-width: 1440px) {
+@media (max-width: 1600px) {
   .top-header-wrapper .header-workspace-menu {
     width: 280px;
   }
-  .top-header-wrapper .header-layout-toggles {
-    left: calc(50% + 195px);
+}
+
+/* Narrow viewports: collapse the action buttons to icon-only so the right
+   cluster (layout toggles + actions, now in normal flex flow) does not run
+   into the centered workspace menu (WAL-HDR-3 / header overlap). */
+@media (max-width: 1340px) {
+  .top-header-wrapper .header-action-btn {
+    max-width: none;
+    padding: 0 8px;
+  }
+  .top-header-wrapper .header-action-btn > span:not(.header-action-icon) {
+    display: none;
   }
 }
 
 @media (max-width: 1120px) {
   .top-header-wrapper .header-workspace-menu {
     display: none;
-  }
-  .top-header-wrapper .header-layout-toggles {
-    left: 50%;
   }
 }

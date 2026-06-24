@@ -32,7 +32,11 @@ export class TxRunner {
     this.internalRunner = internalRunner
     this.event = new EventManager()
 
-    this.runAsync = this.opt.runAsync || true // We have to run like this cause the VM Event Manager does not support running multiple txs at the same time.
+    // The VM does not support concurrent executions: interleaved
+    // checkpoint/revert sequences silently drop contract storage (DEF-VM-1).
+    // `opt.runAsync || true` discarded an explicit `false`, so the queue
+    // guarding against exactly that never engaged.
+    this.runAsync = this.opt.runAsync !== undefined ? this.opt.runAsync : true
 
     this.pendingTxs = {}
     this.queusTxs = []
@@ -53,15 +57,18 @@ export class TxRunner {
 
 function run (self, tx, stamp, confirmationCb, gasEstimationForceSend = null, promptCb = null, callback = null) {
   if (!self.runAsync && Object.keys(self.pendingTxs).length) {
-    return self.queusTxs.push({ tx, stamp, callback })
+    // keep EVERY callback: the old entry dropped the confirm/prompt flow and
+    // misfed `callback` into the confirmationCb slot on dequeue
+    return self.queusTxs.push({ tx, stamp, confirmationCb, gasEstimationForceSend, promptCb, callback })
   }
   self.pendingTxs[stamp] = tx
   self.execute(tx, confirmationCb, gasEstimationForceSend, promptCb, function (error, result) {
     delete self.pendingTxs[stamp]
     if (callback && typeof callback === 'function') callback(error, result)
     if (self.queusTxs.length) {
-      const next = self.queusTxs.pop()
-      run(self, next.tx, next.stamp, next.callback)
+      // FIFO: pop() inverted the execution order of queued transactions
+      const next = self.queusTxs.shift()
+      run(self, next.tx, next.stamp, next.confirmationCb, next.gasEstimationForceSend, next.promptCb, next.callback)
     }
   })
 }

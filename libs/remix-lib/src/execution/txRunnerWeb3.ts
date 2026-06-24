@@ -22,7 +22,7 @@ import { EventManager } from '../eventManager'
 import { addressToBase58 } from '../util'
 import Web3 from 'web3'
 import { parseSafeInteger, TX_FIELD_LABELS, validateTrc10Inputs } from './txIntegerUtils'
-import { normalizeWalletError, WALLET_ERROR_CODES } from './walletProviderAdapter'
+import { normalizeWalletError, WALLET_ERROR_CODES, withWalletTimeout, WALLET_SIGN_TIMEOUT_MS, WALLET_NODE_TIMEOUT_MS } from './walletProviderAdapter'
 import { createRuntimeFacade } from './runtimeFacade'
 
 // Wall-clock polling budget (default 120s) and linear backoff. Bounded to prevent infinite
@@ -33,6 +33,11 @@ const TX_LOOKUP_BUDGET_MS = 120_000
 const PAUSE_MIN_MS = 500
 const PAUSE_MAX_MS = 2_000
 const PAUSE_RAMP_MS = 25 // each attempt adds 25ms to the previous pause until PAUSE_MAX_MS
+
+// withWalletTimeout / WALLET_*_TIMEOUT_MS live in walletProviderAdapter (shared with
+// the injected provider). They bound each injected sign/build/broadcast so a dead
+// bridge can't leave the tx stuck at "pending…" — TX_LOOKUP_BUDGET_MS only bounds
+// the receipt-polling loops below, not the sign/broadcast themselves.
 
 function decodeTronErrorMessage (rawMessage: unknown): string {
   if (rawMessage === undefined || rawMessage === null) return ''
@@ -138,7 +143,11 @@ async function getCurrentInjectedSnapshot (tronWebIns: any, api: any) {
       const detected = await new Promise<any>((resolve) => {
         api.detectNetwork((_error, result) => resolve(result))
       })
-      network = detected?.name || detected?.id || network
+      // All TRON networks share name 'TRON'; only the id ('nile'/'shasta'/'main')
+      // discriminates them. The label must include it or a wallet network switch
+      // compares 'TRON' === 'TRON' and is never detected (WAL-NET-1).
+      const label = [detected?.name, detected?.id].filter(Boolean).join('/')
+      network = label || network
     } catch (e) {
       network = network || undefined
     }
@@ -478,11 +487,11 @@ export class TxRunnerWeb3 {
 
     if (useCall) {
       try {
-        const result = await tronWebIns.transactionBuilder.triggerSmartContract(
+        const result = await withWalletTimeout(tronWebIns.transactionBuilder.triggerSmartContract(
           contractAddr,
           functionSelector,
           { _isConstant: true, rawParameter }
-        )
+        ), WALLET_NODE_TIMEOUT_MS, WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT)
         const res = result && result.result ? result.constant_result : ['']
         return callback(null, { result: res[0] })
       } catch (error) {
@@ -494,10 +503,7 @@ export class TxRunnerWeb3 {
       return callback(new Error(normalizeWalletError(WALLET_ERROR_CODES.WALLET_DISCONNECTED).message))
     }
 
-    const pendingSnapshot = args.pendingTransactionSnapshot || {
-      account: from,
-      network: getTronNetworkLabel(tronWebIns)
-    }
+    let pendingSnapshot = args.pendingTransactionSnapshot
     const injectedRuntimeFacade = createRuntimeFacade({ kind: 'tvm', environment: 'injected', account: from })
 
     gasEstimationForceSend(
@@ -505,6 +511,10 @@ export class TxRunnerWeb3 {
       async () => {
         const validatePendingSnapshot = async () => {
           const currentSnapshot = await getCurrentInjectedSnapshot(tronWebIns, this._api)
+          // Snapshot-less callers get their network baseline from the first
+          // validation: later checks still catch mid-flight account/network
+          // switches, without comparing a host URL against a name/id label.
+          if (!pendingSnapshot) pendingSnapshot = { account: from, network: currentSnapshot.network }
           const pendingValidation = injectedRuntimeFacade.validatePendingTransaction(pendingSnapshot, currentSnapshot)
           if (!pendingValidation.ok) throw createWalletRuntimeError(pendingValidation.errors[0])
         }
@@ -604,12 +614,12 @@ export class TxRunnerWeb3 {
         try {
           if (contractAddr) {
             await validatePendingSnapshot()
-            const tTransaction = await tronWebIns.transactionBuilder.triggerSmartContract(
+            const tTransaction = await withWalletTimeout(tronWebIns.transactionBuilder.triggerSmartContract(
               contractAddr,
               functionSelector,
               { callValue, tokenId, tokenValue, feeLimit, rawParameter },
               []
-            )
+            ), WALLET_NODE_TIMEOUT_MS, WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT)
 
             if (!tTransaction.result) {
               throw new Error('Unknown')
@@ -627,9 +637,9 @@ export class TxRunnerWeb3 {
 
             let tSignedTransaction
             try {
-              tSignedTransaction = await tronWebIns.trx.sign(
+              tSignedTransaction = await withWalletTimeout(tronWebIns.trx.sign(
                 tTransaction.transaction
-              )
+              ), WALLET_SIGN_TIMEOUT_MS, WALLET_ERROR_CODES.WALLET_SIGN_TIMEOUT)
             } catch (error) {
               throw createWalletRuntimeError(error)
             }
@@ -638,9 +648,9 @@ export class TxRunnerWeb3 {
 
             let tResult
             try {
-              tResult = await tronWebIns.trx.sendRawTransaction(
+              tResult = await withWalletTimeout(tronWebIns.trx.sendRawTransaction(
                 tSignedTransaction
-              )
+              ), WALLET_NODE_TIMEOUT_MS, WALLET_ERROR_CODES.WALLET_BROADCAST_FAILED)
             } catch (error) {
               throw createWalletRuntimeError(error)
             }
@@ -655,7 +665,7 @@ export class TxRunnerWeb3 {
             }
           } else {
             await validatePendingSnapshot()
-            const dTransaction = await tronWebIns.transactionBuilder.createSmartContract(
+            const dTransaction = await withWalletTimeout(tronWebIns.transactionBuilder.createSmartContract(
               {
                 abi: contractABI,
                 bytecode: data,
@@ -668,7 +678,7 @@ export class TxRunnerWeb3 {
                 userFeePercentage,
                 originEnergyLimit
               }
-            )
+            ), WALLET_NODE_TIMEOUT_MS, WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT)
 
             const creationValidationMessage =
               normalizeTrc10ValidationMessage(dTransaction, tokenId, tokenValue) ||
@@ -680,7 +690,7 @@ export class TxRunnerWeb3 {
 
             let dSignedTransaction
             try {
-              dSignedTransaction = await tronWebIns.trx.sign(dTransaction)
+              dSignedTransaction = await withWalletTimeout(tronWebIns.trx.sign(dTransaction), WALLET_SIGN_TIMEOUT_MS, WALLET_ERROR_CODES.WALLET_SIGN_TIMEOUT)
             } catch (error) {
               throw createWalletRuntimeError(error)
             }
@@ -689,9 +699,9 @@ export class TxRunnerWeb3 {
 
             let dResult
             try {
-              dResult = await tronWebIns.trx.sendRawTransaction(
+              dResult = await withWalletTimeout(tronWebIns.trx.sendRawTransaction(
                 dSignedTransaction
-              )
+              ), WALLET_NODE_TIMEOUT_MS, WALLET_ERROR_CODES.WALLET_BROADCAST_FAILED)
             } catch (error) {
               throw createWalletRuntimeError(error)
             }

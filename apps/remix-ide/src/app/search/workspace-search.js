@@ -87,11 +87,13 @@ function searchWorkspaceFiles (files, queryOrOptions, options = {}) {
       const line = lines[lineIndex]
       const lineMatches = matcher.find(line)
       for (const range of lineMatches) {
+        const preview = createPreview(line, range.start, range.end - range.start, limits.previewRadius)
         const match = {
           path,
           line: lineIndex + 1,
           column: range.start + 1,
-          preview: createPreview(line, range.start, range.end - range.start, limits.previewRadius),
+          preview: preview.text,
+          previewMatch: { start: preview.matchStart, length: preview.matchLength },
           ranges: [{ start: range.start, end: range.end }]
         }
         results.push(match)
@@ -252,7 +254,19 @@ function createPreview (line, columnIndex, queryLength, radius) {
   const end = Math.min(line.length, columnIndex + queryLength + radius)
   const prefix = start > 0 ? '…' : ''
   const suffix = end < line.length ? '…' : ''
-  return `${prefix}${line.slice(start, end).trim()}${suffix}`
+  const windowText = line.slice(start, end)
+  const trimmedText = windowText.trim()
+  const text = `${prefix}${trimmedText}${suffix}`
+  // Offset of this match's start within the produced preview string, so the
+  // renderer can highlight the exact occurrence this result was split from
+  // (rather than the first occurrence on the line). Account for the leading
+  // ellipsis and the whitespace stripped by trim().
+  const leadingTrimmed = windowText.length - windowText.trimStart().length
+  const rawOffset = prefix.length + (columnIndex - start) - leadingTrimmed
+  const maxOffset = prefix.length + trimmedText.length
+  const matchStart = Math.min(Math.max(rawOffset, prefix.length), maxOffset)
+  const matchLength = Math.max(0, Math.min(queryLength, maxOffset - matchStart))
+  return { text, matchStart, matchLength }
 }
 
 function parseGlobList (pattern) {

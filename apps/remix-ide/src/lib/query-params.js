@@ -35,10 +35,15 @@ function QueryParams (_window) {
     var params = {}
     var parts = qs.split('&')
     for (var x in parts) {
-      var keyValue = parts[x].split('=')
-      if (keyValue[0] !== '') {
-        params[keyValue[0]] = keyValue[1]
-      }
+      // Split on the FIRST '=' only so values that themselves contain '=' (urls,
+      // base64, etc.) are not truncated. Values are kept RAW (not url-decoded):
+      // update() re-serialises params raw, so decoding here would corrupt the
+      // round-trip of any value holding an encoded '&'.
+      var pair = parts[x]
+      var eqIndex = pair.indexOf('=')
+      var key = eqIndex === -1 ? pair : pair.substring(0, eqIndex)
+      if (key === '') continue
+      params[key] = eqIndex === -1 ? undefined : pair.substring(eqIndex + 1)
     }
     return params
   }

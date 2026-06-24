@@ -21,6 +21,9 @@ import { Plugin } from '@remixproject/engine'
 
 const packageJson = require('../../../../../../package.json')
 const Compiler = require('@remix-project/remix-solidity').Compiler
+const normalizeRuns = require('@remix-project/remix-solidity').normalizeRuns
+const parseOptimizeParam = require('@remix-project/remix-solidity').parseOptimizeParam
+const normalizeEvmVersion = require('@remix-project/remix-solidity').normalizeEvmVersion
 const EventEmitter = require('events')
 const profile = {
   name: 'solidity-logic',
@@ -44,20 +47,20 @@ export class CompileTab extends Plugin {
   }
 
   init () {
-    this.optimize = this.queryParams.get().optimize
-    this.optimize = this.optimize === 'true'
+    // case-insensitive: accept TRUE/1/yes as well as true; unrecognised -> false
+    this.optimize = parseOptimizeParam(this.queryParams.get().optimize) === true
     this.queryParams.update({ optimize: this.optimize })
     this.compiler.set('optimize', this.optimize)
 
-    this.runs = this.queryParams.get().runs
-    this.runs = this.runs && this.runs !== 'undefined' ? this.runs : 200
+    // normalizeRuns also maps the literal strings 'undefined'/'null' and any
+    // out-of-range / non-integer hash value back to a solc-safe positive int.
+    this.runs = normalizeRuns(this.queryParams.get().runs)
     this.queryParams.update({ runs: this.runs })
     this.compiler.set('runs', this.runs)
 
-    this.evmVersion = this.queryParams.get().evmVersion
-    if (this.evmVersion === 'undefined' || this.evmVersion === 'null' || !this.evmVersion) {
-      this.evmVersion = null
-    }
+    // allowlist: only 'tron' is a valid target here; any other hash value
+    // (incl. 'undefined'/'null'/garbage) -> null so it can't break the compile.
+    this.evmVersion = normalizeEvmVersion(this.queryParams.get().evmVersion)
     this.queryParams.update({ evmVersion: this.evmVersion })
     this.compiler.set('evmVersion', this.evmVersion)
   }
@@ -69,7 +72,7 @@ export class CompileTab extends Plugin {
   }
 
   setRuns (runs) {
-    this.runs = runs
+    this.runs = normalizeRuns(runs)
     this.queryParams.update({ runs: this.runs })
     this.compiler.set('runs', this.runs)
   }

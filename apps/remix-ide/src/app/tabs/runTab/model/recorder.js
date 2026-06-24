@@ -206,7 +206,11 @@ class Recorder {
       var record = self.resolveAddress(tx.record, accounts, options)
       var abi = abis[tx.record.abi]
       if (!abi) {
-        return alertCb('cannot find ABI for ' + tx.record.abi + '.  Execution stopped at ' + index)
+        alertCb('cannot find ABI for ' + tx.record.abi + '.  Execution stopped at ' + index)
+        // must call cb so eachOfSeries terminates and the final callback
+        // (setListen(true)/clearAll) runs — otherwise replay hangs forever and
+        // recording stays disabled until reload.
+        return cb('cannot find ABI for ' + tx.record.abi)
       }
       /* Resolve Library */
       if (record.linkReferences && Object.keys(record.linkReferences).length) {
@@ -250,7 +254,8 @@ class Recorder {
             tx.record.parameters[index] = value
           })
         } catch (e) {
-          return alertCb('cannot resolve input parameters ' + JSON.stringify(tx.record.parameters) + '. Execution stopped at ' + index)
+          alertCb('cannot resolve input parameters ' + JSON.stringify(tx.record.parameters) + '. Execution stopped at ' + index)
+          return cb('cannot resolve input parameters')
         }
       }
       var data = format.encodeData(fnABI, tx.record.parameters, tx.record.bytecode)
@@ -266,7 +271,8 @@ class Recorder {
         function (err, txResult, rawAddress) {
           if (err) {
             console.error(err)
-            return logCallBack(err + '. Execution failed at ' + index)
+            logCallBack(err + '. Execution failed at ' + index)
+            return cb(err)
           }
           if (rawAddress) {
             const address = helper.addressToString(rawAddress)

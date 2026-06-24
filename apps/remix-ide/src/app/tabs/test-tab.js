@@ -101,8 +101,10 @@ module.exports = class TestTab extends ViewPlugin {
       await this.updateForNewCurrent()
     })
 
-    this.fileManager.events.on('noFileSelected', () => {
-    })
+    // Closing the last file emits only noFileSelected (not currentFileChanged), so
+    // an empty handler left the Run button and test list stale on the previous
+    // file. Refresh to the no-file state (disables Run, "No solidity file selected").
+    this.fileManager.events.on('noFileSelected', () => this.updateForNewCurrent())
 
     this.fileManager.events.on('currentFileChanged', (file, provider) => this.updateForNewCurrent(file))
   }
@@ -485,6 +487,12 @@ module.exports = class TestTab extends ViewPlugin {
     this.testsOutput.hidden = true
     this.testsExecutionStopped.hidden = true
     this.testsExecutionStoppedError.hidden = true
+    // testSuites accumulates the suite names rendered in the result header. It was
+    // only ever reset when falsy, so after the first run it kept growing — a later
+    // run (or switching files) mixed the previous file's suites into the header.
+    // clearResults runs on both file change and at the start of every run, so
+    // resetting it here keeps each run's header to its own suites.
+    this.testSuites = []
   }
 
   runTests () {

@@ -1,6 +1,7 @@
 'use strict'
 import tape from 'tape'
 import { TxRunnerWeb3 } from '../src/execution/txRunnerWeb3'
+import { WALLET_ERROR_CODES, withWalletTimeout } from '../src/execution/walletProviderAdapter'
 
 type TronRunResult = {
   error: any
@@ -275,5 +276,37 @@ tape('txRunnerWeb3 normalizes tron trc10 validation messages', function (t) {
       'Send transaction failed: Wallet account changed. Please reconnect TronLink. . if you use an injected provider, please check it is properly unlocked. '
     )
     st.equal(broadcastCalled, false)
+  })
+})
+
+// Regression for the injected sign/broadcast hang: an injected TronLink call that
+// never settles (a zombie bridge — extension disabled/removed but window.tronWeb
+// lingers) must be bounded so it rejects with a timeout — which clears the stuck
+// "pending…" and lets the user retry — while a normal, fast call is untouched.
+tape('txRunnerWeb3.withWalletTimeout', function (t) {
+  t.test('a fast operation resolves with its own value (no false timeout)', async function (st) {
+    st.plan(1)
+    const value = await withWalletTimeout(Promise.resolve('signed-tx'), 10_000, WALLET_ERROR_CODES.WALLET_SIGN_TIMEOUT)
+    st.equal(value, 'signed-tx')
+  })
+
+  t.test('a never-settling operation rejects with the given timeout code', async function (st) {
+    st.plan(1)
+    try {
+      await withWalletTimeout(new Promise(() => { /* never settles */ }), 10, WALLET_ERROR_CODES.WALLET_SIGN_TIMEOUT)
+      st.fail('a wedged operation should reject, not hang')
+    } catch (error) {
+      st.equal((error as any).code, WALLET_ERROR_CODES.WALLET_SIGN_TIMEOUT)
+    }
+  })
+
+  t.test('a rejecting operation propagates its own error (the timeout never masks it)', async function (st) {
+    st.plan(1)
+    try {
+      await withWalletTimeout(Promise.reject(new Error('node says no')), 10_000, WALLET_ERROR_CODES.WALLET_BROADCAST_FAILED)
+      st.fail('should have rejected with the operation error')
+    } catch (error) {
+      st.equal((error as any).message, 'node says no')
+    }
   })
 })

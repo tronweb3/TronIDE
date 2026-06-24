@@ -126,7 +126,13 @@ export class MainView {
   }
 
   _terminalTopOffset () {
-    return this._deps.config.get('terminal-top-offset') || 150
+    // Default terminal panel height. The previous 150 left only ~118px of
+    // usable area once the 32px menu bar is subtracted, clipping the welcome
+    // banner. A user-dragged size is persisted and takes precedence — but a
+    // stored value of exactly 150 is the legacy default (drag yields arbitrary
+    // pixel values, never precisely 150), so treat it as not customised.
+    const stored = this._deps.config.get('terminal-top-offset')
+    return (!stored || stored === 150) ? 250 : stored
   }
 
   _adjustLayout (direction, delta) {

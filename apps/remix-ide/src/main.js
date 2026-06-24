@@ -17,6 +17,12 @@
  * limitations under the License.
  */
 
+// Register before anything else so injected wallet extensions (MetaMask, …)
+// that throw their own uncaught errors don't surface in the runtime-error
+// overlay and get filed as IDE bugs. See suppress-extension-errors.js.
+const { installExtensionErrorSuppressor } = require('./lib/suppress-extension-errors')
+installExtensionErrorSuppressor(window)
+
 window.onload = () => {
   BrowserFS.install(window)
   BrowserFS.configure({

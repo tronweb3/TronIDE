@@ -75,6 +75,30 @@ function loadPluginSecurity () {
   }
 }
 
+function sanitizeStoredLocalProfile (raw) {
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    // Corrupt 'plugins/local' value — fall back to defaults instead of throwing.
+    console.debug('[localPlugin] ignoring corrupt plugins/local entry', error)
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  // Trust only a known field whitelist from this localStorage-backed profile —
+  // a tampered entry could otherwise inject arbitrary fields into the form.
+  const allowed = ['name', 'displayName', 'description', 'documentation', 'url', 'methods', 'location', 'icon', 'type', 'version']
+  const clean = {}
+  for (const key of allowed) {
+    if (parsed[key] !== undefined) clean[key] = parsed[key]
+  }
+  // methods drives the permission surface — force a string[] or drop it.
+  if (clean.methods !== undefined && !(Array.isArray(clean.methods) && clean.methods.every((m) => typeof m === 'string'))) {
+    clean.methods = []
+  }
+  return clean
+}
+
 module.exports = class LocalPlugin {
   /**
    * Open a modal to create a local plugin
@@ -82,7 +106,7 @@ module.exports = class LocalPlugin {
    * @returns {Promise<{api: any, profile: any}>} A promise with the new plugin profile
    */
   open (plugins) {
-    this.profile = JSON.parse(localStorage.getItem('plugins/local')) || defaultProfile
+    this.profile = sanitizeStoredLocalProfile(localStorage.getItem('plugins/local')) || defaultProfile
     return new Promise((resolve, reject) => {
       const onValidation = () => {
         try {

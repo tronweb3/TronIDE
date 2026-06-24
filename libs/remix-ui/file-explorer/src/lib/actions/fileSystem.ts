@@ -104,9 +104,15 @@ const normalize = (parent, filesList, newInputType?: string): any => {
 }
 
 const fetchDirectoryContent = async (provider, folderPath: string, newInputType?: string): Promise<any> => {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     provider.resolveDirectory(folderPath, (error, fileTree) => {
-      if (error) console.error(error)
+      // A read failure used to be swallowed and resolved as an EMPTY directory, so
+      // every caller saw "success" with no contents — the folder silently showed
+      // empty (and the explicit-listing paths' error dispatch never fired). Reject
+      // instead: the listing paths surface the error, and the re-fetch callers
+      // (fileAdded/folderAdded/fileRenamed, guarded with try/catch) skip the update
+      // rather than wiping the tree to empty.
+      if (error) return reject(error)
       const files = normalize(folderPath, fileTree, newInputType)
 
       resolve({ [extractNameFromKey(folderPath)]: files })
@@ -309,9 +315,12 @@ export const closeNotificationModal = () => (dispatch: React.Dispatch<any>) => {
 const fileAdded = async (filePath: string) => {
   if (extractParentFromKey(filePath) === '/.workspaces') return
   const path = extractParentFromKey(filePath) || provider.workspace || provider.type || ''
-  const data = await fetchDirectoryContent(provider, path)
-
-  await dispatch(fileAddedSuccess(path, data))
+  try {
+    const data = await fetchDirectoryContent(provider, path)
+    await dispatch(fileAddedSuccess(path, data))
+  } catch (error) {
+    console.error('[fileSystem] could not refresh directory after file add', error)
+  }
   if (filePath.includes('_test.sol')) {
     plugin.emit('newTestFileCreated', filePath)
   }
@@ -320,9 +329,12 @@ const fileAdded = async (filePath: string) => {
 const folderAdded = async (folderPath: string) => {
   if (extractParentFromKey(folderPath) === '/.workspaces') return
   const path = extractParentFromKey(folderPath) || provider.workspace || provider.type || ''
-  const data = await fetchDirectoryContent(provider, path)
-
-  await dispatch(folderAddedSuccess(path, data))
+  try {
+    const data = await fetchDirectoryContent(provider, path)
+    await dispatch(folderAddedSuccess(path, data))
+  } catch (error) {
+    console.error('[fileSystem] could not refresh directory after folder add', error)
+  }
 }
 
 const fileRemoved = async (removePath: string) => {
@@ -333,9 +345,12 @@ const fileRemoved = async (removePath: string) => {
 
 const fileRenamed = async (oldPath: string) => {
   const path = extractParentFromKey(oldPath) || provider.workspace || provider.type || ''
-  const data = await fetchDirectoryContent(provider, path)
-
-  await dispatch(fileRenamedSuccess(path, oldPath, data))
+  try {
+    const data = await fetchDirectoryContent(provider, path)
+    await dispatch(fileRenamedSuccess(path, oldPath, data))
+  } catch (error) {
+    console.error('[fileSystem] could not refresh directory after rename', error)
+  }
 }
 
 const rootFolderChanged = async () => {

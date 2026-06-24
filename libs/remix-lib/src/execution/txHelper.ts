@@ -83,19 +83,42 @@ const encodeArgs = (inputs = [], args) => {
 
 export function encodeParams (funABI, args) {
   const types = []
+  const providedCount = Array.isArray(args) ? args.length : 0
 
   if (funABI.inputs && funABI.inputs.length) {
     for (let i = 0; i < funABI.inputs.length; i++) {
       const type = funABI.inputs[i].type
-      // "false" will be converting to `false` and "true" will be working
-      // fine as abiCoder assume anything in quotes as `true`
-      if (type === 'bool' && args[i] === 'false') {
-        args[i] = false
+      // Normalize bool args case-insensitively: the ABI coder treats ANY
+      // non-empty string as `true`, so without this "False"/"FALSE"/"0"/"no"
+      // would silently encode true (a wrong-but-successful tx). Recognised
+      // falsy/truthy tokens are mapped explicitly; anything unrecognised is
+      // left for the coder as before.
+      if (type === 'bool' && typeof args[i] === 'string') {
+        const token = args[i].trim().toLowerCase()
+        if (token === 'false' || token === '0' || token === 'no' || token === 'off' || token === '') args[i] = false
+        else if (token === 'true' || token === '1' || token === 'yes' || token === 'on') args[i] = true
       }
       types.push(type.indexOf('tuple') === 0 ? tMakeFullTypeDefinition(funABI.inputs[i]) : type)
       if (args.length < types.length) {
         args.push('')
       }
+    }
+  }
+
+  // A trailing arg the user didn't supply was padded with '' above. For a bool
+  // the coder treats '' as falsy and silently encodes `false` (a wrong-but-
+  // successful tx); every other type (e.g. uint256) throws an obscure
+  // `invalid BigNumber string (value="")` from the AbiCoder. Surface the
+  // under-supply here with a clear, parameter-named error for ANY missing
+  // required parameter instead of letting the coder fail cryptically.
+  if (funABI.inputs) {
+    for (let i = providedCount; i < funABI.inputs.length; i++) {
+      const missingType = funABI.inputs[i].type
+      const missingName = funABI.inputs[i].name || ('arg' + i)
+      if (missingType === 'bool') {
+        throw new Error('Missing value for bool parameter "' + missingName + '"')
+      }
+      throw new Error('Missing value for parameter "' + missingName + '" (' + missingType + ')')
     }
   }
 

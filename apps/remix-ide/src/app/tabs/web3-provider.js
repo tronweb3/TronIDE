@@ -66,7 +66,13 @@ export class Web3ProviderModule extends Plugin {
   }
 
   toHexAddress (address) {
-    return typeof address === 'string' ? address.replace(/^(41)/, '0x') : address
+    if (typeof address !== 'string') return address
+    // A base58 (T...) address needs a real decode; 41.../0x... only swap the
+    // prefix. Only the base58 branch is new — the 41/0x/other paths are unchanged.
+    if (address.startsWith('T')) {
+      try { return remixLib.util.addressToHex(address) } catch (error) { return address }
+    }
+    return address.replace(/^(41)/, '0x')
   }
 
   toWeb3Code (contract) {

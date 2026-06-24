@@ -82,9 +82,25 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
   const warningContainer = React.useRef(null)
   const [warningState, setWarningState] = useState({})
   const [state, dispatch] = useReducer(analysisReducer, initialState)
+  const [currentFile, setCurrentFile] = useState('')
 
   useEffect(() => {
     compilation(props.analysisModule, dispatch)
+  }, [props])
+
+  useEffect(() => {
+    const reset = () => { setCurrentFile('') }
+    const setCurrent = (file) => { setCurrentFile(file) }
+    props.analysisModule.on('fileManager', 'currentFileChanged', setCurrent)
+    props.analysisModule.on('fileManager', 'noFileSelected', reset)
+    // Initialise with the file that is already open when the panel mounts
+    props.analysisModule.call('fileManager', 'getCurrentFile').then((file) => {
+      setCurrentFile(file)
+    }).catch(() => { setCurrentFile('') })
+    return () => {
+      props.analysisModule.off('fileManager', 'currentFileChanged')
+      props.analysisModule.off('fileManager', 'noFileSelected')
+    }
   }, [props])
 
   useEffect(() => {
@@ -165,15 +181,24 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
     setWarningState(groupedCategory)
   }
 
-  const run = (lastCompilationResult, lastCompilationSource, currentFile) => {
+  const run = (lastCompilationResult, lastCompilationSource, compiledFile) => {
     if (state.data !== null) {
       if (lastCompilationResult && (categoryIndex.length > 0 || slitherEnabled)) {
         let warningCount = 0
         const warningMessage = []
         const warningErrors = []
 
+        // The last compilation result/source/file (state.*) only describe the
+        // file they were produced from. If the user switched to another contract
+        // that has not been recompiled, that AST is stale for the active file and
+        // must not be used: skip the AST-based Remix modules, and run Slither
+        // against the file currently open in the editor instead of the stale one.
+        const astValidForCurrentFile = !!compiledFile && compiledFile === currentFile
+        const remixCategories = astValidForCurrentFile ? categoryIndex : []
+        const slitherTargetFile = astValidForCurrentFile ? compiledFile : currentFile
+
         // Remix Analysis
-        runner.run(lastCompilationResult, categoryIndex, results => {
+        runner.run(lastCompilationResult, remixCategories, results => {
           results.map((result) => {
             let moduleName
             Object.keys(groupedModules).map(key => {
@@ -188,7 +213,7 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
               let locationString = 'not available'
               let column = 0
               let row = 0
-              let fileName = currentFile
+              let fileName = compiledFile
               if (item.location) {
                 const split = item.location.split(':')
                 const file = split[2]
@@ -231,7 +256,7 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
             props.analysisModule.call('solidity-logic', 'getCompilerState').then((compilerState) => {
               const { currentVersion, optimize, evmVersion } = compilerState
               props.analysisModule.call('terminal', 'log', { type: 'info', value: '[Slither Analysis]: Running...' })
-              props.analysisModule.call('slither', 'analyse', state.file, { currentVersion, optimize, evmVersion }).then((result) => {
+              props.analysisModule.call('slither', 'analyse', slitherTargetFile, { currentVersion, optimize, evmVersion }).then((result) => {
                 if (result.status) {
                   props.analysisModule.call('terminal', 'log', { type: 'info', value: `[Slither Analysis]: Analysis Completed!! ${result.count} warnings found.` })
                   const report = result.data
@@ -240,7 +265,7 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
                     let locationString = 'not available'
                     let column = 0
                     let row = 0
-                    let fileName = currentFile
+                    let fileName = slitherTargetFile
 
                     if (item.sourceMap && item.sourceMap.length) {
                       const fileIndex = Object.keys(lastCompilationResult.sources).indexOf(item.sourceMap[0].source_mapping.filename_relative)
@@ -343,6 +368,11 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
     }
   }
 
+  // The last compilation result is only valid for the file it was produced from.
+  // When the user switches to a contract that has not been compiled, there is no
+  // usable AST for the active file, so analysis must not be runnable on it.
+  const hasCompilationForCurrentFile = state.data !== null && !!state.file && state.file === currentFile
+
   const handleCheckSingle = (event, _index) => {
     _index = _index.toString()
     if (categoryIndex.includes(_index)) {
@@ -432,7 +462,7 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
             label="Autorun"
             onChange={() => {}}
           />
-          <Button buttonText="Run" onClick={() => run(state.data, state.source, state.file)} disabled={(state.data === null || categoryIndex.length === 0) && !slitherEnabled }/>
+          <Button buttonText="Run" onClick={() => run(state.data, state.source, state.file)} disabled={(!hasCompilationForCurrentFile || categoryIndex.length === 0) && !slitherEnabled }/>
         </div>
         { showSlither &&
           <div className="d-flex mt-2" id="enableSlitherAnalysis">

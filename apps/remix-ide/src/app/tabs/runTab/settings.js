@@ -596,13 +596,13 @@ class SettingsUI {
     this._registerBlockchainEvent('networkStatus', this._onNetworkStatus)
 
     this._accountListInterval = setInterval(() => {
-      this.fillAccountsList()
+      this._safeFillAccountsList()
     }, 1000)
     this._intervals.push(this._accountListInterval)
 
     this.el = el
 
-    this.fillAccountsList()
+    this._safeFillAccountsList()
     this.setFinalContextAfterLoad()
     return el
   }
@@ -724,9 +724,32 @@ class SettingsUI {
     if (this._isDestroyed()) return
     // set the final context. Cause it is possible that this is not the one we've originaly selected
     this.selectExEnv.value = this._getProviderDropdownValue()
+    this.reconcileAccountsProvider()
     this.event.trigger('clearInstance', [])
     this.updatePlusButton()
     this.updateTokenPlusButton()
+  }
+
+  // The env dropdown handler (and connectInjectedTronWeb) optimistically mark the
+  // account-list state as the *requested* provider before the switch resolves. But
+  // an injected switch can fail and fall back — e.g. the TronLink wallet is locked,
+  // so askPermission() rejects and executionContextChange leaves us on 'vm'. In that
+  // case pendingAccountsProvider/loadedAccountsProvider stay stuck on 'injected' while
+  // the live provider is 'vm', and fillAccountsList's pending-provider guard then
+  // returns early forever, leaving the account list blank (WAL-LOCK-1).
+  // setFinalContext is the single funnel every context change passes through once it
+  // settles, so re-sync the account-list state to the provider that actually took
+  // effect here and force a refill when they diverged.
+  reconcileAccountsProvider () {
+    const provider = this.blockchain.getProvider()
+    if (this.pendingAccountsProvider && this.pendingAccountsProvider !== provider) {
+      this.pendingAccountsProvider = null
+    }
+    if (this.loadedAccountsProvider !== provider) {
+      this.loadedAccountsProvider = provider
+      this.clearAccountsList()
+      this._safeFillAccountsList()
+    }
   }
 
   setFinalContextAfterLoad () {
@@ -984,6 +1007,21 @@ class SettingsUI {
   }
 
   // TODO: unclear what's the goal of accountListCallId, feels like it can be simplified
+  // fire-and-forget wrapper for the 1s poll / initial call: fillAccountsList
+  // is async and talks to the (possibly locked/mid-update) injected wallet; an
+  // unawaited rejection would surface in the runtime-error overlay as a phantom
+  // IDE P0. Swallow + log — a failed background account refresh is benign.
+  _safeFillAccountsList () {
+    try {
+      const ret = this.fillAccountsList()
+      if (ret && typeof ret.catch === 'function') {
+        ret.catch((e) => console.warn('[runTab] account list refresh failed:', e))
+      }
+    } catch (e) {
+      console.warn('[runTab] account list refresh failed:', e)
+    }
+  }
+
   async fillAccountsList () {
     if (this._isDestroyed()) return
     this.accountListCallId++

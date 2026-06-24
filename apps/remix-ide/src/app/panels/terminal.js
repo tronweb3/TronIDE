@@ -123,7 +123,15 @@ class Terminal extends Plugin {
         else if (output) scopedCommands.log(output)
       })
     }, { activate: true })
-    function basicFilter (value, query) { try { return value.indexOf(query) !== -1 } catch (e) { return false } }
+    // `value` is the logged args array; match `query` as a substring against any
+    // element. (Array.indexOf only matches a whole element exactly, so substring
+    // search of console output silently found nothing.)
+    function basicFilter (value, query) {
+      try {
+        if (Array.isArray(value)) return value.some((v) => String(v).indexOf(query) !== -1)
+        return String(value).indexOf(query) !== -1
+      } catch (e) { return false }
+    }
 
     self.registerFilter('log', basicFilter)
     self.registerFilter('info', basicFilter)
@@ -294,7 +302,7 @@ class Terminal extends Plugin {
       </div>
     `
     self._view.el = yo`
-      <div class="${css.panel}" style="height: 180px;">
+      <div class="${css.panel}" style="height: 250px;">
         ${self._view.bar}
         ${self._view.term}
       </div>
@@ -312,9 +320,11 @@ class Terminal extends Plugin {
       var clipboard = (event.clipboardData || window.clipboardData)
       var text = clipboard.getData('text/plain')
       text = text.replace(/[^\x20-\xFF]/gi, '') // remove non-UTF-8 characters
-      var temp = document.createElement('div')
-      temp.innerHTML = text
-      var textnode = document.createTextNode(temp.textContent)
+      // Insert the (already filtered) clipboard text as a pure text node. Going
+      // through `div.innerHTML = text` first would parse the string as HTML —
+      // e.g. an `<img src=x onerror=...>` fires its handler even on a detached
+      // node — so build the text node directly instead.
+      var textnode = document.createTextNode(text)
       selection.getRangeAt(0).insertNode(textnode)
       selection.empty()
       self.scroll2bottom()

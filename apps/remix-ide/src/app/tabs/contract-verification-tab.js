@@ -5,6 +5,7 @@
 
 import { ViewPlugin } from '@remixproject/engine-web'
 import * as packageJson from '../../../../../package.json'
+import { TronWeb } from 'tronweb'
 
 const yo = require('yo-yo')
 const csjs = require('csjs-inject')
@@ -41,19 +42,61 @@ function getContractApiOverrides (rawValue, fallback) {
   return parseEndpointList(rawValue, fallback)
 }
 
-function asNonEmptyContractObject (value) {
-  if (!value || typeof value !== 'object') return null
-  return Object.keys(value).length > 0 ? value : null
+function isValidTronAddress (address) {
+  if (!address || typeof address !== 'string') return false
+  try {
+    return TronWeb.isAddress(address)
+  } catch (error) {
+    console.debug('[contractVerification] TronWeb.isAddress threw for', address, error)
+    return false
+  }
+}
+
+// TronScan's /api/contract endpoint only matches the base58 (T...) form: a 41...
+// hex (or 0x...) address returns a bare non-contract skeleton, so an existing
+// contract entered as hex looked "not found". Normalize any valid input to base58
+// before querying. base58 input is returned unchanged.
+function toBase58Address (address) {
+  let hex = null
+  if (/^41[0-9a-fA-F]{40}$/.test(address)) hex = address
+  else if (/^0x[0-9a-fA-F]{40}$/.test(address)) hex = '41' + address.slice(2)
+  if (!hex) return address
+  try {
+    return TronWeb.address.fromHex(hex)
+  } catch (error) {
+    console.debug('[contractVerification] could not normalize hex address to base58', address, error)
+    return address
+  }
+}
+
+// TronScan's /api/contract endpoint always echoes a one-element `data` array,
+// even for an address that is not a deployed contract. For a non-contract it
+// returns only the bare account skeleton (address/balance/balanceInUsd/
+// trxCount/creator) with no contract-identifying fields, so a non-empty object
+// is NOT sufficient proof that the contract exists. We require at least one
+// field that TronScan only emits for an actual contract record.
+function hasContractIdentity (value) {
+  if (!value || typeof value !== 'object') return false
+  const verifyStatus = value.verify_status !== undefined ? value.verify_status : value.verifyStatus
+  if (typeof verifyStatus === 'number') return true
+  if (value.contractInfo || value.source_code || value.sourceCode || value.bytecode || value.byte_code) return true
+  if (value.name || value.contractName || value.contract_name) return true
+  if (value.date_created !== undefined || value.methodMap !== undefined || value.tokenInfo !== undefined) return true
+  return false
+}
+
+function asContractObject (value) {
+  return hasContractIdentity(value) ? value : null
 }
 
 function extractContractFromStatusPayload (payload) {
   if (!payload || typeof payload !== 'object') return null
-  if (Array.isArray(payload)) return asNonEmptyContractObject(payload[0])
+  if (Array.isArray(payload)) return asContractObject(payload[0])
   if (Object.prototype.hasOwnProperty.call(payload, 'data')) {
     const data = payload.data
-    return asNonEmptyContractObject(Array.isArray(data) ? data[0] : data)
+    return asContractObject(Array.isArray(data) ? data[0] : data)
   }
-  return asNonEmptyContractObject(payload)
+  return asContractObject(payload)
 }
 
 const icon = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="%23888" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.6-2.8 8.2-7 10-4.2-1.8-7-5.4-7-10V6l7-3z"/><path d="M8.8 12.2l2.1 2.1 4.4-5"/><path d="M8.5 17h7" opacity=".55"/></svg>'
@@ -98,15 +141,21 @@ const css = csjs`
   }
   .input,
   .select {
-    border: 1px solid var(--light);
-    background: var(--body-bg);
-    color: var(--text);
+    border: 1px solid var(--secondary);
+    background: var(--input, #35384C);
+    color: var(--text, #dfe1ea);
     padding: 8px 10px;
     width: 100%;
+  }
+  .input::placeholder {
+    color: var(--secondary);
+    opacity: 1;
   }
   .input:focus,
   .select:focus {
     border-color: #C8302D;
+    background: var(--input, #35384C);
+    color: var(--text, #dfe1ea);
     outline: 1px solid rgba(200, 48, 45, .25);
   }
   .actions {
@@ -284,12 +333,19 @@ export class ContractVerificationTab extends ViewPlugin {
     if (!compilation) {
       throw new Error('Compile a Solidity contract first, then generate the TronScan verification package.')
     }
+    const contractAddress = (this.state.contractAddress || '').trim()
+    if (!contractAddress) {
+      throw new Error('Enter the deployed TRON contract address before generating the package; a package without an address cannot be submitted to TronScan.')
+    }
+    if (!isValidTronAddress(contractAddress)) {
+      throw new Error('Invalid TRON contract address. Enter a base58check T... or 41... hex address before generating the package.')
+    }
     const settings = this.readCompilationSettings(compilation.contract)
     const sourceFiles = compilation.source && compilation.source.sources ? compilation.source.sources : {}
     return JSON.stringify({
       tool: 'TronIDE Contract Verification MVP',
       network: this.getTarget().label,
-      contractAddress: this.state.contractAddress || '',
+      contractAddress,
       contractName: compilation.contractName,
       sourceFile: compilation.fileName,
       compilerVersion: compilation.compilerVersion,
@@ -357,22 +413,30 @@ export class ContractVerificationTab extends ViewPlugin {
       this.setStatus('Enter a deployed TRON contract address before checking TronScan status.', 'error')
       return
     }
+    if (!isValidTronAddress(address)) {
+      this.setStatus('Invalid TRON address. Enter a base58check address starting with "T" (34 chars) or a 41... hex address.', 'error')
+      return
+    }
     this.setStatus('Checking TronScan contract status...', 'loading')
+    // TronScan only matches the base58 form, so query with it even when the user
+    // typed a 41.../0x hex address (otherwise a real contract reads as not-found).
+    const queryAddress = toBase58Address(address)
     const target = this.getTarget()
     const contractApis = target.apis || (target.api ? [target.api] : [])
-    const queries = contractApis.flatMap((api) => [`${api}?contract=${encodeURIComponent(address)}`, `${api}?address=${encodeURIComponent(address)}`])
+    const queries = contractApis.flatMap((api) => [`${api}?contract=${encodeURIComponent(queryAddress)}`, `${api}?address=${encodeURIComponent(queryAddress)}`])
     try {
       let contract = null
+      let reachedEndpoint = false
       let lastError = null
       for (const query of queries) {
         try {
           const response = await window.fetch(query)
           if (response.ok) {
+            reachedEndpoint = true
             const payload = await response.json()
             contract = extractContractFromStatusPayload(payload)
             if (contract) break
-            lastError = new Error('TronScan endpoint returned no contract data')
-            console.debug('[contractVerification] contract status endpoint returned no contract data', query, payload)
+            console.debug('[contractVerification] contract status endpoint reported no contract for the address', query, payload)
             continue
           }
           lastError = new Error(`TronScan endpoint returned ${response.status}`)
@@ -382,7 +446,15 @@ export class ContractVerificationTab extends ViewPlugin {
           console.debug('[contractVerification] contract status endpoint failed', query, error)
         }
       }
-      if (!contract) throw lastError || new Error('TronScan did not return a readable contract response.')
+      if (!contract) {
+        // We could reach TronScan but it has no contract record for this
+        // (valid-format) address: report "not found" rather than a found/error.
+        if (reachedEndpoint) {
+          this.setStatus('TronScan has no contract at this address on the selected network. Check the address and network, or confirm the contract is deployed.', 'error')
+          return
+        }
+        throw lastError || new Error('TronScan did not return a readable contract response.')
+      }
       const verified = contract && (contract.verify_status === 2 || contract.verifyStatus === 2 || contract.contractInfo || contract.source_code || contract.sourceCode)
       const name = contract && (contract.name || contract.contractName || contract.contract_name)
       this.setStatus(verified ? `TronScan reports this contract as verified${name ? `: ${name}` : ''}.` : 'TronScan found the contract, but source verification is not detected yet.', verified ? 'ready' : 'idle')

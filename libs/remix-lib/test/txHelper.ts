@@ -42,6 +42,32 @@ tape('getFunction', function (st) {
   st.equal(fn.type, 'receive')
 })
 
+tape('txHelper.encodeParams surfaces a missing required parameter by name and type', function (st) {
+  st.plan(4)
+  // Regression for f81047316: an under-supplied non-bool arg used to fail with a
+  // cryptic `invalid BigNumber string (value="")` from the AbiCoder; a missing
+  // bool used to silently encode `false` (a wrong-but-successful tx).
+  st.throws(
+    () => txHelper.encodeParams({ inputs: [{ name: 'amount', type: 'uint256' }] }, []),
+    /Missing value for parameter "amount" \(uint256\)/,
+    'missing uint256 names the parameter and its type'
+  )
+  st.throws(
+    () => txHelper.encodeParams({ inputs: [{ name: 'flag', type: 'bool' }] }, []),
+    /Missing value for bool parameter "flag"/,
+    'missing bool keeps the bool-specific message'
+  )
+  st.throws(
+    () => txHelper.encodeParams({ inputs: [{ name: '', type: 'address' }] }, []),
+    /Missing value for parameter "arg0" \(address\)/,
+    'an unnamed missing parameter falls back to argN'
+  )
+  st.doesNotThrow(
+    () => txHelper.encodeParams({ inputs: [{ name: 'amount', type: 'uint256' }] }, ['1']),
+    'a fully-supplied call encodes without the missing-parameter error'
+  )
+})
+
 const abi = `[
 	{
 		"constant": false,

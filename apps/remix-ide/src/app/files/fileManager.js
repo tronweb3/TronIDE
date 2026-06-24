@@ -759,7 +759,10 @@ class FileManager extends Plugin {
     var provider = this.fileProviderOf(currentFile)
     if (provider) {
       provider.get(currentFile, (error, content) => {
-        if (error) console.log(error)
+        // A read failure used to fall through to setText(undefined), wiping the
+        // open editor to blank — and a subsequent save would then clobber the
+        // real file. Keep what's shown and surface the error instead.
+        if (error) return console.log(error)
         this.editor.setText(content)
       })
     } else {

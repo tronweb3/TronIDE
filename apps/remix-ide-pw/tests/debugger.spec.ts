@@ -139,4 +139,143 @@ test.describe('Debugger over a VM (Tron) transaction', () => {
     const localsText = await stepIntoForwardUntilLocals(page, /proposal/)
     expect(localsText).toMatch(/proposal/)
   })
+
+  test('TC-DBG-004: entry function resolves by calldata selector — distinct functions, distinct locals', async ({ page }) => {
+    await compileAndOpenUdapp(page, '3_Ballot.sol', 'Ballot')
+    await page.locator('input[placeholder="bytes32[] proposalNames"]').fill('["0x0000000000000000000000000000000000000000000000000000000000000001"]')
+    await page.locator('button[data-id="Deploy - transact (not payable)"]', { hasText: 'Deploy' }).click()
+    const instance = page.locator('.instance, *[data-id^="instance"]').first()
+    await expect(instance).toBeVisible({ timeout: 30_000 })
+    await instance.locator('[data-id="universalDappUiTitleExpander"]').click()
+
+    // Call giveRightToVote(address) — a different selector than vote(uint256).
+    const voterAddress = await page.locator('select[data-id="runTabSelectAccount"] option').nth(1).getAttribute('value')
+    await page.locator('#runTabView input[title="address voter"]').fill(voterAddress as string)
+    await instance.locator('button[title*="giveRightToVote"]', { hasText: 'giveRightToVote' }).click()
+    const debugButtons = page.locator('*[data-shared="txLoggerDebugButton"]')
+    await expect(debugButtons).toHaveCount(2, { timeout: 30_000 })
+    await debugButtons.last().click()
+    await expectDebuggerReady(page)
+
+    // The debugger must resolve the entry to giveRightToVote: its named param
+    // `voter` appears in the locals — and vote()'s `proposal` must NOT.
+    const localsText = await stepIntoForwardUntilLocals(page, /voter/)
+    expect(localsText).toMatch(/voter/)
+    expect(localsText).not.toMatch(/proposal\b/)
+  })
+
+  test('TC-DBG-009: debugging a stale tx hash after reload fails with a clear message, no blank/uncaught', async ({ page }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    // Produce a tx, then reload — the VM forgets it; use a well-formed but
+    // unknown hash to hit the same not-found path deterministically.
+    await compileAndOpenUdapp(page, '1_Storage.sol', 'Storage')
+    await page.locator('button[data-id="Deploy - transact (not payable)"]', { hasText: 'Deploy' }).click()
+    await expect(page.locator('.instance').first()).toBeVisible({ timeout: 30_000 })
+    await page.goto('/')
+    await dismissWelcomeModal(page)
+    await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+
+    // The debugger plugin only joins the icon panel once activated — go
+    // through the Plugin Manager after the reload.
+    await page.locator('#icon-panel div[plugin="pluginManager"]').click()
+    await page.locator('[data-id="pluginManagerComponentSearchInput"]').fill('debugger')
+    await page.locator('[data-id="pluginManagerComponentActivateButtondebugger"]').click()
+    const debuggerIcon = page.locator('#icon-panel div[plugin="debugger"]')
+    await expect(debuggerIcon).toBeVisible({ timeout: 15_000 })
+    await debuggerIcon.click()
+    const txInput = page.locator('[data-id="debuggerTransactionInput"]')
+    await txInput.waitFor({ timeout: 15_000 })
+    await txInput.fill('0x' + 'ab'.repeat(32))
+    await page.locator('[data-id="debuggerTransactionStartButton"]').click()
+
+    // A clear message must appear in the debugger panel ("unable to retrieve
+    // txReceipt …"); the panel must stay rendered and no uncaught error may
+    // escape to the page.
+    await expect(page.locator('#side-panel')).toContainText(/unable to retrieve|not found|invalid/i, { timeout: 30_000 })
+    await expect(txInput).toBeVisible()
+    expect(pageErrors).toEqual([])
+  })
+
+  test('TC-DBG-008: a long trace (big loop) stays steppable — UI does not freeze, steps do not drop', async ({ page }) => {
+    await compileAndOpenUdapp(page, '1_Storage.sol', 'Storage')
+    const source = [
+      '// SPDX-License-Identifier: GPL-3.0',
+      'pragma solidity >=0.8.2 <0.9.0;',
+      'contract Loop {',
+      '  uint256 public acc;',
+      '  function burn(uint256 n) public { uint256 s = 0; for (uint256 i = 0; i < n; i++) { s += i; } acc = s; }',
+      '}'
+    ].join('\n')
+    await page.locator('#input').waitFor({ timeout: 10_000 })
+    await page.evaluate((src) => {
+      const el = document.getElementById('input') as any
+      el.editor.session.setValue(src)
+    }, source)
+    await page.locator('#icon-panel div[plugin="solidity"]').click()
+    await page.locator('*[data-id="compilerContainerCompileBtn"]').click()
+    await expect(page.locator('*[data-id="compiledContracts"]')).toContainText('Loop', { timeout: 30_000 })
+    await page.locator('#icon-panel div[plugin="udapp"]').click()
+    await page.locator('#runTabView select[class^="contractNames"]').selectOption('Loop')
+    await page.locator('button[data-id="Deploy - transact (not payable)"]', { hasText: 'Deploy' }).click()
+    const instance = page.locator('.instance').first()
+    await expect(instance).toBeVisible({ timeout: 30_000 })
+    await instance.locator('[data-id="universalDappUiTitleExpander"]').click()
+    await page.locator('#runTabView input[title="uint256 n"]').fill('200')
+    await instance.locator('button[title^="burn - "]', { hasText: 'burn' }).click()
+
+    const debugButtons = page.locator('*[data-shared="txLoggerDebugButton"]')
+    await expect(debugButtons).toHaveCount(2, { timeout: 30_000 })
+    await debugButtons.last().click()
+    await expectDebuggerReady(page)
+
+    // The slider exposes a long trace (a 200-iteration loop is hundreds of vm
+    // steps). Jumping to the end keeps the panels live and the step counter
+    // tracks — no freeze, no dropped final step.
+    const slider = page.locator('input[data-id="slider"]')
+    await slider.waitFor({ timeout: 30_000 })
+    const max = Number(await slider.getAttribute('max'))
+    expect(max).toBeGreaterThan(150)
+    await slider.fill(String(max))
+    await slider.dispatchEvent('change')
+    const stepDetail = page.locator('*[data-id="stepdetail"]')
+    await expect(stepDetail).toContainText(new RegExp(`vm trace step:\\s*${max}`), { timeout: 30_000 })
+
+    // And stepping back from the end stays responsive (controls still wired).
+    await page.locator('*[data-id="buttonNavigatorIntoBack"]').click()
+    await expect(stepDetail).toContainText(new RegExp(`vm trace step:\\s*${max - 1}`), { timeout: 15_000 })
+  })
+
+  test('TC-DBG-005: instruction disassembly shows real opcodes, no Missing parameter value', async ({ page }) => {
+    await compileAndOpenUdapp(page, '1_Storage.sol', 'Storage')
+    await page.locator('button[data-id="Deploy - transact (not payable)"]', { hasText: 'Deploy' }).click()
+    const instance = page.locator('.instance, *[data-id^="instance"]').first()
+    await expect(instance).toBeVisible({ timeout: 30_000 })
+    await instance.locator('[data-id="universalDappUiTitleExpander"]').click()
+    await page.locator('#runTabView input[title="uint256 num"]').fill('42')
+    await instance.locator('button[title="store - transact (not payable)"]', { hasText: 'store' }).click()
+    const debugButtons = page.locator('*[data-shared="txLoggerDebugButton"]')
+    await expect(debugButtons).toHaveCount(2, { timeout: 30_000 })
+    await debugButtons.last().click()
+    await expectDebuggerReady(page)
+
+    // The trace starts at pc 0, so the instruction window covers the standard
+    // solidity prologue 6080604052. Before the codeUtils fix the disassembler
+    // decoded EVERY byte as INVALID (and could surface 'Missing parameter
+    // value') because @tvmjs getOpcodesForHF()'s wrapper object was used as a
+    // Map — guard against both failure modes.
+    // Operands render without a 0x prefix: "000 PUSH1 80", "002 PUSH1 40", …
+    const asm = page.locator('#asmitems')
+    await expect(asm).toBeVisible({ timeout: 30_000 })
+    await expect(asm).toContainText(/PUSH1 80/, { timeout: 30_000 })
+    const txt = await asm.innerText()
+    expect(txt).not.toContain('Missing parameter value')
+    expect(txt).toMatch(/PUSH1 40/)
+    expect(txt).toMatch(/MSTORE/)
+    // The window starts at pc 0 (deployed-code prologue): every byte must
+    // decode as a real opcode — the pre-fix failure mode was all-INVALID.
+    expect(txt.match(/INVALID/g) || []).toHaveLength(0)
+    expect((txt.match(/PUSH\d/g) || []).length).toBeGreaterThan(10)
+  })
 })

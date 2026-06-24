@@ -52,7 +52,7 @@ class Chat extends Component {
       currentScrollTop: 0,
       canScrollBottom: true,
       apiKey:'',
-      gptv:'claude-opus-4-7',
+      gptv:'claude-opus-4-8',
       context:'none',
       activeKey:['1'],
       enableStreaming:true,

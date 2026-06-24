@@ -1,6 +1,7 @@
 'use strict'
 import tape from 'tape'
 import {
+  clearInjectedWalletConnectionGuard,
   getInjectedWalletStatus,
   normalizeWalletError,
   requestInjectedWalletAccounts,
@@ -67,4 +68,26 @@ tape('walletProviderAdapter guards duplicate connect requests', async function (
   t.equal(requestCount, 1)
   t.deepEqual(first, ['TConnected'])
   t.deepEqual(second, ['TConnected'])
+})
+
+tape('walletProviderAdapter times out a wedged tron_requestAccounts so the guard cannot wedge', async function (t) {
+  t.plan(1)
+  // Regression for 1001b5d53: a dead/zombie bridge whose tron_requestAccounts
+  // never settles must reject with a timeout (releasing the connection guard for
+  // a retry) instead of hanging forever. Inject scope.setTimeout so the timeout
+  // fires immediately rather than waiting the real 60s.
+  clearInjectedWalletConnectionGuard()
+  const scope: any = {
+    setTimeout: (fn: () => void) => { fn(); return 1 },
+    clearTimeout: () => {},
+    tronWeb: { defaultAddress: { base58: '' } },
+    tronLink: { ready: false, request: () => new Promise(() => {}) } // never settles
+  }
+  try {
+    await requestInjectedWalletAccounts(scope)
+    t.fail('a never-settling request should reject, not hang')
+  } catch (error: any) {
+    t.equal(error.code, WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT, 'wedged request rejects with a timeout')
+  }
+  clearInjectedWalletConnectionGuard()
 })

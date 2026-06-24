@@ -426,32 +426,32 @@ export function parseFunctionParams (params) {
       startIndex = -1
       let endQuoteIndex = false
       // look for closing quote. On success, push the complete string in arguments list
-      for (let j = i + 1; !endQuoteIndex; j++) {
+      for (let j = i + 1; !endQuoteIndex && j < params.length; j++) {
         if (params.charAt(j) === '"') {
           args.push(params.substring(i + 1, j))
           endQuoteIndex = true
           i = j
         }
-        // Throw error if end of params string is arrived but couldn't get end quote
-        if (!endQuoteIndex && j === params.length - 1) {
-          throw new Error('invalid params')
-        }
+      }
+      // Throw error if end of params string is arrived but couldn't get end quote
+      if (!endQuoteIndex) {
+        throw new Error('invalid params')
       }
     } else if (params.charAt(i) === '[') { // If an array/struct opening bracket is received
       startIndex = -1
       let bracketCount = 1
       let j
-      for (j = i + 1; bracketCount !== 0; j++) {
+      for (j = i + 1; bracketCount !== 0 && j < params.length; j++) {
         // Increase count if another array opening bracket is received (To handle nested array)
         if (params.charAt(j) === '[') {
           bracketCount++
         } else if (params.charAt(j) === ']') { // // Decrease count if an array closing bracket is received (To handle nested array)
           bracketCount--
         }
-        // Throw error if end of params string is arrived but couldn't get end of tuple
-        if (bracketCount !== 0 && j === params.length - 1) {
-          throw new Error('invalid tuple params')
-        }
+      }
+      // Throw error if end of params string is arrived but couldn't get end of tuple
+      if (bracketCount !== 0) {
+        throw new Error('invalid tuple params')
       }
       // If bracketCount = 0, it means complete array/nested array parsed, push it to the arguments list
       args.push(JSON.parse(normalizeJsonLikeParamLiterals(params.substring(i, j))))
@@ -568,10 +568,13 @@ export function isArrayOrStringStart (str, index) {
 
 function shouldValidateUnsafeIntegerInput (input?: { type?: string }) {
   if (!input || !input.type) return true
+  // trcToken is a TRON-native alias for uint256 and is just as precision-unsafe,
+  // so it must get the same unsafe-integer-literal warning as uint/int args.
+  if (input.type === 'trcToken' || input.type.indexOf('trcToken[') === 0) return true
   return /^u?int(?:\d+)?(?:\[\d*\])*$/.test(input.type)
 }
 
-function normalizeJsonLikeParamLiterals (value: string): string {
+export function normalizeJsonLikeParamLiterals (value: string): string {
   let normalized = ''
   let inString = false
   let escaping = false

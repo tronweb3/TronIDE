@@ -33,6 +33,20 @@ const path = require('path')
 const FormData = require('form-data')
 const axios = require('axios')
 
+// Pinata calls carry the pinata_secret_api_key in axios request headers. On
+// failure, never surface the raw axios error object (its `config.headers` holds
+// that secret) — extract only the HTTP status and Pinata's own message.
+function redactPinataError (error) {
+  const status = error && error.response && error.response.status
+  const data = error && error.response && error.response.data
+  const detail =
+    (data && ((data.error && (data.error.reason || data.error)) || data.message)) ||
+    (error && error.response && error.response.statusText) ||
+    (error && error.message) ||
+    'unknown error'
+  return (status ? status + ' ' : '') + (typeof detail === 'string' ? detail : 'request failed')
+}
+
 const profile = {
   name: 'dGitProvider',
   displayName: 'Decentralized git',
@@ -269,7 +283,7 @@ class DGitProvider extends Plugin {
         })
       return result.data.IpfsHash
     } catch (error) {
-      throw new Error(error)
+      throw new Error('Pinata pin request failed: ' + redactPinataError(error))
     }
   }
 
@@ -286,7 +300,7 @@ class DGitProvider extends Plugin {
         })
       return result.data
     } catch (error) {
-      throw new Error(error)
+      throw new Error('Pinata pinList request failed: ' + redactPinataError(error))
     }
   }
 
@@ -302,7 +316,7 @@ class DGitProvider extends Plugin {
         })
       return true
     } catch (error) {
-      throw new Error(error)
+      throw new Error('Pinata unpin request failed: ' + redactPinataError(error))
     }
   };
 

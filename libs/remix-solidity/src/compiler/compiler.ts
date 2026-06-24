@@ -24,6 +24,7 @@ import compilerInput from './compiler-input'
 import EventManager from '../lib/eventManager'
 import txHelper from './txHelper'
 import { assertAllowedCompilerURL } from './compiler-utils'
+import { normalizeRuns } from './runs'
 import {
   Source, SourceWithTarget, MessageFromWorker, CompilerState, CompilationResult,
   visitContractsCallbackParam, visitContractsCallbackInterface, CompilationError,
@@ -79,7 +80,7 @@ export class Compiler {
 
   set <K extends keyof CompilerState> (key: K, value: CompilerState[K]): void {
     this.state[key] = value
-    if (key === 'runs') this.state['runs'] = parseInt(value)
+    if (key === 'runs') this.state['runs'] = normalizeRuns(value)
   }
 
   async loadWorkerHandler () {

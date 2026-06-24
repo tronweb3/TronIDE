@@ -116,9 +116,22 @@ export class SidePanel extends AbstractPanel {
   }
 
   removeView (profile) {
+    const wasActive = this.active === profile.name
     super.removeView(profile)
     this.emit('pluginDisabled', profile.name)
     this.verticalIcons.unlinkContent(profile)
+    // When the plugin currently shown in the side panel is deactivated, the
+    // panel would otherwise keep a stale header over an empty body (e.g.
+    // deactivating Contract Verification from the home cards or plugin manager).
+    // Fall back to the file explorer so the side panel stays consistent — this
+    // mirrors the vertical-icons context-menu deactivate behavior.
+    if (wasActive) {
+      if (this.contents.filePanel) {
+        this.verticalIcons.select('filePanel')
+      } else {
+        this.renderHeader()
+      }
+    }
   }
 
   addView (profile, view, options = {}) {

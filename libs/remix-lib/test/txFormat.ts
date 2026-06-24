@@ -184,6 +184,32 @@ tape('findUnsafeIntegerLiteralParams identifies unsafe bare integer literals wit
 
 /* tape *********************************************************** */
 
+// Regression for the P1 IDE-freeze defect: parseFunctionParams used to infinite-loop on
+// the main thread whenever the LAST character of the argument string was an unpaired
+// opening delimiter (`"` or `[`), because the loop bound `j === params.length - 1` was
+// never reached (j started at params.length). Each hang case runs under a short per-test
+// timeout so that a regression re-hang fails fast instead of hanging the whole suite.
+const parseFunctionParamsHangInputs = ['5"', 'hello"', '"ok", 5"', '0x0000000000000000000000000000000000000000"', '[', '5,[']
+parseFunctionParamsHangInputs.forEach((input) => {
+  tape(`parseFunctionParams throws (not hangs) on unterminated delimiter ${JSON.stringify(input)} (P1 freeze regression)`, { timeout: 2000 }, function (t) {
+    t.plan(1)
+    t.throws(() => txFormat.parseFunctionParams(input), 'should throw instead of hanging')
+  })
+})
+
+tape('parseFunctionParams still parses / throws correctly for well-formed and obviously-invalid inputs', function (t) {
+  t.plan(5)
+  // valid inputs must keep parsing to the same shapes
+  t.deepEqual(txFormat.parseFunctionParams('7, "ok"'), ['7', 'ok'], 'mixed int + quoted string still parses')
+  t.deepEqual(txFormat.parseFunctionParams('"a,b"'), ['a,b'], 'quoted string containing a comma is one arg')
+  t.deepEqual(txFormat.parseFunctionParams('[1,2,3]'), [['1', '2', '3']], 'simple array still parses')
+  // unterminated delimiters that are not the final char must still throw cleanly
+  t.throws(() => txFormat.parseFunctionParams('"hello'), 'unterminated quote still throws')
+  t.throws(() => txFormat.parseFunctionParams('[1,2,'), 'unterminated tuple still throws')
+})
+
+/* tape *********************************************************** */
+
 tape('ContractParameters - (TxFormat.buildData) - link Libraries', function (t) {
   const compileData = compiler.compile(compilerInput(deploySimpleLib))
 

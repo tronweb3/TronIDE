@@ -213,7 +213,11 @@ class PluginLoader {
         const saved = actives.filter((name) => !this.donotAutoReload.includes(name))
         localStorage.setItem('workspace', JSON.stringify(saved))
       },
-      get: () => { return JSON.parse(localStorage.getItem('workspace')) }
+      get: () => {
+        // Guard against a corrupt 'workspace' value: an unparseable string here
+        // throws on the boot path (app.js run()) and white-screens the IDE.
+        try { return JSON.parse(localStorage.getItem('workspace')) } catch (e) { return null }
+      }
     }
 
     this.loaders.queryParams = {

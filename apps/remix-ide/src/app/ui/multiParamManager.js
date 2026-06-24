@@ -237,7 +237,11 @@ class MultiParamManager {
           ${copyToClipboard(
             () => {
               var multiString = this.getMultiValsString()
-              var multiJSON = JSON.parse('[' + multiString + ']')
+              // Quote bare integer/hex literals (incl. those inside [...] arrays,
+              // which getMultiValsString leaves unquoted) so big ints keep full
+              // precision through JSON.parse instead of being silently rounded.
+              var normalizedMultiString = txFormat.normalizeJsonLikeParamLiterals ? txFormat.normalizeJsonLikeParamLiterals(multiString) : multiString
+              var multiJSON = JSON.parse('[' + normalizedMultiString + ']')
               var encodeObj
               if (this.evmBC) {
                 encodeObj = txFormat.encodeData(this.funABI, multiJSON, this.evmBC)

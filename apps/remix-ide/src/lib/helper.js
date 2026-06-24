@@ -19,6 +19,7 @@
 
 var async = require('async')
 const ethJSUtil = require('@tvmjs/util')
+const { keccak256 } = require('js-sha3')
 const remixLib = require('@remix-project/remix-lib')
 
 module.exports = {
@@ -158,12 +159,19 @@ module.exports = {
   hashPersonalMessage (message) {
     const TRX_MESSAGE_HEADER = '\x19TRON Signed Message:\n32'
     const prefix = Buffer.from(TRX_MESSAGE_HEADER, 'utf-8')
-    return ethJSUtil.keccak(Buffer.concat([prefix, Buffer.from(message)]))
+    // @tvmjs/util dropped the keccak() helper (only KECCAK256_* constants
+    // remain), which broke Sign message with "ethJSUtil.keccak is not a
+    // function" (TC-WAL-014). js-sha3 produces the identical digest.
+    return Buffer.from(keccak256.arrayBuffer(Buffer.concat([prefix, Buffer.from(message)])))
   }
 }
 
-function findDeep (object, fn, found = { break: false, value: undefined }) {
+function findDeep (object, fn, found = { break: false, value: undefined }, seen = new WeakSet()) {
   if (typeof object !== 'object' || object === null) return
+  // Guard against circular references (logged tx/receipt/provider objects can
+  // hold back-pointers) — otherwise this recursion overflows the stack / hangs.
+  if (seen.has(object)) return
+  seen.add(object)
   for (var i in object) {
     if (found.break) break
     var el = object[i]
@@ -173,7 +181,7 @@ function findDeep (object, fn, found = { break: false, value: undefined }) {
       found.break = true
       break
     } else {
-      findDeep(el, fn, found)
+      findDeep(el, fn, found, seen)
     }
   }
   return found.value

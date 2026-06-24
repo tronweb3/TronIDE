@@ -84,16 +84,54 @@ class Blockchain {
 
     if (this.networkStatusInterval) clearInterval(this.networkStatusInterval)
     this.networkStatusInterval = setInterval(() => {
-      this.detectNetwork((error, network) => {
+      this._refreshNetworkStatus()
+    }, NETWORK_STATUS_POLL_INTERVAL)
+
+    this._refreshNetworkStatus()
+
+    // WAL-NET-1: TronLink 4.9 gives no in-page event when the user switches
+    // network in the wallet — but it does swap the provider's fullNode host.
+    // Watch that synchronous string every second (no RPC) and refresh the
+    // network status on change, instead of leaving the indicator and the
+    // pending-tx snapshot stale for up to the 30s poll.
+    if (typeof window !== 'undefined' && !this._injectedHostWatchInterval) {
+      this._injectedHostWatchInterval = setInterval(() => {
+        if (this.getProvider() !== 'injected') {
+          this._lastInjectedHost = undefined
+          return
+        }
+        const tronWeb = window.tronWeb || this.executionContext.web3()
+        const host = (tronWeb && tronWeb.fullNode && tronWeb.fullNode.host) || ''
+        if (!host) return
+        if (this._lastInjectedHost === undefined) {
+          this._lastInjectedHost = host
+          return
+        }
+        if (host === this._lastInjectedHost) return
+        this._lastInjectedHost = host
+        this.executionContext.invalidateNetworkDetectionCache()
+        this._refreshNetworkStatus()
+      }, 1000)
+    }
+  }
+
+  // detectNetwork is async; these callers are fire-and-forget on 1s/30s polls.
+  // A throwing networkStatus listener (or a wallet that's locked/mid-update)
+  // would otherwise reject the unawaited promise and surface in the runtime
+  // error overlay as a phantom IDE P0. Swallow + log instead — a failed
+  // background network refresh is benign.
+  _refreshNetworkStatus () {
+    try {
+      const ret = this.detectNetwork((error, network) => {
         this.networkStatus = { network, error }
         this.event.trigger('networkStatus', [this.networkStatus])
       })
-    }, NETWORK_STATUS_POLL_INTERVAL)
-
-    this.detectNetwork((error, network) => {
-      this.networkStatus = { network, error }
-      this.event.trigger('networkStatus', [this.networkStatus])
-    })
+      if (ret && typeof ret.catch === 'function') {
+        ret.catch((e) => console.warn('[blockchain] network status refresh failed:', e))
+      }
+    } catch (e) {
+      console.warn('[blockchain] network status refresh failed:', e)
+    }
   }
 
   getCurrentNetworkStatus () {
@@ -304,7 +342,13 @@ class Blockchain {
     }
 
     const normalizedAddress = String(address).startsWith('0x') ? util.addressToBase58(address) : address
-    const account = await tronWeb.trx.getAccount(normalizedAddress)
+    // Bound the lookup so a dead/zombie injected bridge can't hang the TRC10
+    // balance read forever; on timeout this throws a clear error to the caller.
+    const account = await execution.walletProviderAdapter.withWalletTimeout(
+      tronWeb.trx.getAccount(normalizedAddress),
+      execution.walletProviderAdapter.WALLET_NODE_TIMEOUT_MS,
+      execution.walletProviderAdapter.WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT
+    )
     return execution.txIntegerUtils.extractTrc10Balance(account, tokenId)
   }
 
@@ -536,6 +580,13 @@ class Blockchain {
         })
         if (!runtimeValidation.ok) return next(runtimeValidation.errors[0])
         const networkName = self.networkStatus?.network?.name || self.networkStatus?.name || self.executionContext.getProvider()
+        // The snapshot label must discriminate TRON networks: name is 'TRON' for
+        // nile/shasta/main alike, only the id differs (WAL-NET-1). It captures
+        // what the UI displayed when the tx was initiated; txRunner compares it
+        // against the wallet's live network before building and broadcasting.
+        const snapshotNetworkLabel = self.networkStatus?.network
+          ? [self.networkStatus.network.name, self.networkStatus.network.id].filter(Boolean).join('/')
+          : networkName
         tx.runtimeSummary = runtimeFacade.createTransactionSummary({
           tokenId: tx.tokenId,
           tokenValue: tx.tokenValue,
@@ -548,7 +599,7 @@ class Blockchain {
         })
         tx.pendingTransactionSnapshot = runtimeFacade.createTransactionSnapshot({
           from: tx.from,
-          network: networkName
+          network: snapshotNetworkLabel
         })
         tx.funAbi = args.data.funAbi
         tx.contractName = args.data.contractName

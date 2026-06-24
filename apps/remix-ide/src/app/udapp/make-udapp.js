@@ -55,15 +55,52 @@ export function makeUdapp (blockchain, compilersArtefacts, logHtmlCallback) {
 
   // ----------------- Tx listener -----------------
   const _transactionReceipts = {}
+  // A freshly broadcast contract-creation tx is often not yet populated in
+  // getUnconfirmedTransactionInfo (no contract_address / blockNumber). Poll a
+  // few times with a bounded budget so the receipt resolves instead of throwing
+  // a TypeError on `undefined.replace(...)`. Mirrors the budget/interval shape of
+  // tryTillTxAvailableTron in txRunnerWeb3, but with a short wall-clock cap since
+  // this only fills in receipt details for an already-confirmed broadcast.
+  const TRON_INFO_BUDGET_MS = 8000
+  const TRON_INFO_INTERVAL_MS = 500
+  const fetchTronTxInfo = async (txHash, needsContractAddress) => {
+    const start = Date.now()
+    let lastInfo = null
+    while (Date.now() - start < TRON_INFO_BUDGET_MS) {
+      const info = await blockchain.web3().trx.getUnconfirmedTransactionInfo(txHash)
+      if (info && Object.keys(info).length) {
+        lastInfo = info
+        // A creation tx is only fully resolvable once contract_address is set, so
+        // keep polling for it (blockNumber can appear first). A non-creation tx
+        // has no contract_address, so the first populated info (blockNumber) is enough.
+        if (info.contract_address || (!needsContractAddress && info.blockNumber)) return info
+      }
+      await new Promise((resolve) => setTimeout(resolve, TRON_INFO_INTERVAL_MS))
+    }
+    return lastInfo
+  }
   const transactionReceiptResolver = async (tx, cb) => {
     if (_transactionReceipts[tx.hash]) {
       return cb(null, _transactionReceipts[tx.hash])
     }
     if (!blockchain.executionContext.isVM()) {
       try {
-        const txn = await blockchain.web3().trx.getUnconfirmedTransactionInfo(tx.hash)
+        // A creation tx carries the deployed address on `tx.contractAddress`; for
+        // those we must wait for (or fall back to) a real address.
+        const needsContractAddress = !!tx.contractAddress
+        const txn = (await fetchTronTxInfo(tx.hash, needsContractAddress)) || {}
         const { blockNumber, fee, log = [], contractResult = [] } = txn
-        const contractAddress = txn.contract_address.replace(/^(41)/, '0x')
+        // Defend against an unconfirmed/not-yet-populated creation tx where
+        // contract_address is still undefined: fall back to the address already
+        // known from the deploy result rather than calling .replace() on undefined.
+        let contractAddress
+        if (txn.contract_address) {
+          contractAddress = txn.contract_address.replace(/^(41)/, '0x')
+        } else if (tx.contractAddress) {
+          contractAddress = remixLib.util.addressToHex
+            ? remixLib.util.addressToHex(tx.contractAddress)
+            : tx.contractAddress
+        }
 
         remixLib.util.tConvertLogs(log)
         const receipt = {
@@ -76,12 +113,18 @@ export function makeUdapp (blockchain, compilersArtefacts, logHtmlCallback) {
         }
         tx.returnValue = contractResult.length ? `0x${contractResult[0]}` : ''
 
-        _transactionReceipts[tx.hash] = receipt
+        // Only memoize a fully-resolved receipt. Caching a creation receipt whose
+        // contractAddress is still undefined would pin the deployed contract under
+        // `undefined` in TxListener and block the retry that resolves the address.
+        if (!needsContractAddress || contractAddress) {
+          _transactionReceipts[tx.hash] = receipt
+        }
         cb(null, receipt)
         return
       } catch (error) {
         cb(error)
       }
+      return
     }
 
     blockchain.web3().eth.getTransactionReceipt(tx.hash, (error, receipt) => {

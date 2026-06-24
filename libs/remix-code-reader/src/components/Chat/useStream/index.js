@@ -87,7 +87,7 @@ const useStream = ({
         }else if(vendor==='Google'){
           setStreamData(res?.text||'',params?.model);
         }else if(vendor==='Anthropic'){
-          setStreamData(res?.content[0]?.text||'',params?.model);
+          setStreamData(res?.content?.[0]?.text||'',params?.model);
         }
       }
 

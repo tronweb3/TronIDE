@@ -65,4 +65,20 @@ test.describe('Solidity compiler', () => {
     await dropdown.selectOption('Alpha')
     expect(await dropdown.inputValue()).toBe('Alpha')
   })
+
+  test('TC-CMP-010: closing the compiled file clears the contract dropdowns', async ({ page }) => {
+    await openWorkspaceAndContracts(page)
+    await page.locator('#icon-panel div[plugin="solidity"]').click()
+    await page.locator('*[data-id="compilerContainerCompileBtn"]').click()
+    await expect(page.locator('*[data-id="compiledContracts"]')).toContainText('Storage', { timeout: 30_000 })
+
+    // Close the source file's tab (the close control lives in the tab's shadow DOM).
+    await page.locator('remix-tab[id$="1_Storage.sol"] .close').click()
+
+    // With no file selected, neither dropdown may keep offering the stale
+    // Storage artifact as compilable/deployable (cross-surface: TC-IX-CMP-002).
+    await expect(page.locator('*[data-id="compiledContracts"] option')).toHaveCount(0, { timeout: 10_000 })
+    await page.locator('#icon-panel div[plugin="udapp"]').click()
+    await expect(page.locator('#runTabView select[class^="contractNames"] option')).toHaveCount(0, { timeout: 10_000 })
+  })
 })

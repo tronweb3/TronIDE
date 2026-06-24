@@ -50,10 +50,13 @@ const remixLib = require('@remix-project/remix-lib')
 const registry = require('./global/registry')
 
 const QueryParams = require('./lib/query-params')
+const GistHandler = require('./lib/gist-handler')
+const normalizeGistId = require('./lib/normalize-gist-id')
 const Storage = remixLib.Storage
 const RemixDProvider = require('./app/files/remixDProvider')
 const Config = require('./config')
 const modalDialog = require('./app/ui/modaldialog')
+const modalDialogCustom = require('./app/ui/modal-dialog-custom')
 const FileManager = require('./app/files/fileManager')
 const FileProvider = require('./app/files/fileProvider')
 const DGitProvider = require('./app/files/dgitProvider')
@@ -422,6 +425,92 @@ async function run () {
 
   const queryParams = new QueryParams()
   const params = queryParams.get()
+
+  // Re-process the URL fragment when only its parameters change.
+  //
+  // Browsers do NOT do a full page load when only the location hash/fragment
+  // changes (e.g. editing `...&gist=X` to `gist=Y` in the address bar and
+  // pressing Enter) — they merely fire a `hashchange` event. TronIDE only
+  // parsed these params during initial startup (above), so such an edit was
+  // silently ignored until a manual full refresh. We listen for `hashchange`
+  // and, when the requested gist changes, re-run the existing gist load path
+  // (the same `gistHandler.loadFromGist` used at startup) so the new gist's
+  // files show up in the file tree without a reload.
+  //
+  // `loadFromGist` writes the gist files into the `gist-sample` workspace via
+  // `fileManager.setBatchFiles`; the file explorer reacts to the provider's
+  // `fileAdded`/`folderAdded` events, so no manual tree refresh is needed.
+  // It never mutates `location.hash`, so this cannot loop back on itself.
+  const setupHashParamsReload = () => {
+    const gistHandler = new GistHandler()
+
+    // The gist currently shown in the workspace, recorded by gist-handler on a
+    // successful load. Used to dedup so an unrelated hash edit (or the initial
+    // load, already handled above) does not trigger a redundant re-fetch.
+    const currentLoadedGistId = () => {
+      try {
+        const provider = fileManager.getProvider('workspace')
+        return provider && provider.lastLoadedGistId ? provider.lastLoadedGistId : null
+      } catch (e) {
+        return null
+      }
+    }
+
+    const onHashChange = async () => {
+      let nextParams
+      try {
+        nextParams = queryParams.get()
+      } catch (e) {
+        console.debug('[hashParamsReload] could not parse hash params', e)
+        return
+      }
+
+      // Re-apply the theme when #theme=… changes (the in-app Settings switch
+      // already works; this covers editing the param in the address bar / deep
+      // links). Done before the gist early-return so a theme-only edit is honored.
+      // Only switch to a known theme that differs from the active one.
+      const nextTheme = nextParams.theme
+      if (nextTheme && themeModule.themes && themeModule.themes[nextTheme] && nextTheme !== themeModule.active) {
+        try { themeModule.switchTheme(nextTheme) } catch (e) { console.debug('[hashParamsReload] theme switch failed', e) }
+      }
+
+      const nextGistId = normalizeGistId(nextParams.gist)
+      // A gist param is present but no id-shaped value could be extracted from it:
+      // the user edited `…&gist=` to something invalid (too short / non-hex) and
+      // pressed Enter. The startup path already alerts in this case (via
+      // gist-handler's getGistId), so surface the same hint here instead of
+      // silently doing nothing — which previously read as "the URL edit had no
+      // effect". `normalizeGistId` only returns null (vs '') when gist was non-empty.
+      if (nextGistId === null) {
+        modalDialogCustom.alert('Gist load error', 'Please provide a valid Gist ID or URL.')
+        return
+      }
+      // No gist requested in the new hash (param absent/empty): nothing to do.
+      if (!nextGistId) return
+      // Same gist already loaded — skip (also covers the initial load, which the
+      // startup path above already handled).
+      if (nextGistId === currentLoadedGistId()) return
+      try {
+        // Mirror the startup gist branch (file-panel.initWorkspace): make sure the
+        // `gist-sample` workspace exists and is the active provider workspace, and
+        // sync the React file explorer to it, so the freshly written gist files
+        // land in — and render under — the visible tree.
+        await filePanel.processCreateWorkspace('gist-sample')
+        filePanel._deps.fileProviders.workspace.setWorkspace('gist-sample')
+        if (filePanel.request && typeof filePanel.request.setWorkspace === 'function') {
+          await filePanel.request.setWorkspace('gist-sample')
+        }
+        gistHandler.loadFromGist({ gist: nextGistId }, fileManager)
+      } catch (e) {
+        console.error('[hashParamsReload] failed to load gist from updated hash', e)
+      }
+    }
+
+    window.addEventListener('hashchange', onHashChange)
+    // Best-effort cleanup if the window is torn down (e.g. embedded host).
+    window.addEventListener('unload', () => window.removeEventListener('hashchange', onHashChange), { once: true })
+  }
+  setupHashParamsReload()
 
   const onAcceptMatomo = () => {
     _paq.push(['forgetUserOptOut'])

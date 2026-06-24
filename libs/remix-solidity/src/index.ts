@@ -18,8 +18,11 @@
  */
 
 export { Compiler } from './compiler/compiler'
+export { normalizeRuns, DEFAULT_OPTIMIZER_RUNS, MIN_OPTIMIZER_RUNS, MAX_OPTIMIZER_RUNS } from './compiler/runs'
+export { parseOptimizeParam } from './compiler/optimize'
+export { normalizeEvmVersion } from './compiler/evm-version'
 export { compile } from './compiler/compiler-helpers'
 export { default as CompilerInput } from './compiler/compiler-input'
 export { CompilerAbstract } from './compiler/compiler-abstract'
 export * from './compiler/types'
-export { promisedMiniXhr, pathToURL, baseURLBin, baseURLWasm, baseURLTron, tronCompilerSourceProvider, canUseWorker, urlFromVersion, compilerSourceMockMode, maybeMockCompilerSourceURL } from './compiler/compiler-utils'
+export { promisedMiniXhr, pathToURL, baseURLBin, baseURLWasm, baseURLTron, tronCompilerSourceProvider, canUseWorker, urlFromVersion, compilerSourceMockMode, maybeMockCompilerSourceURL, assertAllowedCompilerURL, ALLOWED_COMPILER_ORIGINS } from './compiler/compiler-utils'

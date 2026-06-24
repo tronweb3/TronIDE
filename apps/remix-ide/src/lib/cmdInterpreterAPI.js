@@ -71,30 +71,38 @@ class CmdInterpreterAPI {
           if (cb) cb(err)
         } else {
           self._deps.fileManager.writeFile(type + '/' + cleanUrl, content)
+          let parsed
           try {
-            content = JSON.parse(content)
-            async.eachOfSeries(content.sources, (value, file, callbackSource) => {
-              var url = value.urls[0] // @TODO retrieve all other contents ?
-              self._components.fileImport.import(url,
-                (loadingMsg) => { toolTip(loadingMsg) },
-                async (error, content, cleanUrl, type, url) => {
-                  if (error) {
-                    toolTip(`Cannot retrieve the content of ${url}: ${error}`)
-                    return callbackSource(`Cannot retrieve the content of ${url}: ${error}`)
-                  } else {
-                    try {
-                      await self._deps.fileManager.writeFile(type + '/' + cleanUrl, content)
-                      callbackSource()
-                    } catch (e) {
-                      callbackSource(e.message)
-                    }
+            parsed = JSON.parse(content)
+          } catch (e) {
+            // Not a metadata JSON file (e.g. a single source) — the file above was
+            // already written, so report success once and stop. (Previously the
+            // catch only warned and then fell through to an unconditional success
+            // cb that also double-fired with the async sources callback below.)
+            if (cb) cb()
+            return
+          }
+          if (!parsed || !parsed.sources) { if (cb) cb(); return }
+          async.eachOfSeries(parsed.sources, (value, file, callbackSource) => {
+            var url = value.urls[0] // @TODO retrieve all other contents ?
+            self._components.fileImport.import(url,
+              (loadingMsg) => { toolTip(loadingMsg) },
+              async (error, content, cleanUrl, type, url) => {
+                if (error) {
+                  toolTip(`Cannot retrieve the content of ${url}: ${error}`)
+                  return callbackSource(`Cannot retrieve the content of ${url}: ${error}`)
+                } else {
+                  try {
+                    await self._deps.fileManager.writeFile(type + '/' + cleanUrl, content)
+                    callbackSource()
+                  } catch (e) {
+                    callbackSource(e.message)
                   }
-                })
-            }, (error) => {
-              if (cb) cb(error)
-            })
-          } catch (e) { console.warn('[cmdInterpreterAPI] command execution failed', e) }
-          if (cb) cb()
+                }
+              })
+          }, (error) => {
+            if (cb) cb(error)
+          })
         }
       })
   }

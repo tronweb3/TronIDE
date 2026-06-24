@@ -873,6 +873,10 @@ export class LandingPage extends ViewPlugin {
     this.verticalIcons = verticalIcons
     this.gistHandler = new GistHandler()
     this._landingActive = true
+    // The Home tab clears fileManager.currentFile (showApp -> unselectCurrentFile),
+    // so "Commit current file" — which lives on the Home tab — can't read it. Keep
+    // the last selected file so the commit can fall back to it.
+    this._lastSelectedFile = ''
     this._fileEventSubscriptions = []
     this._workspacePluginEventSubscriptions = []
     this._themeHandlers = []
@@ -1404,22 +1408,48 @@ export class LandingPage extends ViewPlugin {
       }
       return payload
     }
+    // Bridge the Home/Header GitHub token into the IDE config key that gist publish/load
+    // read (`settings/gist-access-token`, the same key the Settings tab writes). Without
+    // this, connecting a token from the header still left gist publishing asking the user
+    // to set a token in Settings. Keep this in lockstep with the sessionStorage copy so
+    // connect/reconnect/disconnect all stay consistent across both token stores.
+    const syncGistAccessToken = (token) => {
+      try {
+        const config = globalRegistry.get('config') && globalRegistry.get('config').api
+        if (config && typeof config.set === 'function') config.set('settings/gist-access-token', String(token || '').trim())
+      } catch (error) { console.debug('[home] failed to sync gist access token', error) }
+    }
     const saveGithubToken = (token) => {
       githubTokenState.token = String(token || '').trim()
       window.sessionStorage.setItem('tronide.github.token', githubTokenState.token)
       // Defensive: scrub any historical localStorage copy so this session is the only place the token lives.
       try { window.localStorage.removeItem('tronide.github.token') } catch (error) { console.debug('[home] failed to clear legacy github token', error) }
+      // Mirror into the gist access-token config so publishing a gist works without a Settings round-trip.
+      syncGistAccessToken(githubTokenState.token)
     }
-    const clearGithubToken = () => {
+    // Persist the connected GitHub login for cross-component consumers (the
+    // header button) and signal connect/disconnect so they can update live.
+    const persistGithubUser = (login) => {
+      try {
+        if (login) window.sessionStorage.setItem('tronide.github.user', login)
+        else window.sessionStorage.removeItem('tronide.github.user')
+      } catch (error) { console.debug('[home] failed to persist github user', error) }
+      try { window.dispatchEvent(new CustomEvent('tronideGithubConnectionChanged')) } catch (error) { console.debug('[home] failed to dispatch github-changed event', error) }
+    }
+    const clearGithubToken = (silent = false) => {
       githubTokenState.token = ''
       githubTokenState.user = null
       window.sessionStorage.removeItem('tronide.github.token')
+      // Clear the bridged gist access-token config too, so disconnecting here also stops gist
+      // publish/load from using the now-revoked token.
+      syncGistAccessToken('')
       // Keep removing legacy localStorage entries from older versions so an old persisted token
       // does not survive a disconnect on upgraded browsers.
       try { window.localStorage.removeItem('tronide.github.token') } catch (error) { console.debug('[home] failed to clear legacy github token', error) }
       try { window.localStorage.removeItem('tronide.github.user') } catch (error) { console.debug('[home] failed to clear legacy github user', error) }
-      addNotification('GitHub disconnected', 'GitHub token was cleared from this browser tab.')
+      if (!silent) addNotification('GitHub disconnected', 'GitHub token was cleared from this browser tab.')
       refreshHomeSection('landingGithubTokenPanel', renderGithubTokenPanel)
+      persistGithubUser('')
     }
     const connectGithubToken = () => {
       const message = yo`
@@ -1429,15 +1459,24 @@ export class LandingPage extends ViewPlugin {
         </div>
       `
       modalDialogCustom.promptPassphrase('Connect GitHub Token', message, '', async (token) => {
+        if (!token) return
+        // The prompt closes on save and token validation is async (a network
+        // round-trip to api.github.com), so without immediate + persistent
+        // feedback the gap and the transient tooltip read as "save did nothing".
+        tooltip('Validating GitHub token…')
         try {
-          if (!token) return
           saveGithubToken(token)
           githubTokenState.user = await githubRequest('/user')
-          addNotification('GitHub connected', (githubTokenState.user && githubTokenState.user.login) || 'Token validated.')
+          const login = (githubTokenState.user && githubTokenState.user.login) || 'Token validated.'
+          addNotification('GitHub connected', login)
           refreshHomeSection('landingGithubTokenPanel', renderGithubTokenPanel)
+          tooltip(`GitHub connected as ${login}`)
+          persistGithubUser(githubTokenState.user && githubTokenState.user.login)
         } catch (error) {
-          clearGithubToken()
-          tooltip(error.message || 'GitHub token rejected.')
+          clearGithubToken(true)
+          const msg = error.message || 'GitHub token rejected.'
+          addNotification('GitHub connection failed', msg, 'error')
+          tooltip(msg)
         }
       }, null, true)
     }
@@ -1477,8 +1516,16 @@ export class LandingPage extends ViewPlugin {
       }
     }
     const commitCurrentFileToGithub = () => {
-      const currentFile = fileManager.currentFile && fileManager.currentFile()
-      if (!currentFile) return tooltip('Open a workspace file before committing to GitHub.')
+      // Viewing the Home tab runs fileManager.unselectCurrentFile() (showApp), so
+      // currentFile() reads empty here even with a file tab still open. Fall back
+      // to the last selected file (if still open), else the most-recently-opened
+      // editor file, so committing from the Home tab actually works.
+      let currentFile = (fileManager.currentFile && fileManager.currentFile()) || ''
+      if (!currentFile) {
+        const opened = Object.keys((fileManager.getOpenedFiles && fileManager.getOpenedFiles()) || {})
+        currentFile = (this._lastSelectedFile && opened.includes(this._lastSelectedFile)) ? this._lastSelectedFile : (opened[opened.length - 1] || '')
+      }
+      if (!currentFile) return tooltip('No file is open in the editor. Open one from the File Explorer first (the Home tab alone does not count), then commit.')
       modalDialogCustom.prompt('Commit current file to GitHub', 'Paste destination file URL: https://github.com/owner/repo/blob/branch/path.sol', '', async (url) => {
         try {
           const target = parseGithubUrl(url)
@@ -1818,7 +1865,7 @@ export class LandingPage extends ViewPlugin {
           </div>
           <div class=${css.recipeGrid}>
             ${recipes.map((recipe) => yo`
-              <button class=${css.recipeCard} data-id=${recipe[3]} onclick=${() => recipe[2]()}>
+              <button class=${css.recipeCard} data-id=${recipe[3]} onclick=${() => { try { const r = recipe[2](); if (r && r.catch) r.catch((e) => console.warn('[home] recipe failed:', e)) } catch (e) { console.warn('[home] recipe failed:', e) } }}>
                 <div class=${css.recipeTitle}>${recipe[0]}</div>
                 <div>${recipe[1]}</div>
               </button>
@@ -1834,7 +1881,7 @@ export class LandingPage extends ViewPlugin {
           <h3 class=${css.panelHeadTitle}><span class=${css.panelHeadIcon}>${githubIcon}</span> GitHub Token</h3>
           <span class=${css.panelMore}>${githubTokenState.user && githubTokenState.user.login ? githubTokenState.user.login : 'Session token mode'}</span>
         </div>
-        <div class=${css.securityNote}>Use a fine-grained PAT. Default storage is session-only; remember mode stores the token in this browser and should be used only on trusted devices.</div>
+        <div class=${css.securityNote}>For GitHub repository import/push — use a fine-grained PAT with the repository Contents permission (Gist publishing uses the separate 'gist' token in Settings). Default storage is session-only; remember mode stores the token in this browser and should be used only on trusted devices.</div>
         <div class=${css.loadChips}>
           <button class=${css.loadChip} data-id="landingGithubTokenConnect" onclick=${() => connectGithubToken()}>${githubTokenState.token ? 'Reconnect token' : 'Connect token'}</button>
           <button class=${css.loadChip} data-id="landingGithubTokenImport" onclick=${() => importGithubFileWithToken()}>Import private file</button>
@@ -2068,6 +2115,13 @@ export class LandingPage extends ViewPlugin {
         this._fileEventSubscriptions.push({ emitter: workspaceProvider.event, eventName, handler: scheduleWorkspaceStatusRefresh })
       }
     })
+    // Remember the file the user last had selected. The Home tab clears
+    // fileManager.currentFile, so the on-Home "Commit current file" relies on this.
+    const trackSelectedFile = (file) => { if (file) this._lastSelectedFile = file }
+    if (this.fileManager.events) {
+      this.fileManager.events.on('currentFileChanged', trackSelectedFile)
+      this._fileEventSubscriptions.push({ emitter: this.fileManager.events, eventName: 'currentFileChanged', handler: trackSelectedFile })
+    }
 
     // Keep the "Most used plugins" cards in sync with the real plugin state.
     // Opening a plugin (e.g. "Open Verification") activates it via a path that did

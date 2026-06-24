@@ -300,7 +300,7 @@ export class TxListener {
           return this.executionContext
             .web3()
             .fullNode.request('wallet/getcontractinfo', {
-              value: to.replace(/0x/, '41')
+              value: to.replace(/^0x/, '41')
             })
             .then(result => {
               if (result.runtimecode) {

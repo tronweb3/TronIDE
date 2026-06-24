@@ -230,6 +230,12 @@ function log (self, tx, receipt) {
     self.eventsDecoder.parseLogs(tx, resolvedTransaction.contractName, compiledContracts, (error, logs) => {
       if (!error) {
         self.logKnownTX({ tx: tx, receipt: receipt, resolvedData: resolvedTransaction, logs: logs })
+      } else {
+        // Log decoding can fail for a freshly broadcast tx (e.g. receipt/logs not
+        // yet populated). Still render the known transaction so the terminal shows
+        // status/hash/from/to instead of staying stuck on "pending...".
+        console.error(error)
+        self.logKnownTX({ tx: tx, receipt: receipt, resolvedData: resolvedTransaction, logs: null })
       }
     })
   } else {

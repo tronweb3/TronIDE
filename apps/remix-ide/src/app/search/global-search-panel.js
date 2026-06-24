@@ -468,12 +468,26 @@ class GlobalSearchPanel {
   renderHighlightedPreview (result) {
     const preview = result.preview || ''
     const query = this.query.trim()
-    if (!query || this.useRegex) return preview
-    const haystack = this.matchCase ? preview : preview.toLowerCase()
-    const needle = this.matchCase ? query : query.toLowerCase()
-    const index = haystack.indexOf(needle)
-    if (index === -1) return preview
-    return yo`<span>${preview.slice(0, index)}<span class=${css.highlight}>${preview.slice(index, index + query.length)}</span>${preview.slice(index + query.length)}</span>`
+    if (!query) return preview
+    // Highlight the specific occurrence this result was split from, using the
+    // per-match offset computed at search time. Each match on the same line is
+    // a separate result, so each must highlight its own match — not the first
+    // occurrence found by indexOf, which would highlight match #1 for every row.
+    const previewMatch = result.previewMatch
+    let index
+    let length
+    if (previewMatch && previewMatch.length > 0) {
+      index = previewMatch.start
+      length = previewMatch.length
+    } else {
+      if (this.useRegex) return preview
+      const haystack = this.matchCase ? preview : preview.toLowerCase()
+      const needle = this.matchCase ? query : query.toLowerCase()
+      index = haystack.indexOf(needle)
+      length = query.length
+    }
+    if (index < 0 || index > preview.length) return preview
+    return yo`<span>${preview.slice(0, index)}<span class=${css.highlight}>${preview.slice(index, index + length)}</span>${preview.slice(index + length)}</span>`
   }
 
   show () {

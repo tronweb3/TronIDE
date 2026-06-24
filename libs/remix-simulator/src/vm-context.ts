@@ -86,9 +86,36 @@ class StateManagerCommonStorageDump extends MerkleStateManager {
 
   async getStateRoot (force = false) {
     await super.flush()
+    return this._trie.root()
+  }
 
-    const stateRoot = this._trie.root()
-    return stateRoot
+  /**
+   * DEF-VM-1 fix. After a read-only call, the wrapper revert() in
+   * txRunnerVM clears `_storageTries`. The next transaction's first
+   * storage-trie access can land WITHOUT a resolved account (e.g. a
+   * pre-state probe), so the upstream `_getStorageTrie` builds an
+   * EMPTY-rooted trie and caches it by address. Every later access that
+   * DOES carry the account then receives that stale empty trie instead of
+   * one rooted at the account's real storageRoot — so the transaction
+   * writes onto empty storage and silently drops all prior contract state.
+   *
+   * Fix: keep the cached storage trie coherent with the account. Whenever
+   * the account is known and the cached trie's root disagrees with the
+   * account's storageRoot, re-root it (the account is the source of truth
+   * for committed storage; uncommitted writes live in the storage cache,
+   * not the trie). No effect on the upstream package — this overrides only
+   * the IDE's StateManager subclass.
+   */
+  _getStorageTrie (addressOrHash, rootAccount?) {
+    const trie = super._getStorageTrie(addressOrHash, rootAccount)
+    if (rootAccount && rootAccount.storageRoot) {
+      const trieRoot = this._trie && trie.root ? Buffer.from(trie.root()) : null
+      const acctRoot = Buffer.from(rootAccount.storageRoot)
+      if (trieRoot && !trieRoot.equals(acctRoot)) {
+        trie.root(rootAccount.storageRoot)
+      }
+    }
+    return trie
   }
 
   async setStateRoot (stateRoot) {

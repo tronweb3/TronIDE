@@ -107,6 +107,7 @@ export class RunTab extends ViewPlugin {
     if (!this._managerEventSubscriptionsRegistered) return
     this.off('manager', 'pluginActivated')
     this.off('manager', 'pluginDeactivated')
+    this.off('filePanel', 'setWorkspace')
     this._managerEventSubscriptionsRegistered = false
   }
 
@@ -311,6 +312,12 @@ export class RunTab extends ViewPlugin {
 
     this._onCurrentFileChanged = this.contractDropdownUI.changeCurrentFile.bind(this.contractDropdownUI)
     this._registerExternalListener(fileManager.events, 'currentFileChanged', this._onCurrentFileChanged, 'render')
+
+    // When the last file closes, compile-tab resets its artifacts — the Deploy
+    // & Run contract list must follow, or it keeps offering a stale compilation
+    // the compiler no longer shows (TC-CMP-010 / TC-IX-CMP-002).
+    this._onNoFileSelected = () => this.contractDropdownUI.updateCompiledContracts(false)
+    this._registerExternalListener(fileManager.events, 'noFileSelected', this._onNoFileSelected, 'render')
 
     this.contractDropdownUI.event.register('clearInstance', () => {
       const noInstancesText = this.noInstancesText
@@ -523,6 +530,11 @@ export class RunTab extends ViewPlugin {
     this._removePluginProvider = (profile) => removePluginProvider(profile)
     this.on('manager', 'pluginActivated', this._addPluginProvider)
     this.on('manager', 'pluginDeactivated', this._removePluginProvider)
+    // A deployed-instance card is bound to the workspace (and network) it was
+    // created in; switching workspace must clear them — otherwise the old
+    // workspace's instances stay visible and the user can fire transactions at a
+    // stale address/network. Mirrors compile-tab resetting results on switch.
+    this.on('filePanel', 'setWorkspace', () => this.event.trigger('clearInstance', []))
     this._managerEventSubscriptionsRegistered = true
     return this.renderContainer()
   }
