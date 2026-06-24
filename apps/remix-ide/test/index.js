@@ -27,8 +27,17 @@ require('./playwright-config-test')
 require('./query-params-test')
 require('./search/workspace-search-test')
 require('./timer-listener-teardown-test')
-require('./audit-20260520-remediation-test')
-require('./audit-20260527-remediation-test')
-require('./audit-20260602-remediation-test')
-require('./audit-20260622-remediation-test')
+// Internal security-audit remediation suites. These files are stripped from
+// the public (open-source) build, so require them only when present.
+const fs = require('fs')
+const path = require('path')
+;[
+  './audit-20260520-remediation-test',
+  './audit-20260527-remediation-test',
+  './audit-20260602-remediation-test',
+  './audit-20260622-remediation-test'
+].forEach((name) => {
+  if (fs.existsSync(path.join(__dirname, `${name}.js`))) require(name)
+})
+
 require('./remix-220-home-parity-test')
