@@ -9,15 +9,19 @@ name: Deploy (GitHub Pages)
 # One-time setup (repo admin): Settings -> Pages -> Build and deployment ->
 # Source = "GitHub Actions". Then trigger this workflow from the Actions tab.
 #
-# Custom domain: leave the `custom_domain` input empty for the first run and
-# verify on the https://<org>.github.io/<repo>/ URL. Once DNS for tronide.io
-# points at GitHub Pages, re-run with custom_domain=tronide.io to serve it at
-# the apex with an auto-provisioned Let's Encrypt certificate.
+# First run / verification: trigger MANUALLY (workflow_dispatch) with the
+# custom_domain input EMPTY to verify on https://<org>.github.io/<repo>/ first.
+# Once DNS for tronide.io points at GitHub Pages, every push to `main` (e.g. a
+# sync-to-github mirror commit) auto-deploys and serves tronide.io at the apex
+# with an auto-provisioned Let's Encrypt certificate. A manual run can still
+# override the domain via the custom_domain input (empty = the github.io URL).
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       custom_domain:
-        description: Custom domain (empty = serve on the github.io URL; set to tronide.io once DNS is ready)
+        description: Custom domain (manual runs only; empty = github.io URL). Pushes to main always serve tronide.io.
         type: string
         default: ''
 
@@ -60,13 +64,15 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=6144
         run: bash build.sh
 
-      # Pages serves a CNAME file as the custom domain. Pass the value via env
-      # rather than interpolating into the shell.
+      # Pages serves a CNAME file as the custom domain. A push to main always
+      # serves tronide.io; a manual run uses the custom_domain input (empty =
+      # no CNAME, i.e. the github.io URL for verification). Value is passed via
+      # env and quoted in the shell (no direct interpolation into run:).
       - name: Set custom domain
-        if: ${{ inputs.custom_domain != '' }}
         env:
-          CUSTOM_DOMAIN: ${{ inputs.custom_domain }}
-        run: echo "$CUSTOM_DOMAIN" > build/apps/remix-ide/CNAME
+          CUSTOM_DOMAIN: ${{ github.event_name == 'push' && 'tronide.io' || inputs.custom_domain }}
+        run: |
+          if [ -n "$CUSTOM_DOMAIN" ]; then echo "$CUSTOM_DOMAIN" > build/apps/remix-ide/CNAME; fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

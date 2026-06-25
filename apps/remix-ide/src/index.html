@@ -30,6 +30,10 @@
 		-->
 		<meta http-equiv="X-UA-Compatible" content="chrome=1">
 		<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://kit.fontawesome.com https://www.googletagmanager.com https://www.google-analytics.com https://tronprotocol.github.io https://binaries.soliditylang.org; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://use.fontawesome.com https://*.fontawesome.com; font-src 'self' data: https://use.fontawesome.com https://*.fontawesome.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss:; frame-src 'self' http://localhost:* https:; worker-src 'self' blob:; form-action 'self'">
+		<!-- Clickjacking guard: GitHub Pages can't emit X-Frame-Options / CSP
+		     frame-ancestors (HTTP-header only). Bust out of any cross-origin frame;
+		     if top navigation is blocked (sandboxed), hide the page. -->
+		<script>(function () { try { if (window.top !== window.self) window.top.location = window.self.location.href } catch (e) { document.documentElement.style.display = 'none' } })()</script>
 		<title>TRON-IDE</title>
 		<link rel="stylesheet" href="assets/css/pygment_trac.css">
 		<link rel="icon" type="image/svg+xml" href="assets/img/tron-ide-icon.svg">
