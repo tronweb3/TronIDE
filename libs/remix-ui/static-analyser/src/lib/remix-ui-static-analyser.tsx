@@ -17,7 +17,7 @@
  * limitations under the License.
  */
 
-import React, { useEffect, useState, useReducer } from 'react'
+import React, { useEffect, useState, useReducer, useMemo, useRef } from 'react'
 import Button from './Button/StaticAnalyserButton' // eslint-disable-line
 import * as remixLib from '@remix-project/remix-lib'
 import _ from 'lodash'
@@ -37,6 +37,20 @@ export interface RemixUiStaticAnalyserProps {
   analysisModule: any
 }
 
+const getCompilerArtefactsApi = (registry: any) => {
+  if (!registry || typeof registry.get !== 'function') return null
+  for (const name of ['compilersartefacts', 'compilerArtefacts']) {
+    try {
+      const entry = registry.get(name)
+      const api = entry && entry.api ? entry.api : entry
+      if (api && typeof api.get === 'function') return api
+    } catch (e) {
+      // Try the alternate registry key when a provider is not registered yet.
+    }
+  }
+  return null
+}
+
 // The MISC ("Miscellaneous") category is advisory: Guard conditions (a generic
 // assert/require reminder that fires on correct code too), similar-variable-name
 // hints and view/pure suggestions. These are style/education, not defects — they
@@ -53,7 +67,7 @@ const SUMMARY_ORDER = [
 ]
 
 export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
-  const [runner] = useState(new StaticAnalysisRunner())
+  const [runner] = useState(() => new StaticAnalysisRunner())
 
   const preProcessModules = (arr: any) => {
     return arr.map((Item, i) => {
@@ -64,11 +78,6 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
       return itemObj
     })
   }
-
-  const groupedModules = utils.groupBy(
-    preProcessModules(runner.modules()),
-    'categoryId'
-  )
 
   const getIndex = (modules, array) => {
     Object.values(modules).map((value: {_index}) => {
@@ -89,12 +98,18 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
     }
     return indexOfCategory
   }
+
+  // Module instances are immutable metadata. Keep them stable across warning
+  // and summary state updates instead of rebuilding every analyzer on render.
+  const groupedModules = useMemo(() => utils.groupBy(preProcessModules(runner.modules()), 'categoryId'), [runner])
   const [autoRun, setAutoRun] = useState(true)
   const [slitherEnabled, setSlitherEnabled] = useState(false)
   const [showSlither, setShowSlither] = useState(false)
-  const [categoryIndex, setCategoryIndex] = useState(groupedModuleIndex(groupedModules))
+  const [categoryIndex, setCategoryIndex] = useState(() => groupedModuleIndex(groupedModules))
 
   const warningContainer = React.useRef(null)
+  const mounted = React.useRef(true)
+  const runGeneration = React.useRef(0)
   const [warningState, setWarningState] = useState({})
   const [collapsedGroups, setCollapsedGroups] = useState({})
   const [state, dispatch] = useReducer(analysisReducer, initialState)
@@ -109,10 +124,24 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
   // the user can see at a glance that most of a big number is low-value
   // advisory noise (Guard conditions, similar names) rather than real issues.
   const [categorySummary, setCategorySummary] = useState({})
+  const findingsRef = useRef<any[] | null>(null)
+  const hideLibraryWarningsRef = useRef(hideLibraryWarnings)
+  hideLibraryWarningsRef.current = hideLibraryWarnings
 
   useEffect(() => {
-    compilation(props.analysisModule, dispatch)
-  }, [props])
+    return () => {
+      mounted.current = false
+      // Invalidate all compiler/Slither callbacks that are still pending.
+      runGeneration.current += 1
+    }
+  }, [])
+
+  useEffect(() => {
+    const disposeCompilation = compilation(props.analysisModule, dispatch)
+    return () => {
+      if (disposeCompilation) disposeCompilation()
+    }
+  }, [props.analysisModule])
 
   // A finding's source file is an external dependency (not the user's code).
   // Matches only unambiguous dependency markers so it never hides a user's own
@@ -127,25 +156,56 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
       /^(https?|github|ipfs|swarm|bzz-raw):/i.test(f)
   }
 
-  // Re-filter (cheap re-run over the cached compilation) when the toggle flips.
+  // Re-filter the raw findings when the toggle flips. Do not rerun the AST and
+  // Slither analyzers just to change presentation.
   useEffect(() => {
-    if (state.data) run(state.data, state.source, state.file)
+    if (findingsRef.current) renderFindings(findingsRef.current)
   }, [hideLibraryWarnings]) // eslint-disable-line
 
   useEffect(() => {
+    let active = true
     const reset = () => { setCurrentFile('') }
     const setCurrent = (file) => { setCurrentFile(file) }
     props.analysisModule.on('fileManager', 'currentFileChanged', setCurrent)
     props.analysisModule.on('fileManager', 'noFileSelected', reset)
     // Initialise with the file that is already open when the panel mounts
     props.analysisModule.call('fileManager', 'getCurrentFile').then((file) => {
-      setCurrentFile(file)
-    }).catch(() => { setCurrentFile('') })
+      if (active) setCurrentFile(file)
+    }).catch(() => { if (active) setCurrentFile('') })
     return () => {
+      active = false
       props.analysisModule.off('fileManager', 'currentFileChanged')
       props.analysisModule.off('fileManager', 'noFileSelected')
     }
-  }, [props])
+  }, [props.analysisModule])
+
+  useEffect(() => {
+    let active = true
+    const loadLastCompilation = async () => {
+      let artefact = null
+      const compilerArtefacts = getCompilerArtefactsApi(props.registry)
+      try {
+        // The panel may be opened after compilation. Recover the last
+        // compilation instead of forcing the user to compile again merely to
+        // populate the analyzer's local reducer state.
+        artefact = await props.analysisModule.call('compilerArtefacts', 'get', '__last')
+      } catch (e) {}
+      if (!artefact || typeof artefact.getData !== 'function') {
+        try { artefact = compilerArtefacts && compilerArtefacts.get('__last') } catch (ignored) {}
+      }
+      if (!active || !artefact || typeof artefact.getData !== 'function') return
+      const source = typeof artefact.getSourceCode === 'function' ? artefact.getSourceCode() : null
+      const file = source && source.target
+      const data = artefact.getData()
+      if (!file || !source || !data) return
+      dispatch({
+        type: 'compilationFinished',
+        payload: { file, source, languageVersion: artefact.languageversion, data }
+      })
+    }
+    loadLastCompilation()
+    return () => { active = false }
+  }, [props.analysisModule, props.registry])
 
   useEffect(() => {
     setWarningState({})
@@ -155,28 +215,29 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
         run(state.data, state.source, state.file)
       }
     } else {
+      findingsRef.current = null
       props.event.trigger('staticAnaysisWarning', [])
     }
-    return () => { }
+    return undefined
   }, [state])
 
   useEffect(() => {
-    props.analysisModule.on('filePanel', 'setWorkspace', (currentWorkspace) => {
+    const onSetWorkspace = (currentWorkspace) => {
       // Reset warning state
       setWarningState([])
       setCategorySummary({})
       // Reset badge
       props.event.trigger('staticAnaysisWarning', [])
       // Reset state
-      dispatch({ type: '', payload: {} })
+      dispatch({ type: 'reset' })
       // Show 'Enable Slither Analysis' checkbox
       if (currentWorkspace && currentWorkspace.isLocalhost === true) setShowSlither(true)
       else {
         setShowSlither(false)
         setSlitherEnabled(false)
       }
-    })
-    props.analysisModule.on('manager', 'pluginDeactivated', (plugin) => {
+    }
+    const onPluginDeactivated = (plugin) => {
       // Hide 'Enable Slither Analysis' checkbox
       if (plugin.name === 'remixd') {
         // Reset warning state
@@ -185,13 +246,18 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
         // Reset badge
         props.event.trigger('staticAnaysisWarning', [])
         // Reset state
-        dispatch({ type: '', payload: {} })
+        dispatch({ type: 'reset' })
         setShowSlither(false)
         setSlitherEnabled(false)
       }
-    })
-    return () => { }
-  }, [props])
+    }
+    props.analysisModule.on('filePanel', 'setWorkspace', onSetWorkspace)
+    props.analysisModule.on('manager', 'pluginDeactivated', onPluginDeactivated)
+    return () => {
+      props.analysisModule.off('filePanel', 'setWorkspace')
+      props.analysisModule.off('manager', 'pluginDeactivated')
+    }
+  }, [props.analysisModule, props.event])
 
   const message = (name, warning, more, fileName, locationString) : string => {
     return (`
@@ -240,12 +306,35 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
     setCollapsedGroups(prev => ({ ...initialCollapsed, ...prev }))
   }
 
+  const renderFindings = (findings) => {
+    let hiddenCount = 0
+    const visibleFindings = findings.filter((finding) => {
+      const fileName = finding.options && finding.options.fileName
+      if (hideLibraryWarningsRef.current && isLibraryFile(fileName)) {
+        hiddenCount++
+        return false
+      }
+      return true
+    })
+    setHiddenLibraryCount(hiddenCount)
+    showWarnings(visibleFindings, 'warningModuleName')
+    const byCat = {}
+    visibleFindings.forEach((finding) => {
+      const category = finding.warningCategoryId || 'MISC'
+      byCat[category] = (byCat[category] || 0) + 1
+    })
+    setCategorySummary(byCat)
+    const meaningful = visibleFindings.filter((finding) => !ADVISORY_CATEGORY_IDS.includes(finding.warningCategoryId || 'MISC')).length
+    props.event.trigger('staticAnaysisWarning', [meaningful])
+  }
+
   const run = (lastCompilationResult, lastCompilationSource, compiledFile) => {
+    const runId = ++runGeneration.current
+    const isCurrentRun = () => mounted.current && runGeneration.current === runId
     if (state.data !== null) {
       if (lastCompilationResult && (categoryIndex.length > 0 || slitherEnabled)) {
-        let hiddenCount = 0
         const warningMessage = []
-        const warningErrors = []
+        findingsRef.current = null
 
         // The last compilation result/source/file (state.*) only describe the
         // file they were produced from. If the user switched to another contract
@@ -256,18 +345,15 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
         const remixCategories = astValidForCurrentFile ? categoryIndex : []
         const slitherTargetFile = astValidForCurrentFile ? compiledFile : currentFile
 
-        // Emit the badge count (meaningful only — advisory excluded) plus the
-        // per-category summary for the bar, from the collected findings.
-        const finalizeSummary = (msgs) => {
-          const byCat = {}
-          msgs.forEach((m) => { const c = m.warningCategoryId || 'MISC'; byCat[c] = (byCat[c] || 0) + 1 })
-          setCategorySummary(byCat)
-          const meaningful = msgs.filter((m) => !ADVISORY_CATEGORY_IDS.includes(m.warningCategoryId || 'MISC')).length
-          props.event.trigger('staticAnaysisWarning', [meaningful])
+        // Remix Analysis
+        const finalize = () => {
+          if (!isCurrentRun()) return
+          findingsRef.current = warningMessage.slice()
+          renderFindings(findingsRef.current)
         }
 
-        // Remix Analysis
         runner.run(lastCompilationResult, remixCategories, results => {
+          if (!isCurrentRun()) return
           results.map((result) => {
             let moduleName
             let moduleCategoryId
@@ -279,7 +365,28 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
                 }
               })
             })
-            result.report.map((item) => {
+            if (result.error) {
+              const errorModuleName = moduleName || result.name
+              const errorMessage = message(errorModuleName, `Static analysis failed: ${result.error}`, null, compiledFile || '', 'not available')
+              warningMessage.push({
+                msg: errorMessage,
+                options: {
+                  type: 'warning',
+                  useSpan: true,
+                  errFile: compiledFile,
+                  fileName: compiledFile,
+                  errLine: 0,
+                  errCol: 0,
+                  item: { warning: result.error },
+                  name: result.name,
+                  locationString: 'not available'
+                },
+                hasWarning: true,
+                warningModuleName: errorModuleName,
+                warningCategoryId: moduleCategoryId || 'MISC'
+              })
+            }
+            ;(result.report || []).map((item) => {
               let location: any = {}
               let locationString = 'not available'
               let column = 0
@@ -303,9 +410,6 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
                 locationString = row + 1 + ':' + column + ':'
                 fileName = Object.keys(lastCompilationResult.sources)[file]
               }
-              // Skip findings from imported libraries (OpenZeppelin etc.) unless
-              // the user opted to see them — that is what makes the count explode.
-              if (hideLibraryWarnings && isLibraryFile(fileName)) { hiddenCount++; return }
               const msg = message(item.name, item.warning, item.more, fileName, locationString)
               const options = {
                 type: 'warning',
@@ -320,19 +424,20 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
                 more: item.more,
                 location: location
               }
-              warningErrors.push(options)
               warningMessage.push({ msg, options, hasWarning: true, warningModuleName: moduleName, warningCategoryId: moduleCategoryId })
             })
           })
           // Slither Analysis
           if (slitherEnabled) {
             props.analysisModule.call('solidity-logic', 'getCompilerState').then((compilerState) => {
+              if (!isCurrentRun()) return
               const { currentVersion, optimize, evmVersion } = compilerState
               props.analysisModule.call('terminal', 'log', { type: 'info', value: '[Slither Analysis]: Running...' })
               props.analysisModule.call('slither', 'analyse', slitherTargetFile, { currentVersion, optimize, evmVersion }).then((result) => {
-                if (result.status) {
+                if (!isCurrentRun()) return
+                if (result && result.status) {
                   props.analysisModule.call('terminal', 'log', { type: 'info', value: `[Slither Analysis]: Analysis Completed!! ${result.count} warnings found.` })
-                  const report = result.data
+                  const report = Array.isArray(result.data) ? result.data : []
                   report.map((item) => {
                     let location: any = {}
                     let locationString = 'not available'
@@ -359,7 +464,6 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
                         fileName = Object.keys(lastCompilationResult.sources)[fileIndex]
                       }
                     }
-                    if (hideLibraryWarnings && isLibraryFile(fileName)) { hiddenCount++; return }
                     const msg = message(item.title, item.description, item.more, fileName, locationString)
                     const options = {
                       type: 'warning',
@@ -374,29 +478,33 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
                       more: item.more,
                       location: location
                     }
-                    warningErrors.push(options)
                     warningMessage.push({ msg, options, hasWarning: true, warningModuleName: 'Slither Analysis', warningCategoryId: 'SLITHER' })
                   })
-                  setHiddenLibraryCount(hiddenCount)
-                  showWarnings(warningMessage, 'warningModuleName')
-                  finalizeSummary(warningMessage)
+                  finalize()
+                } else {
+                  props.analysisModule.call('terminal', 'log', { type: 'error', value: '[Slither Analysis]: Error occured! See remixd console for details.' })
+                  finalize()
                 }
               }).catch(() => {
+                if (!isCurrentRun()) return
                 props.analysisModule.call('terminal', 'log', { type: 'error', value: '[Slither Analysis]: Error occured! See remixd console for details.' })
-                setHiddenLibraryCount(hiddenCount)
-                showWarnings(warningMessage, 'warningModuleName')
-                finalizeSummary(warningMessage)
+                finalize()
               })
+            }).catch(() => {
+              if (!isCurrentRun()) return
+              props.analysisModule.call('terminal', 'log', { type: 'error', value: '[Slither Analysis]: Error occured! See remixd console for details.' })
+              finalize()
             })
           } else {
-            setHiddenLibraryCount(hiddenCount)
-            showWarnings(warningMessage, 'warningModuleName')
-            finalizeSummary(warningMessage)
+            finalize()
           }
         })
       } else {
+        findingsRef.current = null
+        setWarningState({})
+        setHiddenLibraryCount(0)
         if (categoryIndex.length) {
-          warningContainer.current.innerText = 'No compiled AST available'
+          if (warningContainer.current) warningContainer.current.innerText = 'No compiled AST available'
         }
         setCategorySummary({})
         props.event.trigger('staticAnaysisWarning', [-1])
@@ -450,6 +558,17 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
   // When the user switches to a contract that has not been compiled, there is no
   // usable AST for the active file, so analysis must not be runnable on it.
   const hasCompilationForCurrentFile = state.data !== null && !!state.file && state.file === currentFile
+  const staticAnalysisDisabledReason = (() => {
+    if (slitherEnabled) return ''
+    if (!currentFile || !/\.sol$/i.test(currentFile)) {
+      return 'Open a Solidity (.sol) file and compile it first. Run will enable when its compilation result is ready.'
+    }
+    if (!hasCompilationForCurrentFile) {
+      return `Compile ${currentFile.split('/').pop()} first. Run will enable when its compilation result is ready.`
+    }
+    if (categoryIndex.length === 0) return 'Select at least one analysis category to enable Run.'
+    return ''
+  })()
 
   const handleCheckSingle = (event, _index) => {
     _index = _index.toString()
@@ -542,6 +661,11 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
           />
           <Button buttonText="Run" onClick={() => run(state.data, state.source, state.file)} disabled={(!hasCompilationForCurrentFile || categoryIndex.length === 0) && !slitherEnabled }/>
         </div>
+        { staticAnalysisDisabledReason &&
+          <div className="alert alert-info small py-1 px-2 mt-2 mb-1" data-id="staticAnalysisDisabledReason" role="status">
+            { staticAnalysisDisabledReason }
+          </div>
+        }
         <div className="d-flex mt-1" id="hideLibraryWarnings">
           <RemixUiCheckbox
             id="hideLibraryWarningsCheckbox"
@@ -599,6 +723,7 @@ export const RemixUiStaticAnalyser = (props: RemixUiStaticAnalyserProps) => {
         </span>
       </div>
       <br/>
+      <div ref={warningContainer} className="sr-only" aria-live="polite"></div>
       { Object.keys(categorySummary).length > 0 &&
         <div className="mb-2" data-id="staticAnalysisCategorySummary">
           <div className="d-flex flex-wrap align-items-center">

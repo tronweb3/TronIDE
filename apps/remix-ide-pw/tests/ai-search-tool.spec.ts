@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
-import { dismissWelcomeModal } from './helpers'
+import { dismissWelcomeModal, toolResultSummary } from './helpers'
 
 // search_workspace: content search across the current workspace through the
 // Search panel's pure engine (filePanel.aiSearchWorkspace) — read-only, no
@@ -17,8 +17,8 @@ async function openHome (page: Page) {
   await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
 }
 async function setKeyAndGateway (page: Page) {
-  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
   await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
 }
 async function ask (page: Page, q: string) {
   await page.locator('.textarea-wrapper textarea').fill(q)
@@ -38,7 +38,7 @@ function mockToolSequence (page: Page, tools: Array<{ name: string, input: any }
       if (Array.isArray(sent.tools)) cap.toolNames = sent.tools.map((t: any) => t.name)
       const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
       const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
-      if (block) cap.results.push(String(block.content))
+      if (block) cap.results.push(toolResultSummary(block.content))
     } catch (e) { /* first turn */ }
     const common = { id: 'm' + calls, type: 'message', role: 'assistant', model: 'claude-opus-4-8', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }
     const tool = tools[calls]

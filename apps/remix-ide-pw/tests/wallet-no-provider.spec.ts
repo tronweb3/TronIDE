@@ -21,7 +21,15 @@ test.describe('Wallet without injected provider', () => {
     // No connected-wallet menu, no account leaked into Deploy & Run.
     await expect(page.locator('[data-id="headerWalletMenu"]')).toHaveCount(0)
     await page.locator('#icon-panel div[plugin="udapp"]').click()
-    await expect(page.locator('select#selectExEnvOptions')).toHaveValue('vm-tron')
+    const environment = page.locator('select#selectExEnvOptions')
+    await expect(environment).toHaveValue('vm-tron')
+
+    // Selecting Injected TronWeb without a provider must fail closed back to
+    // the VM and leave an actionable message instead of silently changing the
+    // apparent environment.
+    await environment.selectOption('injected')
+    await expect(environment).toHaveValue('vm-tron')
+    await expect(page.locator('[data-shared="tooltipPopup"]')).toContainText('TronLink is not available', { timeout: 10_000 })
 
     // The app is still alive: the home view renders and the button stays clickable.
     await expect(page.locator('[data-id="landingWorkspaceStatus"]')).toBeVisible()

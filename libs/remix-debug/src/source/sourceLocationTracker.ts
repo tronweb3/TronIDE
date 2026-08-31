@@ -85,10 +85,26 @@ export class SourceLocationTracker {
    * @param {Object} contracts - AST of compiled contracts
    */
   getTotalAmountOfSources (address, contracts) {
-    let sourcesLength = Object.keys(contracts).length
+    let sourcesLength = Object.keys(contracts || {}).length
     const generatedSources = this.getGeneratedSourcesFromAddress(address)
     if (generatedSources) sourcesLength = sourcesLength + Object.keys(generatedSources).length
     return sourcesLength
+  }
+
+  getSourceIds (address, contracts, sources) {
+    const sourceIds = new Set()
+    for (const filename of Object.keys(sources || {})) {
+      const id = sources[filename] && sources[filename].id
+      if (id !== undefined && id !== null && Number.isInteger(Number(id))) sourceIds.add(Number(id))
+    }
+    const generatedSources = this.getGeneratedSourcesFromAddress(address) || []
+    for (const source of generatedSources) {
+      if (source && source.id !== undefined && source.id !== null) sourceIds.add(Number(source.id))
+    }
+    if (!sourceIds.size) {
+      Object.keys(contracts || {}).forEach((_filename, index) => sourceIds.add(index))
+    }
+    return sourceIds
   }
 
   /**
@@ -98,15 +114,15 @@ export class SourceLocationTracker {
    * @param {Int} vmtraceStepIndex - index of the current code in the vmtrace
    * @param {Object} contractDetails - AST of compiled contracts
    */
-  async getValidSourceLocationFromVMTraceIndex (address, vmtraceStepIndex, contracts) {
-    const amountOfSources = this.getTotalAmountOfSources(address, contracts)
+  async getValidSourceLocationFromVMTraceIndex (address, vmtraceStepIndex, contracts, sources) {
+    const sourceIds = this.getSourceIds(address, contracts, sources)
     let map: Record<string, number> = { file: -1 }
     /*
       (map.file === -1) this indicates that it isn't associated with a known source code
       (map.file > amountOfSources - 1) this indicates the current file index exceed the total number of files.
                                               this happens when generated sources should not be considered.
     */
-    while (vmtraceStepIndex >= 0 && (map.file === -1 || map.file > amountOfSources - 1)) {
+    while (vmtraceStepIndex >= 0 && (map.file === -1 || !sourceIds.has(map.file))) {
       map = await this.getSourceLocationFromVMTraceIndex(address, vmtraceStepIndex, contracts)
       vmtraceStepIndex = vmtraceStepIndex - 1
     }
@@ -122,14 +138,15 @@ export class SourceLocationTracker {
     let bytes
     for (const file in contracts) {
       for (const contract in contracts[file]) {
-        const bytecode = contracts[file][contract].evm.bytecode
-        const deployedBytecode = contracts[file][contract].evm.deployedBytecode
-        if (!deployedBytecode) continue
+        const bytecode = contracts[file][contract].evm && contracts[file][contract].evm.bytecode
+        const deployedBytecode = contracts[file][contract].evm && contracts[file][contract].evm.deployedBytecode
+        const selectedBytecode = isCreation ? bytecode : deployedBytecode
+        if (!selectedBytecode || !selectedBytecode.object) continue
 
-        bytes = isCreation ? bytecode.object : deployedBytecode.object
+        bytes = selectedBytecode.object
         if (util.compareByteCode(code, '0x' + bytes)) {
-          const generatedSources = isCreation ? bytecode.generatedSources : deployedBytecode.generatedSources
-          const map = isCreation ? bytecode.sourceMap : deployedBytecode.sourceMap
+          const generatedSources = selectedBytecode.generatedSources
+          const map = selectedBytecode.sourceMap
           return { generatedSources, map }
         }
       }

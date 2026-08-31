@@ -227,7 +227,7 @@ tape('ContractParameters - (TxFormat.buildData) - link Libraries', function (t) 
   } // fake
 
   t.test('(TxFormat.buildData and link library (standard way))', function (st) {
-    st.plan(6)
+    st.plan(8)
     const output = JSON.parse(compileData)
     const contract = output.contracts['test.sol']['testContractLinkLibrary']
     context = { output, contract }
@@ -235,7 +235,7 @@ tape('ContractParameters - (TxFormat.buildData) - link Libraries', function (t) 
   })
 
   t.test('(TxFormat.encodeConstructorCallAndLinkLibraries and link library (standard way))', function (st) {
-    st.plan(12)
+    st.plan(14)
     const output = JSON.parse(compileData)
     const contract = output.contracts['test.sol']['testContractLinkLibrary']
     context = { output, contract }
@@ -244,8 +244,12 @@ tape('ContractParameters - (TxFormat.buildData) - link Libraries', function (t) 
 })
 
 function testLinkLibrary (st, fakeDeployedContracts, callbackDeployLibraries) {
-  const deployMsg = ['creation of library test.sol:lib1 pending...',
-    'creation of library test.sol:lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2 pending...']
+  const deployMsg = [
+    'creation of library test.sol:lib1 pending...',
+    'creation of library test.sol:lib1 succeeded.',
+    'creation of library test.sol:lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2 pending...',
+    'creation of library test.sol:lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2 succeeded.'
+  ]
   txFormat.buildData('testContractLinkLibrary', context.contract, context.output.contracts, true, context.contract.abi[0], '', (error, data) => {
     if (error) { return st.fails(error) }
     console.log(data)
@@ -274,8 +278,12 @@ function testLinkLibrary2 (st, callbackDeployLibraries) {
   // const data = '608060405234801561001057600080fd5b50d3801561001d57600080fd5b50d2801561002a57600080fd5b506101fc8061003a6000396000f3fe608060405234801561001057600080fd5b50d3801561001d57600080fd5b50d2801561002a57600080fd5b50600436106100455760003560e01c80636d4ce63c1461004a575b600080fd5b610052610054565b005b73f7a10e525d4b168f45f74db1b61f63d3e7619e116344733ae16040518163ffffffff1660e01b815260040160006040518083038186803b15801561009857600080fd5b505af41580156100ac573d6000803e3d6000fd5b5050505073f7a10e525d4b168f45f74db1b61f63d3e7619e336344733ae16040518163ffffffff1660e01b815260040160006040518083038186803b1580156100f457600080fd5b505af4158015610108573d6000803e3d6000fd5b5050505073f7a10e525d4b168f45f74db1b61f63d3e7619e336344733ae16040518163ffffffff1660e01b815260040160006040518083038186803b15801561015057600080fd5b505af4158015610164573d6000803e3d6000fd5b5050505073f7a10e525d4b168f45f74db1b61f63d3e7619e116344733ae16040518163ffffffff1660e01b815260040160006040518083038186803b1580156101ac57600080fd5b505af41580156101c0573d6000803e3d6000fd5b5050505056fea26474726f6e582212200d27ec8555812429446271153ba5458f32c378ffd9ea820a1f227a54dab1946364736f6c63430008060033'
   const data = '6080604052348015600e575f80fd5b506101cf8061001c5f395ff3fe608060405234801561000f575f80fd5b5060043610610029575f3560e01c80636d4ce63c1461002d575b5f80fd5b610035610037565b005b73f7a10e525d4b168f45f74db1b61f63d3e7619e116344733ae16040518163ffffffff1660e01b81526004015f6040518083038186803b158015610079575f80fd5b505af415801561008b573d5f803e3d5ffd5b5050505073f7a10e525d4b168f45f74db1b61f63d3e7619e336344733ae16040518163ffffffff1660e01b81526004015f6040518083038186803b1580156100d1575f80fd5b505af41580156100e3573d5f803e3d5ffd5b5050505073f7a10e525d4b168f45f74db1b61f63d3e7619e336344733ae16040518163ffffffff1660e01b81526004015f6040518083038186803b158015610129575f80fd5b505af415801561013b573d5f803e3d5ffd5b5050505073f7a10e525d4b168f45f74db1b61f63d3e7619e116344733ae16040518163ffffffff1660e01b81526004015f6040518083038186803b158015610181575f80fd5b505af4158015610193573d5f803e3d5ffd5b5050505056fea2646970667358221220a922cc5ec7256636336bc3b72111104dd61b63fc0c74509d9a572644e5514e6464736f6c63430008190033'
 
-  const deployMsg = ['creation of library test.sol:lib1 pending...',
-    'creation of library test.sol:lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2 pending...']
+  const deployMsg = [
+    'creation of library test.sol:lib1 pending...',
+    'creation of library test.sol:lib1 succeeded.',
+    'creation of library test.sol:lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2 pending...',
+    'creation of library test.sol:lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2_lib2 succeeded.'
+  ]
   txFormat.encodeConstructorCallAndLinkLibraries(context.contract, '', context.contract.abi[0], librariesReference, context.contract.evm.bytecode.linkReferences, (error, result) => {
     console.log(error, result)
     st.equal(data, result.dataHex)

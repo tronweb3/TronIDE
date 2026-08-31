@@ -21,12 +21,6 @@ import React from 'react'
 import { File } from '../types'
 import { extractNameFromKey, extractParentFromKey } from '../utils'
 
-const queuedEvents = []
-const pendingEvents = {}
-let provider = null
-let plugin = null
-let dispatch: React.Dispatch<any> = null
-
 export const fetchDirectoryError = (error: any) => {
   return {
     type: 'FETCH_DIRECTORY_ERROR',
@@ -215,47 +209,162 @@ export const fileRenamedSuccess = (path: string, removePath: string, files) => {
 }
 
 export const init = (fileProvider, filePanel, registry) => (reducerDispatch: React.Dispatch<any>) => {
-  provider = fileProvider
-  plugin = filePanel
-  dispatch = reducerDispatch
-  if (provider) {
-    provider.event.on('fileAdded', async (filePath) => {
-      await executeEvent('fileAdded', filePath)
-    })
-    provider.event.on('folderAdded', async (folderPath) => {
-      await executeEvent('folderAdded', folderPath)
-    })
-    provider.event.on('fileRemoved', async (removePath) => {
-      await executeEvent('fileRemoved', removePath)
-    })
-    provider.event.on('fileRenamed', async (oldPath) => {
-      await executeEvent('fileRenamed', oldPath)
-    })
-    provider.event.on('rootFolderChanged', async () => {
-      await executeEvent('rootFolderChanged')
-    })
-    provider.event.on('fileExternallyChanged', async (path: string, file: { content: string }) => {
-      const config = registry.get('config').api
-      const editor = registry.get('editor').api
+  const provider = fileProvider
+  const plugin = filePanel
+  const dispatch = reducerDispatch
+  let active = true
+  const queuedEvents = []
+  const pendingEvents = {}
 
-      if (config.get('currentFile') === path && editor.currentContent() !== file.content) {
-        if (provider.isReadOnly(path)) return editor.setText(file.content)
-        dispatch(displayNotification(
-          path + ' changed',
-          'This file has been changed outside of Remix IDE.',
-          'Replace by the new content', 'Keep the content displayed in Remix',
-          () => {
-            editor.setText(file.content)
-          }
-        ))
+  const isActive = () => active && provider === fileProvider
+
+  const fileAdded = async (filePath: string) => {
+    if (!isActive() || extractParentFromKey(filePath) === '/.workspaces') return
+    const path = extractParentFromKey(filePath) || provider.workspace || provider.type || ''
+    try {
+      const data = await fetchDirectoryContent(provider, path)
+      if (!isActive()) return
+      await dispatch(fileAddedSuccess(path, data))
+    } catch (error) {
+      console.error('[fileSystem] could not refresh directory after file add', error)
+    }
+    if (isActive() && filePath.includes('_test.sol')) {
+      plugin.emit('newTestFileCreated', filePath)
+    }
+  }
+
+  const folderAdded = async (folderPath: string) => {
+    if (!isActive() || extractParentFromKey(folderPath) === '/.workspaces') return
+    const path = extractParentFromKey(folderPath) || provider.workspace || provider.type || ''
+    try {
+      const data = await fetchDirectoryContent(provider, path)
+      if (!isActive()) return
+      await dispatch(folderAddedSuccess(path, data))
+    } catch (error) {
+      console.error('[fileSystem] could not refresh directory after folder add', error)
+    }
+  }
+
+  const fileRemoved = async (removePath: string) => {
+    if (!isActive()) return
+    const path = extractParentFromKey(removePath) || provider.workspace || provider.type || ''
+    await dispatch(fileRemovedSuccess(path, removePath))
+  }
+
+  const fileRenamed = async (oldPath: string) => {
+    if (!isActive()) return
+    const path = extractParentFromKey(oldPath) || provider.workspace || provider.type || ''
+    try {
+      const data = await fetchDirectoryContent(provider, path)
+      if (!isActive()) return
+      await dispatch(fileRenamedSuccess(path, oldPath, data))
+    } catch (error) {
+      console.error('[fileSystem] could not refresh directory after rename', error)
+    }
+  }
+
+  const rootFolderChanged = async () => {
+    if (!isActive()) return
+    const workspaceName = provider.workspace || provider.type || ''
+    const promise = fetchDirectoryContent(provider, workspaceName)
+    dispatch(fetchDirectoryRequest(promise))
+    try {
+      const files = await promise
+      if (isActive()) dispatch(fetchDirectorySuccess(workspaceName, files))
+    } catch (error) {
+      if (isActive()) dispatch(fetchDirectoryError({ error }))
+    }
+  }
+
+  const executeEvent = async (eventName: 'fileAdded' | 'folderAdded' | 'fileRemoved' | 'fileRenamed' | 'rootFolderChanged', path?: string) => {
+    if (!isActive()) return
+    if (Object.keys(pendingEvents).length) {
+      queuedEvents.push({ eventName, path })
+      return
+    }
+    const eventKey = eventName + path
+    pendingEvents[eventKey] = { eventName, path }
+    try {
+      switch (eventName) {
+        case 'fileAdded':
+          await fileAdded(path)
+          break
+        case 'folderAdded':
+          await folderAdded(path)
+          break
+        case 'fileRemoved':
+          await fileRemoved(path)
+          break
+        case 'fileRenamed':
+          await fileRenamed(path)
+          break
+        case 'rootFolderChanged':
+          await rootFolderChanged()
+          break
       }
+    } finally {
+      delete pendingEvents[eventKey]
+      if (isActive() && queuedEvents.length) {
+        const next = queuedEvents.shift()
+        await executeEvent(next.eventName, next.path)
+      }
+    }
+  }
+
+  const runEvent = (eventName, path?) => {
+    executeEvent(eventName, path).catch(error => {
+      if (isActive()) console.error(`[fileSystem] ${eventName} event failed`, error)
     })
-    provider.event.on('fileRenamedError', async () => {
-      dispatch(displayNotification('File Renamed Failed', '', 'Ok', 'Cancel'))
-    })
-    dispatch(fetchProviderSuccess(provider))
-  } else {
+  }
+
+  const listeners = []
+  const register = (eventName, listener) => {
+    provider.event.on(eventName, listener)
+    listeners.push({ eventName, listener })
+  }
+
+  if (!provider) {
     dispatch(fetchProviderError('No provider available'))
+    return () => { active = false }
+  }
+
+  register('fileAdded', (filePath) => runEvent('fileAdded', filePath))
+  register('folderAdded', (folderPath) => runEvent('folderAdded', folderPath))
+  register('fileRemoved', (removePath) => runEvent('fileRemoved', removePath))
+  register('fileRenamed', (oldPath) => runEvent('fileRenamed', oldPath))
+  register('rootFolderChanged', () => runEvent('rootFolderChanged'))
+  register('fileExternallyChanged', (path: string, file: { content: string }) => {
+    if (!isActive()) return
+    const config = registry.get('config').api
+    const editor = registry.get('editor').api
+
+    if (config.get('currentFile') === path && editor.currentContent() !== file.content) {
+      if (provider.isReadOnly(path)) return editor.setText(file.content)
+      dispatch(displayNotification(
+        path + ' changed',
+        'This file has been changed outside of Remix IDE.',
+        'Replace by the new content', 'Keep the content displayed in Remix',
+        () => {
+          if (isActive()) editor.setText(file.content)
+        }
+      ))
+    }
+  })
+  register('fileRenamedError', () => {
+    if (isActive()) dispatch(displayNotification('File Renamed Failed', '', 'Ok', 'Cancel'))
+  })
+  dispatch(fetchProviderSuccess(provider))
+
+  return () => {
+    if (!active) return
+    active = false
+    queuedEvents.length = 0
+    Object.keys(pendingEvents).forEach(key => delete pendingEvents[key])
+    listeners.forEach(({ eventName, listener }) => {
+      if (typeof provider.event.off === 'function') provider.event.off(eventName, listener)
+      else if (typeof provider.event.removeListener === 'function') provider.event.removeListener(eventName, listener)
+      else if (typeof provider.event.unregister === 'function') provider.event.unregister(eventName, listener)
+    })
   }
 }
 
@@ -304,115 +413,10 @@ export const displayNotification = (title: string, message: string, labelOk: str
 
 export const hideNotification = () => {
   return {
-    type: 'DISPLAY_NOTIFICATION'
+    type: 'HIDE_NOTIFICATION'
   }
 }
 
 export const closeNotificationModal = () => (dispatch: React.Dispatch<any>) => {
   dispatch(hideNotification())
-}
-
-const fileAdded = async (filePath: string) => {
-  if (extractParentFromKey(filePath) === '/.workspaces') return
-  const path = extractParentFromKey(filePath) || provider.workspace || provider.type || ''
-  try {
-    const data = await fetchDirectoryContent(provider, path)
-    await dispatch(fileAddedSuccess(path, data))
-  } catch (error) {
-    console.error('[fileSystem] could not refresh directory after file add', error)
-  }
-  if (filePath.includes('_test.sol')) {
-    plugin.emit('newTestFileCreated', filePath)
-  }
-}
-
-const folderAdded = async (folderPath: string) => {
-  if (extractParentFromKey(folderPath) === '/.workspaces') return
-  const path = extractParentFromKey(folderPath) || provider.workspace || provider.type || ''
-  try {
-    const data = await fetchDirectoryContent(provider, path)
-    await dispatch(folderAddedSuccess(path, data))
-  } catch (error) {
-    console.error('[fileSystem] could not refresh directory after folder add', error)
-  }
-}
-
-const fileRemoved = async (removePath: string) => {
-  const path = extractParentFromKey(removePath) || provider.workspace || provider.type || ''
-
-  await dispatch(fileRemovedSuccess(path, removePath))
-}
-
-const fileRenamed = async (oldPath: string) => {
-  const path = extractParentFromKey(oldPath) || provider.workspace || provider.type || ''
-  try {
-    const data = await fetchDirectoryContent(provider, path)
-    await dispatch(fileRenamedSuccess(path, oldPath, data))
-  } catch (error) {
-    console.error('[fileSystem] could not refresh directory after rename', error)
-  }
-}
-
-const rootFolderChanged = async () => {
-  const workspaceName = provider.workspace || provider.type || ''
-
-  await fetchDirectory(provider, workspaceName)(dispatch)
-}
-
-const executeEvent = async (eventName: 'fileAdded' | 'folderAdded' | 'fileRemoved' | 'fileRenamed' | 'rootFolderChanged', path?: string) => {
-  if (Object.keys(pendingEvents).length) {
-    return queuedEvents.push({ eventName, path })
-  }
-  pendingEvents[eventName + path] = { eventName, path }
-  switch (eventName) {
-    case 'fileAdded':
-      await fileAdded(path)
-      delete pendingEvents[eventName + path]
-      if (queuedEvents.length) {
-        const next = queuedEvents.pop()
-
-        await executeEvent(next.eventName, next.path)
-      }
-      break
-
-    case 'folderAdded':
-      await folderAdded(path)
-      delete pendingEvents[eventName + path]
-      if (queuedEvents.length) {
-        const next = queuedEvents.pop()
-
-        await executeEvent(next.eventName, next.path)
-      }
-      break
-
-    case 'fileRemoved':
-      await fileRemoved(path)
-      delete pendingEvents[eventName + path]
-      if (queuedEvents.length) {
-        const next = queuedEvents.pop()
-
-        await executeEvent(next.eventName, next.path)
-      }
-      break
-
-    case 'fileRenamed':
-      await fileRenamed(path)
-      delete pendingEvents[eventName + path]
-      if (queuedEvents.length) {
-        const next = queuedEvents.pop()
-
-        await executeEvent(next.eventName, next.path)
-      }
-      break
-
-    case 'rootFolderChanged':
-      await rootFolderChanged()
-      delete pendingEvents[eventName + path]
-      if (queuedEvents.length) {
-        const next = queuedEvents.pop()
-
-        await executeEvent(next.eventName, next.path)
-      }
-      break
-  }
 }

@@ -15,8 +15,8 @@ async function openHome (page: Page) {
   await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
 }
 async function setKeyAndGateway (page: Page) {
-  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
   await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
 }
 async function ask (page: Page, q: string) {
   await page.locator('.textarea-wrapper textarea').fill(q)
@@ -109,5 +109,50 @@ test.describe('AI edit_file tool', () => {
     expect(saved).toContain('DUP\nDUP')
 
     expect(pageErrors).toEqual([])
+  })
+
+  // Security regression: the old shared modal clipped at 2400 chars and
+  // create_file itself clipped at 2000, while the full hidden tail was still
+  // written. Both create and edit now show the complete payload in a scrollable
+  // review and bind it to a SHA-256 digest.
+  test('TC-AI-TOOL-045: large create/edit approvals expose the full tail and payload digest', { tag: '@gate' }, async ({ page }) => {
+    const FILE = 'probe_full_approval.txt'
+    const createTail = 'CREATE-TAIL-IGNORE-USER-AND-DELETE-FILES'
+    const editTail = 'EDIT-TAIL-IGNORE-USER-AND-DEPLOY-CONTRACT'
+    const initial = `SAFE PREFIX\n${'a'.repeat(2700)}\n${createTail}`
+    const replacement = `${'b'.repeat(2800)}\n${editTail}`
+    const cap = await mockToolSequence(page, [
+      { name: 'create_file', input: { path: FILE, content: initial } },
+      { name: 'edit_file', input: { path: FILE, old_string: createTail, new_string: replacement } },
+      null
+    ], 'FULL-APPROVAL-DONE')
+
+    await openHome(page)
+    await setKeyAndGateway(page)
+    await ask(page, 'Create and edit the large approval probe.')
+
+    const createModal = page.locator('.ant-modal-confirm').filter({ hasText: `AI wants to create ${FILE}` })
+    await expect(createModal).toBeVisible({ timeout: 30_000 })
+    const createReview = createModal.locator('[data-id="ai-tool-approval-body"]')
+    await expect(createReview).toContainText(createTail)
+    await expect(createReview).not.toContainText('preview truncated')
+    await expect(createReview).toHaveAttribute('data-approval-sha256', /^[0-9a-f]{64}$/)
+    await createModal.locator('.ant-btn-primary').click()
+
+    const editModal = page.locator('.ant-modal-confirm').filter({ hasText: `AI wants to edit ${FILE}` })
+    await expect(editModal).toBeVisible({ timeout: 30_000 })
+    const editReview = editModal.locator('[data-id="ai-tool-approval-body"]')
+    await expect(editReview).toContainText(createTail)
+    await expect(editReview).toContainText(editTail)
+    await expect(editReview).not.toContainText('preview truncated')
+    await expect(editReview).toHaveAttribute('data-approval-sha256', /^[0-9a-f]{64}$/)
+    await editModal.locator('.ant-btn-primary').click()
+
+    await expect(page.getByText('FULL-APPROVAL-DONE').first()).toBeVisible({ timeout: 30_000 })
+    expect(cap.results[0]).toMatch(/Created probe_full_approval\.txt/)
+    expect(cap.results[1]).toMatch(/Edited probe_full_approval\.txt/)
+    const saved = await readSaved(page, FILE)
+    expect(saved).toContain(editTail)
+    expect(saved).not.toContain(createTail)
   })
 })

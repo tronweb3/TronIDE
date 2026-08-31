@@ -22,13 +22,18 @@ var EventManager = require('../lib/events')
 var modalDialog = require('../app/ui/modaldialog')
 var yo = require('yo-yo')
 
-function createSessionToken () {
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    const bytes = new Uint8Array(16)
-    crypto.getRandomValues(bytes)
-    return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+async function requestSessionToken (port) {
+  const response = await window.fetch(`http://127.0.0.1:${port}/remixd-token`, {
+    method: 'GET',
+    cache: 'no-store',
+    credentials: 'omit'
+  })
+  if (!response.ok) throw new Error(`Remixd token endpoint returned HTTP ${response.status}.`)
+  const payload = await response.json()
+  if (!payload || typeof payload.token !== 'string' || !/^[0-9a-f]{32}$/i.test(payload.token)) {
+    throw new Error('Remixd returned an invalid session token.')
   }
-  return String(Date.now()) + String(Math.random()).slice(2)
+  return payload.token
 }
 
 function isValidRemixdMessage (data) {
@@ -49,7 +54,8 @@ class Remixd {
     this.socket = null
     this.connected = false
     this.authenticated = false
-    this.sessionToken = createSessionToken()
+    this.sessionToken = null
+    this.startGeneration = 0
     this.receiveResponse()
   }
 
@@ -58,85 +64,104 @@ class Remixd {
   }
 
   close () {
+    this.startGeneration++
     if (this.socket) {
       this.socket.close()
       this.socket = null
     }
+    this.connected = false
+    this.authenticated = false
+    this.sessionToken = null
   }
 
   start (cb) {
+    const generation = ++this.startGeneration
     if (this.socket) {
       try {
         this.socket.close()
       } catch (e) {
         this.event.trigger('diagnostic', [{ source: 'remixd', message: 'Failed to close existing socket', error: e }])
       }
+      this.socket = null
     }
     this.event.trigger('connecting', [])
     this.authenticated = false
-    this.sessionToken = createSessionToken()
-    this.socket = new WebSocket('ws://localhost:' + this.port + '?remixdToken=' + encodeURIComponent(this.sessionToken), 'echo-protocol') // eslint-disable-line
+    this.sessionToken = null
+    requestSessionToken(this.port).then((token) => {
+      if (generation !== this.startGeneration) return
+      this.sessionToken = token
+      const socket = new WebSocket('ws://127.0.0.1:' + this.port + '?remixdToken=' + encodeURIComponent(this.sessionToken), 'echo-protocol') // eslint-disable-line
+      this.socket = socket
 
-    this.socket.addEventListener('open', (event) => {
-      this.connected = true
-      this.event.trigger('connected', [event])
-      cb()
-    })
+      socket.addEventListener('open', (event) => {
+        if (this.socket !== socket) return
+        this.connected = true
+        this.event.trigger('connected', [event])
+        if (typeof cb === 'function') cb()
+      })
 
-    this.socket.addEventListener('message', (event) => {
-      let data
-      try {
-        data = JSON.parse(event.data)
-      } catch (e) {
-        this.event.trigger('diagnostic', [{ source: 'remixd', message: 'Invalid JSON from remixd socket', error: e }])
-        return
-      }
-      if (!isValidRemixdMessage(data)) {
-        this.event.trigger('diagnostic', [{ source: 'remixd', message: 'Invalid remixd message schema', data }])
-        return
-      }
-      if (!this.authenticated) {
-        if (data.type === 'handshake' && data.token === this.sessionToken) {
-          this.authenticated = true
-          this.event.trigger('authenticated', [data])
-        } else if (data.type === 'handshake' && data.token !== this.sessionToken) {
-          this.event.trigger('diagnostic', [{ source: 'remixd', message: 'Rejected remixd handshake with mismatched token' }])
-          this.close()
+      socket.addEventListener('message', (event) => {
+        if (this.socket !== socket) return
+        let data
+        try {
+          data = JSON.parse(event.data)
+        } catch (e) {
+          this.event.trigger('diagnostic', [{ source: 'remixd', message: 'Invalid JSON from remixd socket', error: e }])
+          return
+        }
+        if (!isValidRemixdMessage(data)) {
+          this.event.trigger('diagnostic', [{ source: 'remixd', message: 'Invalid remixd message schema', data }])
+          return
+        }
+        if (!this.authenticated) {
+          if (data.type === 'handshake' && data.token === this.sessionToken) {
+            this.authenticated = true
+            this.event.trigger('authenticated', [data])
+          } else if (data.type === 'handshake' && data.token !== this.sessionToken) {
+            this.event.trigger('diagnostic', [{ source: 'remixd', message: 'Rejected remixd handshake with mismatched token' }])
+            this.close()
+          } else {
+            this.event.trigger('diagnostic', [{ source: 'remixd', message: 'Ignored unauthenticated remixd message', data }])
+          }
+          return
+        }
+        if (data.type === 'reply') {
+          if (this.callbacks[data.id]) {
+            this.callbacks[data.id](data.error, data.result)
+            delete this.callbacks[data.id]
+          }
+          this.event.trigger('replied', [data])
+        } else if (data.type === 'notification') {
+          this.event.trigger('notified', [data])
+        } else if (data.type === 'system') {
+          if (data.error) {
+            this.event.trigger('system', [{
+              error: data.error
+            }])
+          }
+        }
+      })
+
+      socket.addEventListener('error', (event) => {
+        if (this.socket !== socket) return
+        this.errored(event, socket)
+        if (typeof cb === 'function') cb(event)
+      })
+
+      socket.addEventListener('close', (event) => {
+        if (this.socket !== socket) return
+        if (event.wasClean) {
+          this.connected = false
+          this.event.trigger('closed', [event])
         } else {
-          this.event.trigger('diagnostic', [{ source: 'remixd', message: 'Ignored unauthenticated remixd message', data }])
+          this.errored(event, socket)
         }
-        return
-      }
-      if (data.type === 'reply') {
-        if (this.callbacks[data.id]) {
-          this.callbacks[data.id](data.error, data.result)
-          delete this.callbacks[data.id]
-        }
-        this.event.trigger('replied', [data])
-      } else if (data.type === 'notification') {
-        this.event.trigger('notified', [data])
-      } else if (data.type === 'system') {
-        if (data.error) {
-          this.event.trigger('system', [{
-            error: data.error
-          }])
-        }
-      }
-    })
-
-    this.socket.addEventListener('error', (event) => {
-      this.errored(event)
-      cb(event)
-    })
-
-    this.socket.addEventListener('close', (event) => {
-      if (event.wasClean) {
-        this.connected = false
-        this.event.trigger('closed', [event])
-      } else {
-        this.errored(event)
-      }
-      this.socket = null
+        this.socket = null
+      })
+    }).catch((error) => {
+      if (generation !== this.startGeneration) return
+      this.event.trigger('diagnostic', [{ source: 'remixd', message: 'Secure session token retrieval failed', error }])
+      if (typeof cb === 'function') cb(error)
     })
   }
 
@@ -151,7 +176,8 @@ class Remixd {
     })
   }
 
-  errored (event) {
+  errored (event, socket) {
+    if (socket && this.socket !== socket) return
     function remixdDialog () {
       return yo`<div>Connection to Remixd closed. Localhost connection not available anymore.</div>`
     }

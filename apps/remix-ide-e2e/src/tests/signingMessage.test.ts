@@ -51,7 +51,7 @@ module.exports = {
       .pause(5000)
       .selectContract('ECVerify')
       .createContract('')
-      .clickInstance(0)
+      .clickInstance(1)
       .perform((done) => {
         browser.getAddressAtPosition(0, (address) => {
           // skip 'instance' part of e.g. 'instance0x692a70d2e424a56d2c6c27aa97d1a86395877b3a'

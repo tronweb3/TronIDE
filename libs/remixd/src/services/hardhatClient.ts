@@ -19,6 +19,8 @@
 
 import * as WS from 'ws' // eslint-disable-line
 import { PluginClient } from '@remixproject/plugin'
+import * as path from 'path'
+import * as utils from '../utils'
 const { spawn } = require('child_process')
 
 export class HardhatClient extends PluginClient {
@@ -45,9 +47,10 @@ export class HardhatClient extends PluginClient {
         const errMsg = '[Hardhat Compilation]: Cannot compile in read-only mode'
         return reject(new Error(errMsg))
       }
-      const cmd = `npx hardhat compile --config ${configPath}`
-      const options = { cwd: this.currentSharedFolder, shell: true }
-      const child = spawn(cmd, options)
+      const safeConfigPath = assertSafeRelativePath(configPath)
+      const configAbsolutePath = utils.absolutePath(safeConfigPath, this.currentSharedFolder)
+      const options = { cwd: this.currentSharedFolder, shell: false }
+      const child = spawn('npx', ['hardhat', 'compile', '--config', configAbsolutePath], options)
       let result = ''
       let error = ''
       child.stdout.on('data', (data) => {
@@ -58,10 +61,18 @@ export class HardhatClient extends PluginClient {
       child.stderr.on('data', (err) => {
         error += `[Hardhat Compilation]: ${err.toString()}`
       })
-      child.on('close', () => {
-        if (error) reject(error)
+      child.on('error', reject)
+      child.on('close', (code) => {
+        if (code !== 0 || error) reject(error || new Error(`Hardhat exited with code ${code}.`))
         else resolve(result)
       })
     })
   }
+}
+
+function assertSafeRelativePath (value: string): string {
+  if (typeof value !== 'string' || !value.trim() || value.indexOf('\0') !== -1 || path.isAbsolute(value) || value.split(/[\\/]/).includes('..')) {
+    throw new Error('Hardhat config path must stay inside the shared folder.')
+  }
+  return value
 }

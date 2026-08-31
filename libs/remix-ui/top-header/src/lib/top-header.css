@@ -38,6 +38,7 @@
   border-radius: 6px;
   background: var(--header-control-bg);
   color: var(--header-control-text);
+  text-decoration: none;
   cursor: pointer;
   position: relative;
 }
@@ -46,6 +47,7 @@
   border-color: var(--header-control-hover-border);
   background: var(--header-control-hover-bg);
   color: var(--header-control-text);
+  text-decoration: none;
   outline: none;
 }
 .top-header-wrapper .settings-icon-wrapper i {
@@ -311,6 +313,72 @@
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
   z-index: 1040;
 }
+.top-header-wrapper .header-wallet-connect-prompt {
+  position: absolute;
+  right: 0;
+  top: 38px;
+  width: 300px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--header-accent) 55%, var(--header-menu-border));
+  border-radius: 7px;
+  background: var(--header-menu-bg);
+  color: var(--header-menu-text);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.24);
+  z-index: 1040;
+}
+.top-header-wrapper .header-wallet-connect-prompt.is-error {
+  border-color: color-mix(in srgb, var(--danger, #dc3545) 58%, var(--header-menu-border));
+}
+.top-header-wrapper .wallet-connect-prompt-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.top-header-wrapper .wallet-connect-prompt-heading i {
+  color: var(--header-accent);
+}
+.top-header-wrapper .header-wallet-connect-prompt.is-error .wallet-connect-prompt-heading i {
+  color: var(--danger, #dc3545);
+}
+.top-header-wrapper .wallet-connect-prompt-message {
+  margin-top: 7px;
+  color: var(--header-menu-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.top-header-wrapper .wallet-connect-prompt-countdown {
+  margin-top: 9px;
+  color: var(--header-menu-text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+.top-header-wrapper .wallet-connect-prompt-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.top-header-wrapper .wallet-connect-prompt-actions button {
+  min-height: 30px;
+  border: 1px solid var(--header-menu-border);
+  border-radius: 5px;
+  background: var(--header-menu-primary-bg);
+  color: var(--header-menu-primary-text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 9px;
+}
+.top-header-wrapper .wallet-connect-prompt-actions button:first-child {
+  flex: 1;
+}
+.top-header-wrapper .wallet-connect-prompt-actions button:hover,
+.top-header-wrapper .wallet-connect-prompt-actions button:focus {
+  background: var(--header-menu-primary-hover-bg);
+  outline: 2px solid color-mix(in srgb, var(--header-accent) 45%, transparent);
+  outline-offset: 1px;
+}
 .top-header-wrapper .wallet-menu-title {
   padding: 2px 4px 8px;
   color: var(--header-menu-text);
@@ -426,7 +494,7 @@
   height: 18px;
   padding: 0 5px;
   border-radius: 10px;
-  background: #ee6c4d;
+  background: #b84040;
   color: #ffffff;
   font-size: 11px;
   font-weight: 700;
@@ -528,12 +596,14 @@
   border: 1px solid var(--ai-input-border);
   padding: 6px 10px;
   border-radius: 4px;
+  text-decoration: none;
   cursor: pointer;
 }
 .top-header-wrapper .header-version:hover,
 .top-header-wrapper .header-version:focus-visible {
   border-color: var(--ai-text);
-  text-decoration: underline;
+  color: var(--ai-title);
+  text-decoration: none;
 }
 
 .top-header-wrapper .ai-show-btn {

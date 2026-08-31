@@ -15,8 +15,8 @@ async function openHome (page: Page) {
   await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
 }
 async function setKeyAndGateway (page: Page) {
-  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
   await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
 }
 async function ask (page: Page, q: string) {
   await page.locator('.textarea-wrapper textarea').fill(q)

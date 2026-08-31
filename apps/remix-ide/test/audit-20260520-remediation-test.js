@@ -48,8 +48,18 @@ test('terminal HTML links are protocol-filtered after sanitization', function (t
 
 test('remixd websocket authenticates localhost session and validates message schema', function (t) {
   const source = readIdeSource('lib/remixd.js')
+  const handleSource = readIdeSource('app/files/remixd-handle.js')
+  const serverSource = readRoot('libs/remixd/src/websocket.ts')
 
-  t.ok(/createSessionToken/.test(source), 'remixd client creates an unpredictable session token')
+  t.ok(/crypto\.randomBytes\(16\)/.test(serverSource), 'remixd daemon creates a cryptographically secure session token')
+  t.ok(/request\.url === '\/remixd-token'/.test(serverSource), 'remixd daemon exposes a token endpoint')
+  t.ok(/sessionTokenFromUrl/.test(serverSource), 'remixd daemon parses the token from the websocket URL')
+  t.ok(/timingSafeEqual/.test(serverSource), 'remixd daemon compares tokens in constant time')
+  t.ok(/requestLocalSessionUrl/.test(handleSource), 'remixd plugin obtains a token from the daemon')
+  t.ok(/remixd-token/.test(source), 'legacy remixd client obtains a token from the daemon')
+  t.notOk(/Math\.random\(\)/.test(source), 'legacy remixd client has no predictable token fallback')
+  t.notOk(/Math\.random\(\)/.test(handleSource), 'remixd plugin has no predictable token fallback')
+  t.notOk(/console\.[a-z]+\([^\n]*request\.url/.test(serverSource), 'remixd daemon does not log websocket URLs containing tokens')
   t.ok(/remixdToken=/.test(source), 'remixd client sends token in websocket URL')
   t.ok(/this\.authenticated\s*=\s*false/.test(source), 'remixd client starts unauthenticated')
   t.ok(/data\.type === 'handshake'/.test(source), 'remixd client waits for handshake message')

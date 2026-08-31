@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
-import { dismissWelcomeModal } from './helpers'
+import { dismissWelcomeModal, gotoHome, useBuiltinCompiler } from './helpers'
 
 const INJECTED_ACCOUNT = 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb'
 const NILE_GENESIS = '0000000000000000d698d4192c56cb6be724a558448e2684802de4d6cd8690dc'
@@ -38,9 +38,7 @@ const INJECTED_DEBUG_FIXTURE = `
 //   TC-DBG-003 — DebuggerLocals: named call params show as locals, state vars do not.
 
 async function compileAndOpenUdapp (page: Page, file: string, contractName: string) {
-  await page.goto('/')
-  await dismissWelcomeModal(page)
-  await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+  await gotoHome(page)
 
   const sourceFile = page.locator(`[data-id="treeViewLitreeViewItemcontracts/${file}"]`)
   if (!await sourceFile.isVisible()) {
@@ -49,6 +47,7 @@ async function compileAndOpenUdapp (page: Page, file: string, contractName: stri
   await sourceFile.click()
 
   await page.locator('#icon-panel div[plugin="solidity"]').click()
+  await useBuiltinCompiler(page)
   await page.locator('*[data-id="compilerContainerCompileBtn"]').click()
   await expect(page.locator('*[data-id="compiledContracts"]')).toContainText(contractName, { timeout: 30_000 })
 
@@ -73,9 +72,14 @@ async function expectDebuggerReady (page: Page) {
 async function stepIntoForwardUntilLocals (page: Page, re: RegExp, maxSteps = 80): Promise<string> {
   const locals = page.locator('*[data-id="solidityLocals"]')
   const intoForward = page.locator('*[data-id="buttonNavigatorIntoForward"]')
+  // Locals decoding is intentionally debounced because it can traverse large
+  // memory/storage values. Let the current step settle before reading it; a
+  // tight click loop otherwise outruns the decoder and only observes old data.
+  await page.waitForTimeout(600)
   let txt = await locals.innerText()
   for (let i = 0; i < maxSteps && !re.test(txt); i++) {
     await intoForward.click()
+    await page.waitForTimeout(600)
     txt = await locals.innerText()
   }
   return txt
@@ -168,6 +172,65 @@ test.describe('Debugger over a VM (Tron) transaction', () => {
     // through the reverting call surfaces the `proposal` parameter of vote().
     const localsText = await stepIntoForwardUntilLocals(page, /proposal/)
     expect(localsText).toMatch(/proposal/)
+  })
+
+  test('TC-DBG-012: a reverting dynamic-argument call opens with its entry locals', { tag: '@gate' }, async ({ page }) => {
+    test.setTimeout(120_000)
+    await page.goto('/')
+    await dismissWelcomeModal(page)
+    await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+
+    const sourceFile = page.locator('[data-id="treeViewLitreeViewItemcontracts/1_Storage.sol"]')
+    if (!await sourceFile.isVisible()) {
+      await page.locator('[data-id="treeViewLitreeViewItemcontracts"]').click()
+    }
+    await sourceFile.click()
+    const source = [
+      '// SPDX-License-Identifier: GPL-3.0',
+      'pragma solidity >=0.8.2 <0.9.0;',
+      'contract Kickstarter {',
+      '  struct Project { string name; uint256 goal; }',
+      '  Project[] public projects;',
+      '  function createProject(string memory name, uint256 goal) public {',
+      '    Project storage project = projects[projects.length];',
+      '    project.name = name;',
+      '    project.goal = goal;',
+      '  }',
+      '}'
+    ].join('\n')
+    await page.locator('#input').waitFor({ timeout: 10_000 })
+    await page.evaluate((content) => {
+      const input = document.getElementById('input') as any
+      input.editor.session.setValue(content)
+    }, source)
+
+    await page.locator('#icon-panel div[plugin="solidity"]').click()
+    await useBuiltinCompiler(page)
+    await page.locator('*[data-id="compilerContainerCompileBtn"]').click()
+    await expect(page.locator('*[data-id="compiledContracts"]')).toContainText('Kickstarter', { timeout: 30_000 })
+    await page.locator('#icon-panel div[plugin="udapp"]').click()
+    await page.locator('select[id="selectExEnvOptions"]').selectOption({ label: 'JavaScript VM (Tron)' })
+    await page.locator('#runTabView select[class^="contractNames"]').selectOption('Kickstarter')
+    await page.locator('button[data-id="Deploy - transact (not payable)"]', { hasText: 'Deploy' }).click()
+
+    const instance = page.locator('.instance, *[data-id^="instance"]').first()
+    await expect(instance).toBeVisible({ timeout: 30_000 })
+    await instance.locator('[data-id="universalDappUiTitleExpander"]').click()
+    const createInput = page.locator('#runTabView input[title="string name, uint256 goal"]')
+    await createInput.fill('"toast", 999')
+    await instance.locator('button[title="createProject - transact (not payable)"]', { hasText: 'createProject' }).click()
+
+    const debugButtons = page.locator('*[data-shared="txLoggerDebugButton"]')
+    await expect(debugButtons).toHaveCount(2, { timeout: 30_000 })
+    await debugButtons.last().click()
+    await expectDebuggerReady(page)
+    await expect(page.locator('#FunctionPanel')).toContainText('createProject', { timeout: 60_000 })
+
+    // callTreeReady jumps to the detected external function entry. The first
+    // settled decode must therefore use that exact entry step/source pair.
+    const locals = page.locator('*[data-id="solidityLocals"]')
+    await expect(locals).toContainText('toast', { timeout: 10_000 })
+    await expect(locals).toContainText('999', { timeout: 10_000 })
   })
 
   test('TC-DBG-004: entry function resolves by calldata selector — distinct functions, distinct locals', async ({ page }) => {

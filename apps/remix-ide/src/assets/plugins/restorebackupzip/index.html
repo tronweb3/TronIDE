@@ -69,6 +69,19 @@
     </div>
 
     <script type="text/javascript" src="/assets/plugins/restorebackupzip/bundle.js"></script>
+    <script>
+        // The host can expose the iframe as soon as its document exists. If a
+        // test or user selects a file in that short window, the bundle's
+        // onchange assignment has not been installed yet and the selection
+        // would otherwise be lost. Replay the already-populated input once the
+        // bundle has attached its handler.
+        (function () {
+            var input = document.getElementById('file-input')
+            if (input && input.files && input.files.length && typeof input.onchange === 'function') {
+                input.dispatchEvent(new Event('change', { bubbles: true }))
+            }
+        })()
+    </script>
 </body>
 
 </html>

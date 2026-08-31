@@ -83,3 +83,19 @@ test('tronTransactionConfig accepts explicit TRX-only and TRC10-only transfer mo
   t.equal(trxOnly.report({ contracts: {}, sources: {} }).length, 0)
   t.equal(trc10Only.report({ contracts: {}, sources: {} }).length, 0)
 })
+
+test('tronTransactionConfig rejects negative values and the pre-TRC10 boundary id', function (t) {
+  t.plan(3)
+
+  const module = new tronTransactionConfig()
+  module.visit(objectExpression([
+    property('callValue', -1),
+    property('tokenId', 1000000),
+    property('tokenValue', 1)
+  ]))
+
+  const report = module.report({ contracts: {}, sources: {} })
+  t.equal(report.some((item) => item.more === 'TRON rule: tron-call-value-safe-integer'), true)
+  t.equal(report.some((item) => item.more === 'TRON rule: tron-token-id-safe-integer'), false)
+  t.equal(report.filter((item) => item.more === 'TRON rule: tron-trc10-argument-combination').length, 1)
+})

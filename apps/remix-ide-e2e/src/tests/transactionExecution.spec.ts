@@ -41,7 +41,7 @@ module.exports = {
       .clickFunction('f - transact (not payable)')
       .testFunction('last',
         {
-          status: 'true Transaction mined and execution succeed',
+          status: 'true Transaction mined and execution succeeded',
           'decoded output': { 0: 'uint256: 8' }
         })
       .pause(500)
@@ -49,7 +49,7 @@ module.exports = {
       .clickFunction('g - transact (not payable)')
       .testFunction('last',
         {
-          status: 'true Transaction mined and execution succeed',
+          status: 'true Transaction mined and execution succeeded',
           'decoded output': {
             0: 'uint256: 345',
             1: 'string: comment_comment_',
@@ -69,7 +69,7 @@ module.exports = {
       .clickFunction('retunValues1 - transact (not payable)')
       .testFunction('last',
         {
-          status: 'true Transaction mined and execution succeed',
+          status: 'true Transaction mined and execution succeeded',
           'decoded output': {
             0: 'bool: _b true',
             1: 'uint256: _u 345',
@@ -80,7 +80,7 @@ module.exports = {
       .clickFunction('retunValues2 - transact (not payable)')
       .testFunction('last',
         {
-          status: 'true Transaction mined and execution succeed',
+          status: 'true Transaction mined and execution succeeded',
           'decoded output': {
             0: 'bytes1: _b 0x12',
             1: 'bytes2: _b2 0x1223',
@@ -97,7 +97,7 @@ module.exports = {
       .clickFunction('retunValues3 - transact (not payable)')
       .testFunction('last',
         {
-          status: 'true Transaction mined and execution succeed',
+          status: 'true Transaction mined and execution succeeded',
           'decoded output': {
             0: 'uint8: _en 2',
             1: 'int256[5][]: _a1 1,-45,-78,56,60,-1,42,334,-45455,-446,1,10,-5435,45,-7'
@@ -114,7 +114,7 @@ module.exports = {
       .clickFunction('inputValue1 - transact (not payable)', { types: 'uint256 _u, int256 _i, string _str', values: '"2343242", "-4324324", "string _ string _  string _  string _  string _  string _  string _  string _  string _  string _"' })
       .testFunction('last',
         {
-          status: 'true Transaction mined and execution succeed',
+          status: 'true Transaction mined and execution succeeded',
           'decoded output': {
             0: 'uint256: _uret 2343242',
             1: 'int256: _iret -4324324',
@@ -124,7 +124,7 @@ module.exports = {
       .pause(500)
       .clickFunction('inputValue2 - transact (not payable)', { types: 'uint256[3] _n, bytes8[4] _b8', values: '[1,2,3], ["0x1234000000000000", "0x1234000000000000","0x1234000000000000","0x1234000000000000"]' })
       .testFunction('last', {
-        status: 'true Transaction mined and execution succeed',
+        status: 'true Transaction mined and execution succeeded',
         'decoded output': {
           0: 'uint256[3]: _nret 1,2,3',
           1: 'bytes8[4]: _b8ret 0x1234000000000000,0x1234000000000000,0x1234000000000000,0x1234000000000000'

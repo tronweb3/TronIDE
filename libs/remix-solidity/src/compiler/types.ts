@@ -162,6 +162,7 @@ export interface Source {
 export interface CompilerInputOptions {
     optimize: boolean | number,
     runs: number,
+    remappings?: string[],
     libraries?: {
         [fileName: string]: Record<string, string>
     },
@@ -179,6 +180,7 @@ export interface CompilerState {
     currentVersion: string| null| undefined,
     optimize: boolean,
     runs: number
+    remappings: string[],
     evmVersion: EVMVersion| null,
     language: Language,
     compilationStartTime: number| null,
@@ -192,20 +194,24 @@ export interface CompilerState {
 export interface SourceWithTarget {
     sources?: Source,
     target?: string | null | undefined
+    /** Compilation request generation used to discard stale async results. */
+    generation?: number
 }
 
 export interface MessageToWorker {
   cmd: string,
   job?: number,
   input?: CompilerInput,
-  data?: string
+  data?: string,
+  integrity?: string
 }
 
 export interface MessageFromWorker {
   cmd: string,
   job?: number,
   missingInputs?: string[],
-  data?: string
+  data?: string,
+  error?: string
 }
 
 export interface visitContractsCallbackParam {

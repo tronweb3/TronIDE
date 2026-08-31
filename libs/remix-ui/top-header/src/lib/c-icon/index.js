@@ -19,18 +19,17 @@ import './index.css'
 import classNames from 'classnames'
 
 class CIcon extends React.Component {
-	render () {
-		const { icon, className, ...other } = this.props
-		const iconClass=classNames('c-icon',{
-			[className]:!!className
-		});
-		return (
-			<svg className={iconClass} { ...other } aria-hidden="true">
-				<use xlinkHref={icon}></use>
-			</svg>
-		)
-	}
+  render () {
+    const { icon, className, ...other } = this.props
+    const iconClass = classNames('c-icon', {
+      [className]: !!className
+    })
+    return (
+      <svg className={iconClass} { ...other } aria-hidden="true">
+        <use xlinkHref={icon}></use>
+      </svg>
+    )
+  }
 }
 
 export default CIcon
-

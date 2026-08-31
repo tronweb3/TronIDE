@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
-import { dismissWelcomeModal } from './helpers'
+import { dismissWelcomeModal, toolResultSummary, useBuiltinCompiler } from './helpers'
 
 // export_tronbox: turn the recorded deploy flow into a runnable TronBox project
 // written INTO the workspace. Deterministic on the JS VM: compile + deploy
@@ -15,8 +15,8 @@ async function openHome (page: Page) {
   await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
 }
 async function setKeyAndGateway (page: Page) {
-  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
   await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
 }
 async function ask (page: Page, q: string) {
   await page.locator('.textarea-wrapper textarea').fill(q)
@@ -32,13 +32,14 @@ async function compileStorageOnVM (page: Page) {
   }
   await f.click()
   await page.locator('#icon-panel div[plugin="solidity"]').click()
+  await useBuiltinCompiler(page)
   await page.locator('[data-id="compilerContainerCompileBtn"]').click()
   await expect(page.locator('[data-id="compiledContracts"]')).toContainText('Storage', { timeout: 60_000 })
   await page.locator('#icon-panel div[plugin="udapp"]').click()
   await page.locator('#selectExEnvOptions').waitFor({ timeout: 15_000 })
   const vmVal = await page.evaluate(() => {
     const sel = document.querySelector('#selectExEnvOptions') as HTMLSelectElement
-    const opt = [...sel.options].find((o) => /javascript vm/i.test(o.textContent || ''))
+    const opt = Array.from(sel.options).find((o) => /javascript vm/i.test(o.textContent || ''))
     return opt ? opt.value : null
   })
   if (vmVal) await page.selectOption('#selectExEnvOptions', vmVal)
@@ -85,7 +86,7 @@ test.describe('AI export_tronbox tool', () => {
         if (Array.isArray(sent.tools)) cap.toolNames = sent.tools.map((t: any) => t.name)
         const msg = (sent.messages || [])[sent.messages.length - 1]
         const block = msg && Array.isArray(msg.content) && msg.content.find((c: any) => c.type === 'tool_result')
-        if (block) { const s = String(block.content); cap.results.push(s); const m = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/); if (m) deployedAddr = m[1] }
+        if (block) { const s = toolResultSummary(block.content); cap.results.push(s); const m = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/); if (m) deployedAddr = m[1] }
         const common = { id: 'm' + calls, type: 'message', role: 'assistant', model: 'claude-opus-4-8', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }
         if (followUp) {
           if (block && block.tool_use_id === followUp.id) {
@@ -146,6 +147,7 @@ test.describe('AI export_tronbox tool', () => {
     expect(cap.results[0]).toMatch(/Deployed Storage at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/)
     // export result: names the folder, the tx count, and how to run it
     expect(cap.results[1]).toMatch(/Exported a runnable TronBox project to tronbox-project\//)
+    expect(cap.results[1]).toMatch(/metadata: tronbox-project\/tronide-export\.json/)
     expect(cap.results[1]).toMatch(/tronbox migrate/)
 
     // the project actually landed as workspace files
@@ -156,6 +158,17 @@ test.describe('AI export_tronbox tool', () => {
     expect(config).toMatch(/compilers|version/)
     const contract = await readSaved(page, 'tronbox-project/contracts/1_Storage.sol')
     expect(contract).toContain('contract Storage')
+    const metadata = JSON.parse(await readSaved(page, 'tronbox-project/tronide-export.json'))
+    expect(metadata).toMatchObject({
+      schemaVersion: 1,
+      kind: 'tronide-tronbox-export',
+      generator: { name: 'TronIDE', version: '2.3.3' },
+      solc: { source: 'last-compilation' },
+      network: { source: 'current-environment', provider: 'vm' },
+      scenarioSource: { type: 'current-recording', path: null, schemaVersion: null, transactionCount: 1 },
+      compatibility: { testedTronbox: { package: 'tronbox', version: '4.8.0' }, apiBoundary: 'generated-project-files' }
+    })
+    expect(metadata.solc.version).toMatch(/^\d+\.\d+\.\d+$/)
 
     // Successful batch undo removes every unchanged newly exported file. This
     // exercises the multi-file happy path before the fail-closed edit cases.

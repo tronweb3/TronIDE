@@ -15,6 +15,8 @@
  */
 
 import { getOpenaiChatByInstantiation,googleGenAIHandle,anthropicAIHandle } from './../../../services/toolsApi';
+import { OPENAI_COMPATIBLE_VENDORS } from './../../../services/aiToolProtocolAdapters';
+import { AI_ENDPOINT_TYPE, BANK_OF_AI_VENDOR, sanitizeAIError } from './../../../services/aiProviderConfig';
 
 const useStream = ({
   setLoading = () => {},
@@ -23,8 +25,16 @@ const useStream = ({
   setStreamData = () => {},
   handleOffline = () => {},
 }) => {
-  const openSDKList=['OpenAI','DeepSeek','Qwen','xAI']
+  const openSDKList = OPENAI_COMPATIBLE_VENDORS
   const fetchStreamData = async (params) => {
+    const requestStartedAt = Date.now();
+    let requestReported = false;
+    const reportRequest = (status, error) => {
+      if (requestReported) return;
+      requestReported = true;
+      if (typeof params?.onProviderRequest !== 'function') return;
+      try { params.onProviderRequest({ status, durationMs: Math.max(0, Date.now() - requestStartedAt), ...(error ? { error } : {}) }); } catch (_) { /* metrics cannot break chat */ }
+    };
     setLoading(true);
     setLoadingCompleted(true);
 
@@ -32,7 +42,12 @@ const useStream = ({
       let res;
       const vendor=params?.aiModelVendor;
       const _stream=params?.aiModelVendor=== 'DeepSeek'?false:params?.stream
-      if(openSDKList.includes(vendor)){
+      const usesAnthropicProtocol = vendor === 'Anthropic' || (vendor === BANK_OF_AI_VENDOR && params?.endpointType === AI_ENDPOINT_TYPE.ANTHROPIC)
+      if(usesAnthropicProtocol){
+        res = await anthropicAIHandle({
+          ...params
+        });
+      }else if(openSDKList.includes(vendor)){
          res = await getOpenaiChatByInstantiation({
           ...params,
           stream:_stream
@@ -41,16 +56,13 @@ const useStream = ({
          res = await googleGenAIHandle({
           ...params
         });
-      }else if(vendor==='Anthropic'){
-        res = await anthropicAIHandle({
-          ...params
-        })
       }
       setLoading(false);
 
       if (handleOffline && handleOffline(res)) {
         setLoadingCompleted(false);
-        return;
+        reportRequest('failed', new Error('offline'));
+        return { status: 'failed' };
       }
 
       if (!res) {
@@ -58,10 +70,13 @@ const useStream = ({
         throw new Error("No response from server");
       }else if(res?.error?.message){
         if(typeof res?.error?.message === "string") {
-          setError(res?.error);
+          const safeError = sanitizeAIError(res.error);
+          setError(safeError.message);
+          reportRequest('failed', safeError);
         }
         setLoadingCompleted(false);
-        return;
+        if (typeof res?.error?.message !== "string") reportRequest('failed', sanitizeAIError(res?.error));
+        return { status: 'failed' };
       }
 
       let assistantMessage = "";
@@ -70,12 +85,12 @@ const useStream = ({
         for await (const chunk of res) {
           if (params?.signal?.aborted) break;
           let content;
-          if(openSDKList.includes(vendor)){
+          if(usesAnthropicProtocol){
+            content = chunk.delta?.text
+          }else if(openSDKList.includes(vendor)){
             content = chunk.choices?.[0]?.delta?.content;
           }else if(vendor==='Google'){
             content = chunk.text
-          }else if(vendor==='Anthropic'){
-            content = chunk.delta?.text
           }
           if (content) {
             assistantMessage += content;
@@ -88,16 +103,18 @@ const useStream = ({
           setStreamData((assistantMessage ? '\n\n' : '') + '⏹ Stopped.', params?.model);
         }
       }else{
-        if(openSDKList.includes(vendor)){
+        if(usesAnthropicProtocol){
+          setStreamData(res?.content?.[0]?.text||'',params?.model);
+        }else if(openSDKList.includes(vendor)){
           setStreamData(res?.choices?.[0]?.message?.content || '',params?.model);
         }else if(vendor==='Google'){
           setStreamData(res?.text||'',params?.model);
-        }else if(vendor==='Anthropic'){
-          setStreamData(res?.content?.[0]?.text||'',params?.model);
         }
       }
 
       setLoadingCompleted(false);
+      reportRequest(params?.signal?.aborted ? 'cancelled' : 'succeeded');
+      return { status: params?.signal?.aborted ? 'cancelled' : 'succeeded' };
     } catch (e) {
       setLoading(false);
       setLoadingCompleted(false);
@@ -107,10 +124,14 @@ const useStream = ({
       // itself" (the request may have died before the first chunk arrived).
       if (params?.signal?.aborted || /abort/i.test(e?.name || "") || e?.name === "AbortError") {
         setStreamData("⏹ Stopped.", params?.model);
-        return;
+        reportRequest('cancelled', e);
+        return { status: 'cancelled' };
       }
-      console.error("fetchStreamData error:", e);
-      setError(e.message || "Unknown error");
+      const safeError = sanitizeAIError(e);
+      console.error("fetchStreamData error:", safeError);
+      setError(safeError.message);
+      reportRequest('failed', safeError);
+      return { status: 'failed' };
     }
   };
 

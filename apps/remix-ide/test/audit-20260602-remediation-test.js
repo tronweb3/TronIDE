@@ -21,10 +21,12 @@ function readIdeSource (relativePath) {
 test('app shell and nginx config provide CSP and clickjacking headers', function (t) {
   const indexHtml = readIdeSource('index.html')
   const webpackIndexHtml = readIdeSource('webpack.index.html')
+  const releaseNotesHtml = readIdeSource('release-notes.html')
   const nginxConfig = readRoot('apps/remix-ide/nginx.conf')
 
   t.ok(/http-equiv="Content-Security-Policy"/.test(indexHtml), 'index.html has a CSP meta fallback')
   t.ok(/http-equiv="Content-Security-Policy"/.test(webpackIndexHtml), 'webpack.index.html has a CSP meta fallback')
+  t.ok(/http-equiv="Content-Security-Policy"/.test(releaseNotesHtml), 'release-notes.html has a CSP meta fallback')
   t.ok(/default-src 'self'/.test(indexHtml), 'CSP defaults to self')
   t.ok(/object-src 'none'/.test(indexHtml), 'CSP disables object/embed content')
   t.ok(/connect-src/.test(indexHtml), 'CSP defines connect-src for browser RPC/API calls')

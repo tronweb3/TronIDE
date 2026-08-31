@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
-import { blockCompilerSources, dismissWelcomeModal, getEditorText, readSavedFile, saveCurrentFile, setEditorText } from './helpers'
+import { blockCompilerSources, dismissWelcomeModal, getEditorText, readSavedFile, saveCurrentFile, setEditorText, toolResultSummary, useBuiltinCompiler } from './helpers'
 
 // Phase-A AI workspace tools (v2.3.2): static analysis, local git, debugger.
 // The Anthropic gateway is fully mocked (two-turn tool_use → tool_result →
@@ -34,7 +34,7 @@ async function mockOneTool (page: Page, tool: string, toolInput: any, finalText:
       const sent = JSON.parse(req.postData() || '{}')
       const msg = (sent.messages || []).find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
       const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
-      cap.toolResult = block ? String(block.content) : ''
+      cap.toolResult = block ? toolResultSummary(block.content) : ''
     } catch (e) { cap.toolResult = 'PARSE_ERROR' }
     return route.fulfill({ status: 200, headers: cors, contentType: 'application/json',
       body: JSON.stringify({ ...common, content: [{ type: 'text', text: finalText }], stop_reason: 'end_turn' }) })
@@ -56,7 +56,7 @@ async function mockToolSequence (page: Page, tools: Array<{ name: string, input:
         const sent = JSON.parse(req.postData() || '{}')
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
-        if (block) cap.results.push(String(block.content))
+        if (block) cap.results.push(toolResultSummary(block.content))
       } catch (e) { /* first turn has no tool_result */ }
     }
     const common = { id: 'm' + calls, type: 'message', role: 'assistant', model: 'claude-opus-4-8', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }
@@ -73,8 +73,8 @@ async function mockToolSequence (page: Page, tools: Array<{ name: string, input:
 }
 
 async function setKeyAndGateway (page: Page) {
-  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
   await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
 }
 async function ask (page: Page, q: string) {
   await page.locator('.textarea-wrapper textarea').fill(q)
@@ -104,6 +104,7 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
       el.editor.session.setValue('// SPDX-License-Identifier: GPL-3.0\npragma solidity >=0.7.0 <0.9.0;\ncontract Auth {\n  function isOwner(address a) public view returns (bool) {\n    return tx.origin == a;\n  }\n}\n')
     })
     await page.locator('#icon-panel div[plugin="solidity"]').click()
+    await useBuiltinCompiler(page)
     await page.locator('[data-id="compilerContainerCompileBtn"]').click()
     await expect(page.locator('[data-id="compiledContracts"]')).toContainText('Auth', { timeout: 60_000 })
 
@@ -120,8 +121,20 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
   // tests/4_Ballot_test.sol with two passing assertions — proving the tool
   // compiles, deploys on the VM, and runs the remix_tests assertions for real.
   test('TC-AI-TOOL-020: run_tests runs the workspace unit tests and reports passing', { tag: '@gate' }, async ({ page }) => {
+    // A real VM test run can include first-use compiler/worker startup. Keep
+    // the test budget aligned with the run_tests policy instead of letting the
+    // Playwright suite's 60s default turn a valid result into a retry-only
+    // flake when the suite is run from a cold browser context.
+    test.setTimeout(130_000)
     const cap = await mockOneTool(page, 'run_tests', {}, 'TESTS-DONE')
     await openHome(page)
+    // The tool exercises the real unit-test pipeline, but the gate must not
+    // depend on fetching the legacy default compiler from the public CDN.
+    await page.locator('#icon-panel div[plugin="solidity"]').click()
+    const version = page.locator('#versionSelector')
+    await expect(version).toBeEnabled({ timeout: 30_000 })
+    await version.selectOption('builtin')
+    await expect(version).toHaveValue('builtin')
     await setKeyAndGateway(page)
     await ask(page, 'Run the unit tests.')
     await expect(page.getByText('TESTS-DONE').first()).toBeVisible({ timeout: 90_000 })
@@ -137,6 +150,7 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
   // the model can act on it. A one-file test with a deliberately false Assert
   // must come back as "1 failing" with the assertion message.
   test('TC-AI-TOOL-021: run_tests reports the failing assertion message', { tag: '@gate' }, async ({ page }) => {
+    test.setTimeout(130_000)
     const cap = await mockOneTool(page, 'run_tests', { path: 'tests/Fail_test.sol' }, 'TESTS-DONE')
     await openHome(page)
 
@@ -304,13 +318,34 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
   test('TC-AI-TOOL-004: rejecting the git_commit confirm aborts the commit', { tag: '@gate' }, async ({ page }) => {
     const cap = await mockOneTool(page, 'git_commit', { message: 'ai: nope' }, 'REJECT-SEEN')
     await openHome(page)
+
+    // A clean, auto-initialized workspace has nothing to commit. Seed a real
+    // working-tree change and stage it first; otherwise the product correctly
+    // rejects git_commit before it can show the commit confirmation modal.
+    await page.locator('#icon-panel div[plugin="gitPanel"]').click()
+    await page.locator('[data-id="gitPanel"]').waitFor({ state: 'visible', timeout: 15_000 })
+    const initBtn = page.locator('[data-id="gitInit"]')
+    if (await initBtn.isVisible().catch(() => false)) { await initBtn.click(); await page.waitForTimeout(1_500) }
+
+    await page.locator('#icon-panel div[plugin="filePanel"]').click()
+    const storage = page.locator('[data-id="treeViewLitreeViewItemcontracts/1_Storage.sol"]')
+    if (!await storage.isVisible().catch(() => false)) await page.locator('[data-id="treeViewLitreeViewItemcontracts"]').click()
+    await storage.click()
+    await page.locator('#input').waitFor({ timeout: 10_000 })
+    await setEditorText(page, (await getEditorText(page)) + '\n// AI-COMMIT-REJECT\n')
+    await saveCurrentFile(page, 'contracts/1_Storage.sol', 'AI-COMMIT-REJECT')
+
+    await page.locator('#icon-panel div[plugin="gitPanel"]').click()
+    await page.locator('[data-id="gitStageAll"]').click()
+    await expect(page.locator('[data-id="gitUnstageFile"]').first()).toBeVisible({ timeout: 15_000 })
+
     await setKeyAndGateway(page)
     await ask(page, 'Commit now with message "ai: nope".')
     const modal = page.locator('.ant-modal-confirm')
     await expect(modal).toBeVisible({ timeout: 20_000 })
     await modal.locator('button:has-text("Reject")').click()
     await expect(page.getByText('REJECT-SEEN').first()).toBeVisible({ timeout: 20_000 })
-    expect(cap.toolResult).toMatch(/User rejected the commit/i)
+    expect(cap.toolResult).toMatch(/User rejected git_commit/i)
   })
 
   // TC-AI-TOOL-022: git_checkout switches to an EXISTING branch (confirmed),
@@ -455,7 +490,7 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
     await expect(modal).toBeVisible({ timeout: 20_000 })
     await modal.locator('button:has-text("Reject")').click()
     await expect(page.getByText('STAGE-REJECTED').first()).toBeVisible({ timeout: 20_000 })
-    expect(cap.toolResult).toMatch(/User rejected staging files/i)
+    expect(cap.toolResult).toMatch(/User rejected git_stage/i)
   })
 
   // TC-AI-TOOL-024: git_clone rejects a non-https URL up front — no confirm
@@ -487,7 +522,7 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
     await expect(modal).toContainText('clone a repository')
     await modal.locator('button:has-text("Reject")').click()
     await expect(page.getByText('CLONE-REJECTED').first()).toBeVisible({ timeout: 20_000 })
-    expect(cap.toolResult).toMatch(/User rejected the clone/i)
+    expect(cap.toolResult).toMatch(/User rejected git_clone/i)
     const wsAfter = await page.locator('select[data-id="workspacesSelect"] option').allInnerTexts()
     expect(wsAfter).toEqual(wsBefore)
   })
@@ -510,6 +545,12 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
     await expect(modal).toBeVisible({ timeout: 20_000 })
     await expect(modal).toContainText('simple-storage')
     await modal.locator('.ant-btn-primary').click()
+
+    // switch_workspace is a separate side-effecting step and must receive its
+    // own approval rather than inheriting create_workspace's decision.
+    const switchModal = page.locator('.ant-modal-confirm:visible').filter({ hasText: /switch to workspace "default_workspace"/i })
+    await expect(switchModal).toBeVisible({ timeout: 20_000 })
+    await switchModal.locator('.ant-btn-primary').click()
 
     await expect(page.getByText('WS-DONE').first()).toBeVisible({ timeout: 30_000 })
     // list names the current workspace and at least one template id
@@ -549,7 +590,7 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
     await expect(modal).toBeVisible({ timeout: 20_000 })
     await modal.locator('button:has-text("Reject")').click()
     await expect(page.getByText('WS-REJECTED').first()).toBeVisible({ timeout: 20_000 })
-    expect(cap.toolResult).toMatch(/User rejected the workspace creation/i)
+    expect(cap.toolResult).toMatch(/User rejected create_workspace/i)
     const after = await page.locator('select[data-id="workspacesSelect"] option').allInnerTexts()
     expect(after).toEqual(before)
     expect(after).not.toContain('ai-nope')
@@ -571,13 +612,21 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
     expect(pageErrors).toEqual([])
   })
 
-  // TC-AI-TOOL-006: Git tools stay implemented but are not advertised while the Git UI is hidden.
-  test('TC-AI-TOOL-006: analysis/debug tools are offered without Git tools', { tag: '@gate' }, async ({ page }) => {
+  // TC-AI-TOOL-006: the full phase-A toolset is advertised to the model.
+  test('TC-AI-TOOL-006: analysis/git/debug tools are offered to the model', { tag: '@gate' }, async ({ page }) => {
     let toolNames: string[] = []
     await page.route(GW + '/**', async (route) => {
       const req = route.request()
       if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors })
-      try { toolNames = (JSON.parse(req.postData() || '{}').tools || []).map((t: any) => t.name) } catch (e) { toolNames = ['ERR'] }
+      try {
+        const payload = JSON.parse(req.postData() || '{}')
+        const names = (payload.tools || []).map((t: any) => t.name)
+        // The panel can issue a follow-up request without tool metadata (for
+        // example while a stale response is settling). Keep the first real
+        // advertisement instead of letting that unrelated request erase the
+        // evidence this test is checking.
+        if (names.length) toolNames = names
+      } catch (e) { toolNames = ['ERR'] }
       return route.fulfill({ status: 200, headers: cors, contentType: 'application/json',
         body: JSON.stringify({ id: 'm', type: 'message', role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: 'READY' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }) })
     })
@@ -585,10 +634,10 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
     await setKeyAndGateway(page)
     await ask(page, 'hi')
     await expect(page.getByText('READY').first()).toBeVisible({ timeout: 20_000 })
-    for (const t of ['run_static_analysis', 'run_tests', 'list_workspaces', 'create_workspace', 'switch_workspace', 'debug_transaction', 'delete_file', 'rename_file']) {
+    await expect.poll(() => toolNames.length, { timeout: 20_000 }).toBeGreaterThan(0)
+    for (const t of ['run_static_analysis', 'run_tests', 'git_status', 'git_log', 'git_stage_all', 'git_stage', 'git_commit', 'git_create_branch', 'git_checkout', 'git_push', 'git_pull', 'git_clone', 'list_workspaces', 'create_workspace', 'switch_workspace', 'debug_transaction', 'delete_file', 'rename_file']) {
       expect(toolNames, `tool ${t} must be advertised`).toContain(t)
     }
-    expect(toolNames.some((name) => name.startsWith('git_')), 'Git tools must not be advertised').toBe(false)
   })
 
   // TC-AI-TOOL-007: delete_file removes a workspace file after the user confirms.
@@ -630,7 +679,7 @@ test.describe('AI workspace tools — phase A (analysis / git / debug)', () => {
     await modal.locator('button:has-text("Reject")').click()
     // the rejection returns to the model as the tool_result (the ground truth
     // that delete_file honored the Reject), and the file must remain
-    await expect.poll(() => cap.toolResult, { timeout: 30_000 }).toMatch(/User rejected the delete/i)
+    await expect.poll(() => cap.toolResult, { timeout: 30_000 }).toMatch(/User rejected delete_file/i)
     const stillThere = await page.evaluate(() => {
       const ws = (document.querySelector('select[data-id="workspacesSelect"]') as HTMLSelectElement)?.value || 'default_workspace'
       try { (window as any).remixFileSystem.readFileSync(`.workspaces/${ws}/contracts/AiKeepMe.sol`, 'utf8'); return true } catch (e) { return false }

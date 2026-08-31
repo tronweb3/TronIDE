@@ -89,6 +89,18 @@ function extractTronErrorMessage (errorLike: any): string {
   return ''
 }
 
+class MinedTransactionError extends Error {
+  transactionError: any
+  txData: any
+
+  constructor (transactionError, txData) {
+    super(transactionError && transactionError.message ? transactionError.message : String(transactionError))
+    this.name = 'MinedTransactionError'
+    this.transactionError = transactionError
+    this.txData = txData
+  }
+}
+
 type Web3WithPersonal = Web3 & {
   personal?: {
     sendTransaction: (...args: unknown[]) => unknown
@@ -135,24 +147,77 @@ function getTronNetworkLabel (tronWebIns: any): string | undefined {
   return tronWebIns?.fullNode?.host || tronWebIns?.solidityNode?.host || undefined
 }
 
+const VERIFIED_TRON_NETWORK_IDS = new Set(['main', 'nile', 'shasta'])
+const WALLET_NETWORK_VERIFICATION_ERROR = 'Wallet network could not be verified. Refresh the wallet connection, confirm the selected network, and try again.'
+const WALLET_PROVIDER_CHANGED_ERROR = 'Wallet provider changed. Reconnect your wallet, confirm the selected network, and try again.'
+const TRANSACTION_CANCELLED_ERROR = 'Transaction stopped before signing or broadcast.'
+const NETWORK_SNAPSHOT_TIMEOUT_MS = 12_000
+
 async function getCurrentInjectedSnapshot (tronWebIns: any, api: any) {
-  const account = tronWebIns?.defaultAddress?.base58
-  let network = getTronNetworkLabel(tronWebIns)
-  if (api?.detectNetwork) {
-    try {
-      const detected = await new Promise<any>((resolve) => {
-        api.detectNetwork((_error, result) => resolve(result))
-      })
-      // All TRON networks share name 'TRON'; only the id ('nile'/'shasta'/'main')
-      // discriminates them. The label must include it or a wallet network switch
-      // compares 'TRON' === 'TRON' and is never detected (WAL-NET-1).
-      const label = [detected?.name, detected?.id].filter(Boolean).join('/')
-      network = label || network
-    } catch (e) {
-      network = network || undefined
+  const accountAtProbeStart = tronWebIns?.defaultAddress?.base58
+  const endpoint = getTronNetworkLabel(tronWebIns)
+  if (!api?.detectNetwork) {
+    return {
+      account: accountAtProbeStart,
+      accountAtProbeStart,
+      accountChangedDuringProbe: false,
+      network: endpoint,
+      networkVerificationError: new Error('Network detection is unavailable.')
     }
   }
-  return { account, network }
+
+  const probePromise = new Promise<any>((resolve) => {
+    let settled = false
+    const finish = (error?, result?) => {
+      if (settled) return
+      settled = true
+      resolve({ error, result })
+    }
+    try {
+      const returned = api.detectNetwork((error, result) => finish(error, result))
+      // detectNetwork is callback-based today, but also async. Preserve an
+      // outer rejection rather than silently falling back to the node host.
+      if (returned && typeof returned.catch === 'function') returned.catch((error) => finish(error))
+    } catch (error) {
+      finish(error)
+    }
+  })
+  const probe = await withWalletTimeout(
+    probePromise,
+    NETWORK_SNAPSHOT_TIMEOUT_MS,
+    WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT
+  ).catch((error) => ({ error }))
+
+  const detected = probe.result
+  // All TRON networks share name 'TRON'; only the genesis-derived id
+  // ('nile'/'shasta'/'main') discriminates them. Host names are diagnostic
+  // only and must never turn a failed/stale genesis probe into authorization.
+  const networkName = detected?.name == null ? '' : String(detected.name)
+  const networkId = detected?.id == null ? '' : String(detected.id).toLowerCase()
+  const detectedLabel = [networkName, networkId].filter(Boolean).join('/') || undefined
+  // A fresh custom genesis result cannot receive a canonical TRON id, but the
+  // live full-node endpoint still gives normal UI transactions a stable
+  // fingerprint. External plugins never reach here on custom networks: their
+  // commit-time allowlist rejects them before rawRun.
+  const isFreshCustomNetwork = networkName === 'Custom' && Boolean(endpoint)
+  const network = isFreshCustomNetwork ? `${detectedLabel || 'Custom'}@${endpoint}` : detectedLabel
+  let networkVerificationError
+  if (probe.error) {
+    networkVerificationError = probe.error
+  } else if (detected?.stale === true) {
+    networkVerificationError = new Error('Network detection returned a stale cached result.')
+  } else if (!isFreshCustomNetwork && (networkName !== 'TRON' || !VERIFIED_TRON_NETWORK_IDS.has(networkId))) {
+    networkVerificationError = new Error('Network detection returned an unknown network.')
+  }
+
+  const account = tronWebIns?.defaultAddress?.base58
+  return {
+    account,
+    accountAtProbeStart,
+    accountChangedDuringProbe: accountAtProbeStart !== account,
+    network,
+    networkVerificationError
+  }
 }
 
 export class TxRunnerWeb3 {
@@ -289,6 +354,7 @@ export class TxRunnerWeb3 {
         args.gasLimit,
         args.useCall,
         args.timestamp,
+        args.cancelState,
         confirmationCb,
         gasEstimationForceSend,
         promptCb,
@@ -315,6 +381,7 @@ export class TxRunnerWeb3 {
     gasLimit,
     useCall,
     timestamp,
+    cancelState,
     confirmCb,
     gasEstimationForceSend,
     promptCb,
@@ -326,6 +393,9 @@ export class TxRunnerWeb3 {
       called = true
       callback(err, res)
     }
+    const isCancelled = () => Boolean(cancelState && typeof cancelState.isCancelled === 'function' && cancelState.isCancelled())
+    const cancellationError = () => new Error(TRANSACTION_CANCELLED_ERROR)
+    if (isCancelled()) return cbOnce(cancellationError())
 
     const tx = {
       from: from,
@@ -341,12 +411,14 @@ export class TxRunnerWeb3 {
       if (this._api && this._api.isVM()) tx['timestamp'] = timestamp
       return this.getWeb3().eth.call(tx, function (error, result: any) {
         if (error) return cbOnce(error)
+        if (isCancelled()) return cbOnce(cancellationError())
         cbOnce(null, {
           result: result
         })
       })
     }
     this.getWeb3().eth.estimateGas(tx, (err, gasEstimation) => {
+      if (isCancelled()) return cbOnce(cancellationError())
       if (err && err.message.indexOf('Invalid JSON RPC response') !== -1) {
         // // @todo(#378) this should be removed when https://github.com/WalletConnect/walletconnect-monorepo/issues/334 is fixed
         return cbOnce(
@@ -358,6 +430,7 @@ export class TxRunnerWeb3 {
       gasEstimationForceSend(
         err,
         () => {
+          if (isCancelled()) return cbOnce(cancellationError())
           // callback is called whenever no error
           tx['gas'] = !gasEstimation ? gasLimit : gasEstimation
 
@@ -366,6 +439,7 @@ export class TxRunnerWeb3 {
               console.log(err)
               return
             }
+            if (isCancelled()) return cbOnce(cancellationError())
 
             if (
               this._api.config.getUnpersistedProperty(
@@ -387,6 +461,7 @@ export class TxRunnerWeb3 {
               tx,
               tx['gas'],
               txFee => {
+                if (isCancelled()) return cbOnce(cancellationError())
                 return this._executeTx(
                   tx,
                   network,
@@ -445,7 +520,8 @@ export class TxRunnerWeb3 {
       contractABI = [],
       userFeePercentage,
       originEnergyLimit,
-      useCall
+      useCall,
+      cancelState
     } = args
 
     let callValue
@@ -454,6 +530,13 @@ export class TxRunnerWeb3 {
     let feeLimit
 
     try {
+      if (cancelState && typeof cancelState.isCancelled === 'function' && cancelState.isCancelled()) {
+        throw new Error(TRANSACTION_CANCELLED_ERROR)
+      }
+      // TronWeb 6.1.0 still converts callValue through parseInt inside both
+      // transaction builders. Keep injected transactions fail-closed until
+      // the provider can serialize values above JavaScript's safe range
+      // without changing the amount the user approved.
       callValue = parseSafeInteger(value, 10, TX_FIELD_LABELS.transactionValue)
       tokenId = parseSafeInteger(tokenIdHex, 16, TX_FIELD_LABELS.tokenId)
       tokenValue = parseSafeInteger(tokenValueHex, 16, TX_FIELD_LABELS.tokenValue)
@@ -515,17 +598,45 @@ export class TxRunnerWeb3 {
     gasEstimationForceSend(
       null,
       async () => {
+        const assertNotCancelled = () => {
+          if (cancelState && typeof cancelState.isCancelled === 'function' && cancelState.isCancelled()) {
+            throw new Error(TRANSACTION_CANCELLED_ERROR)
+          }
+        }
+        try {
+          assertNotCancelled()
+        } catch (error) {
+          return callback(error)
+        }
         const validatePendingSnapshot = async () => {
-          const currentSnapshot = await getCurrentInjectedSnapshot(tronWebIns, this._api)
+          assertNotCancelled()
+          const currentTronWebIns = this.getTronWeb()
+          // TronLink can replace window.tronWeb on unlock/network switch. A
+          // transaction built with the captured instance must never continue
+          // signing or broadcasting through a newly rebound provider.
+          if (!currentTronWebIns || currentTronWebIns !== tronWebIns) {
+            throw new Error(WALLET_PROVIDER_CHANGED_ERROR)
+          }
+          const currentSnapshot = await getCurrentInjectedSnapshot(currentTronWebIns, this._api)
+          if (currentSnapshot.networkVerificationError) {
+            // Provider errors can contain credential-bearing endpoint URLs. Do
+            // not echo the raw object; callers receive a fixed actionable error.
+            console.warn('[txRunnerWeb3] injected network verification failed')
+            throw new Error(WALLET_NETWORK_VERIFICATION_ERROR)
+          }
           // Snapshot-less callers get their network baseline from the first
           // validation: later checks still catch mid-flight account/network
           // switches, without comparing a host URL against a name/id label.
           if (!pendingSnapshot) pendingSnapshot = { account: from, network: currentSnapshot.network }
+          else if (
+            !pendingSnapshot.network ||
+            (currentSnapshot.network && currentSnapshot.network.toLowerCase().startsWith(`${pendingSnapshot.network.toLowerCase()}@`))
+          ) pendingSnapshot = { ...pendingSnapshot, network: currentSnapshot.network }
           const pendingValidation = injectedRuntimeFacade.validatePendingTransaction(pendingSnapshot, currentSnapshot)
           if (!pendingValidation.ok) throw createWalletRuntimeError(pendingValidation.errors[0])
         }
 
-        const tryTillTxAvailableTron = async txhash => {
+        const tryTillTxAvailableTron = async (txhash, needsContractAddress = false) => {
           const start = Date.now()
           let attempt = 0
           while (Date.now() - start < TX_LOOKUP_BUDGET_MS) {
@@ -533,7 +644,7 @@ export class TxRunnerWeb3 {
               const receipt = await tronWebIns.trx.getUnconfirmedTransactionInfo(
                 txhash
               )
-              if (receipt && receipt.id) return receipt
+              if (receipt && receipt.id && receipt.blockNumber != null && (!needsContractAddress || receipt.contract_address)) return receipt
             } catch (e) {
               console.warn('[txRunnerWeb3] getUnconfirmedTransactionInfo failed, will retry', e)
             }
@@ -550,10 +661,43 @@ export class TxRunnerWeb3 {
           var listenOnResponse = () => {
             // eslint-disable-next-line no-async-promise-executor
             return new Promise(async (resolve, reject) => {
-              const txn = await tryTillTxAvailableTron(resp)
-              if (txn.result === 'FAILED') {
-                let msg = txn.receipt.result ? txn.receipt.result : 'Unknown'
-                if (msg !== 'REVERT') return reject(msg)
+              const txn = await tryTillTxAvailableTron(resp, !contractAddr)
+              // TransactionInfo stores the canonical execution outcome under
+              // receipt.result (SUCCESS/FAILED). Some providers also expose a
+              // top-level result, so normalize both shapes before deciding
+              // whether the broadcast actually succeeded on-chain.
+              const normalizedReceipt = injectedRuntimeFacade.normalizeReceipt(txn)
+              const transactionHash = `0x${resp}`
+              const { blockNumber, fee } = txn
+              const contractAddress = txn.contract_address
+                ? txn.contract_address.replace(/^(41)/, '0x')
+                : null
+              const txData = {
+                receipt: {
+                  blockNumber,
+                  contractAddress,
+                  gasUsed: fee,
+                  logs: [],
+                  status: normalizedReceipt.status !== 'failure',
+                  transactionHash
+                },
+                tx: {
+                  blockNumber,
+                  from,
+                  to: contractAddr,
+                  gas: fee,
+                  gasPrice: '',
+                  hash: transactionHash,
+                  input: data.slice(0, 2) !== '0x' ? '0x' + data : data,
+                  value,
+                  tokenId,
+                  tokenValue
+                },
+                transactionHash
+              }
+              if (normalizedReceipt.status === 'failure') {
+                let msg = txn.receipt?.result || txn.result || 'Unknown'
+                if (msg !== 'REVERT') return reject(new MinedTransactionError(msg, txData))
 
                 try {
                   const contractResult = txn.contractResult
@@ -571,40 +715,12 @@ export class TxRunnerWeb3 {
                       `0x${hexStr.substr(strIndex * 2 + 64, strLength * 2)}`
                     )
                   }
-                  reject(msg)
+                  reject(new MinedTransactionError(msg, txData))
                 } catch (error) {
-                  reject(error)
+                  reject(new MinedTransactionError(error, txData))
                 }
               } else {
-                const transactionHash = `0x${resp}`
-                const { blockNumber, fee } = txn
-                const contractAddress = txn.contract_address.replace(
-                  /^(41)/,
-                  '0x'
-                )
-
-                const receipt = {
-                  blockNumber,
-                  contractAddress,
-                  gasUsed: fee,
-                  logs: [],
-                  status: true,
-                  transactionHash
-                }
-                const tx = {
-                  blockNumber,
-                  from,
-                  to: contractAddr,
-                  gas: fee,
-                  gasPrice: '',
-                  hash: transactionHash,
-                  input: data.slice(0, 2) !== '0x' ? '0x' + data : data,
-                  value,
-                  tokenId,
-                  tokenValue
-                }
-
-                resolve({ receipt, tx, transactionHash })
+                resolve(txData)
               }
             })
           }
@@ -612,8 +728,9 @@ export class TxRunnerWeb3 {
             .then(txData => {
               callback(null, txData)
             })
-            .catch(error => {
-              callback(error)
+            .catch(failure => {
+              if (failure instanceof MinedTransactionError) return callback(failure.transactionError, failure.txData)
+              callback(failure)
             })
         }
 
@@ -641,6 +758,11 @@ export class TxRunnerWeb3 {
               throw new Error(detailedMessage || 'Unknown')
             }
 
+            // The builder is an asynchronous node call. TronLink can switch
+            // accounts/networks while it is pending, so validate again before
+            // opening a signature request for the now-stale transaction.
+            await validatePendingSnapshot()
+            assertNotCancelled()
             let tSignedTransaction
             try {
               tSignedTransaction = await withWalletTimeout(tronWebIns.trx.sign(
@@ -650,7 +772,9 @@ export class TxRunnerWeb3 {
               throw createWalletRuntimeError(error)
             }
 
+            assertNotCancelled()
             await validatePendingSnapshot()
+            assertNotCancelled()
 
             let tResult
             try {
@@ -694,6 +818,11 @@ export class TxRunnerWeb3 {
               throw new Error(creationValidationMessage || 'Unknown')
             }
 
+            // createSmartContract can also outlive a wallet account/network
+            // switch. Do not prompt to sign a transaction built for the old
+            // snapshot.
+            await validatePendingSnapshot()
+            assertNotCancelled()
             let dSignedTransaction
             try {
               dSignedTransaction = await withWalletTimeout(tronWebIns.trx.sign(dTransaction), WALLET_SIGN_TIMEOUT_MS, WALLET_ERROR_CODES.WALLET_SIGN_TIMEOUT)
@@ -701,7 +830,9 @@ export class TxRunnerWeb3 {
               throw createWalletRuntimeError(error)
             }
 
+            assertNotCancelled()
             await validatePendingSnapshot()
+            assertNotCancelled()
 
             let dResult
             try {
@@ -733,6 +864,9 @@ export class TxRunnerWeb3 {
             }
           }
         } catch (e) {
+          if (e && e.message === TRANSACTION_CANCELLED_ERROR) {
+            return callback(`Send transaction failed: ${TRANSACTION_CANCELLED_ERROR} . if you use an injected provider, please check it is properly unlocked. `)
+          }
           const normalizedTrc10Message = normalizeTrc10ValidationMessage(
             e,
             tokenId,

@@ -23,7 +23,7 @@ import './remix-ui-workspace.css'
 import { ModalDialog } from '@remix-ui/modal-dialog' // eslint-disable-line
 import { Toaster } from '@remix-ui/toaster'// eslint-disable-line
 import { MenuItems } from 'libs/remix-ui/file-explorer/src/lib/types'
-import { Tooltip } from 'antd'
+import Tooltip from 'antd/lib/tooltip'
 import { workspace as remixLibWorkspace } from '@remix-project/remix-lib'
 
 const TRON_TEMPLATES = (remixLibWorkspace && remixLibWorkspace.tronTemplates && remixLibWorkspace.tronTemplates.TRON_TEMPLATES) || []
@@ -76,7 +76,7 @@ export const Workspace = (props: WorkspaceProps) => {
 
   props.plugin.resetNewFile = () => {
     setState(prevState => {
-      return { ...prevState, displayNewFile: !state.displayNewFile }
+      return { ...prevState, displayNewFile: false, newFileName: '' }
     })
   }
 
@@ -91,9 +91,15 @@ export const Workspace = (props: WorkspaceProps) => {
     return setWorkspace(workspaceName, mutationToken)
   }
 
-  props.request.createNewFile = async () => {
+  props.request.createNewFile = async (suggestedName = '') => {
     if (!state.workspaces.length) await createNewWorkspace('default_workspace')
-    props.plugin.resetNewFile()
+    setState(prevState => {
+      return {
+        ...prevState,
+        displayNewFile: true,
+        newFileName: typeof suggestedName === 'string' ? suggestedName : ''
+      }
+    })
   }
 
   props.request.uploadFile = async (target) => {
@@ -134,9 +140,14 @@ export const Workspace = (props: WorkspaceProps) => {
   }, [props.workspaces])
 
   const localhostDisconnect = () => {
+    // A direct Plugin Manager deactivation emits `disconnected` while the
+    // localhost workspace is still selected. Switch to a browser workspace,
+    // but also hide the localhost explorer immediately so its last rendered
+    // directory tree cannot remain visible under the fallback workspace.
+    remixdExplorer.hide()
     if (currentWorkspaceRef.current === LOCALHOST) {
       setWorkspace(props.workspaces.length > 0 ? props.workspaces[0] : NO_WORKSPACE)
-    } else remixdExplorer.hide()
+    }
   }
 
   useEffect(() => {
@@ -166,6 +177,7 @@ export const Workspace = (props: WorkspaceProps) => {
 
   const createNewWorkspace = async (workspaceName) => {
     let mutationToken
+    setState(prevState => ({ ...prevState, workspaceMutationInProgress: true }))
     try {
       mutationToken = props.fileManager.beginWorkspaceMutation('create workspaces')
       await props.fileManager.closeAllFiles()
@@ -177,6 +189,7 @@ export const Workspace = (props: WorkspaceProps) => {
       console.error(e)
     } finally {
       if (mutationToken !== undefined) props.fileManager.endWorkspaceMutation(mutationToken)
+      setState(prevState => ({ ...prevState, workspaceMutationInProgress: false }))
     }
   }
 
@@ -186,6 +199,7 @@ export const Workspace = (props: WorkspaceProps) => {
     currentWorkspace: NO_WORKSPACE,
     hideRemixdExplorer: true,
     displayNewFile: false,
+    newFileName: '',
     externalUploads: null,
     uploadFileEvent: null,
     modal: {
@@ -199,6 +213,7 @@ export const Workspace = (props: WorkspaceProps) => {
       handleHide: null
     },
     loadingLocalhost: false,
+    workspaceMutationInProgress: false,
     toasterMsg: ''
   })
 
@@ -219,7 +234,7 @@ export const Workspace = (props: WorkspaceProps) => {
   }
 
   const deleteCurrentWorkspace = () => {
-    modal('Delete Current Workspace', 'Are you sure to delete the current workspace?', 'OK', onFinishDeleteWorkspace, '', () => {})
+    modal('Delete workspace?', `Delete "${state.currentWorkspace}"? This cannot be undone.`, 'Delete', onFinishDeleteWorkspace, '', () => {})
   }
 
   const modalMessage = (title: string, body: string) => {
@@ -241,6 +256,7 @@ export const Workspace = (props: WorkspaceProps) => {
       return
     }
     let mutationToken
+    setState(prevState => ({ ...prevState, workspaceMutationInProgress: true }))
     try {
       mutationToken = props.fileManager.beginWorkspaceMutation('rename workspaces')
       await props.renameWorkspace(state.currentWorkspace, workspaceName, mutationToken)
@@ -251,6 +267,7 @@ export const Workspace = (props: WorkspaceProps) => {
       console.error(e)
     } finally {
       if (mutationToken !== undefined) props.fileManager.endWorkspaceMutation(mutationToken)
+      setState(prevState => ({ ...prevState, workspaceMutationInProgress: false }))
     }
   }
 
@@ -265,10 +282,16 @@ export const Workspace = (props: WorkspaceProps) => {
     // @ts-ignore: Object is possibly 'null'.
     const templateId = workspaceCreateTemplateInput.current ? workspaceCreateTemplateInput.current.value : ''
     let mutationToken
+    setState(prevState => ({ ...prevState, workspaceMutationInProgress: true }))
     try {
       mutationToken = props.fileManager.beginWorkspaceMutation('create workspaces')
       await props.fileManager.closeAllFiles()
-      await props.createWorkspace(workspaceName, templateId || undefined, mutationToken)
+      // Keep the empty-project choice explicit. The historical empty value
+      // means "use the default sample contracts" in FilePanel, so map the UI
+      // sentinel to false instead of passing an empty string and accidentally
+      // seeding the sample workspace.
+      const seed = templateId === 'empty' ? false : (templateId || undefined)
+      await props.createWorkspace(workspaceName, seed, mutationToken)
       await setWorkspace(workspaceName, mutationToken)
       const picked = templateId ? TRON_TEMPLATES.find((template) => template.id === templateId) : null
       if (picked) await props.fileManager.openFile(picked.path)
@@ -277,11 +300,13 @@ export const Workspace = (props: WorkspaceProps) => {
       console.error(e)
     } finally {
       if (mutationToken !== undefined) props.fileManager.endWorkspaceMutation(mutationToken)
+      setState(prevState => ({ ...prevState, workspaceMutationInProgress: false }))
     }
   }
 
   const onFinishDeleteWorkspace = async () => {
     let mutationToken
+    setState(prevState => ({ ...prevState, workspaceMutationInProgress: true }))
     try {
       mutationToken = props.fileManager.beginWorkspaceMutation('delete workspaces')
       await props.fileManager.closeAllFiles()
@@ -295,6 +320,7 @@ export const Workspace = (props: WorkspaceProps) => {
       console.error(e)
     } finally {
       if (mutationToken !== undefined) props.fileManager.endWorkspaceMutation(mutationToken)
+      setState(prevState => ({ ...prevState, workspaceMutationInProgress: false }))
     }
   }
   /** ** ****/
@@ -308,9 +334,10 @@ export const Workspace = (props: WorkspaceProps) => {
   const setWorkspace = async (name, activeMutationToken?) => {
     let mutationToken = activeMutationToken
     const ownsMutation = mutationToken === undefined
-    if (ownsMutation) mutationToken = props.fileManager.beginWorkspaceMutation('switch workspaces')
-    else props.fileManager.assertWorkspaceMutationToken(mutationToken)
+    if (ownsMutation) setState(prevState => ({ ...prevState, workspaceMutationInProgress: true }))
     try {
+      if (ownsMutation) mutationToken = props.fileManager.beginWorkspaceMutation('switch workspaces')
+      else props.fileManager.assertWorkspaceMutationToken(mutationToken)
       // Publish the user's destination before deactivating remixd. Its
       // `disconnected` event fires during this call and must not mistake the
       // transition for an unexpected localhost disconnect.
@@ -330,6 +357,7 @@ export const Workspace = (props: WorkspaceProps) => {
       })
     } finally {
       if (ownsMutation) props.fileManager.endWorkspaceMutation(mutationToken)
+      if (ownsMutation) setState(prevState => ({ ...prevState, workspaceMutationInProgress: false }))
     }
   }
 
@@ -389,6 +417,7 @@ export const Workspace = (props: WorkspaceProps) => {
         <label className="form-check-label mt-2" htmlFor="wsTemplateSelect">Template</label>
         <select id="wsTemplateSelect" data-id="modalDialogCustomSelectTemplate" defaultValue="" ref={workspaceCreateTemplateInput} className="form-control custom-select">
           <option value="">Default (sample contracts)</option>
+          <option value="empty">Empty workspace (no files)</option>
           { TRON_TEMPLATES.map((template) => (
             <option key={template.id} value={template.id} title={template.description}>{template.name}</option>
           )) }
@@ -471,7 +500,7 @@ export const Workspace = (props: WorkspaceProps) => {
                   </span>
                 </Tooltip>
               </span>
-              <select id="workspacesSelect" value={state.currentWorkspace} data-id="workspacesSelect" onChange={(e) => setWorkspace(e.target.value)} className="form-control custom-select">
+              <select id="workspacesSelect" value={state.currentWorkspace} data-id="workspacesSelect" onChange={(e) => setWorkspace(e.target.value)} disabled={state.workspaceMutationInProgress} aria-busy={state.workspaceMutationInProgress} className="form-control custom-select">
                 {
                   state.workspaces
                     .map((folder, index) => {
@@ -492,12 +521,13 @@ export const Workspace = (props: WorkspaceProps) => {
                     name={state.currentWorkspace}
                     registry={props.registry}
                     filesProvider={props.workspace}
-                    menuItems={['createNewFile', 'createNewFolder', canUpload ? 'uploadFile' : '']}
+                    menuItems={['createNewFile', 'createNewFolder', 'publishToGist', canUpload ? 'uploadFile' : '']}
                     plugin={props.plugin}
                     focusRoot={state.reset}
                     contextMenuItems={props.registeredMenuItems}
                     removedContextMenuItems={props.removedMenuItems}
                     displayInput={state.displayNewFile}
+                    newFileName={state.newFileName}
                     externalUploads={state.uploadFileEvent}
                   />
               }

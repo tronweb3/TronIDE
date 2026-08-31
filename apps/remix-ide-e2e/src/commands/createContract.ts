@@ -50,7 +50,7 @@ function createContract (browser: NightwatchBrowser, inputParams: string, callba
         const deployButton = (document.querySelector('#runTabView *[data-id="multiParamManagerFuncButton"]') || document.querySelector('#runTabView button[class^="instanceButton"]')) as HTMLElement
         deployButton.click()
       })
-      .pause(500)
+      .pause(2000)
       .perform(function () { callback() })
   } else {
     browser
@@ -59,7 +59,7 @@ function createContract (browser: NightwatchBrowser, inputParams: string, callba
         const deployButton = (document.querySelector('#runTabView *[data-id="multiParamManagerFuncButton"]') || document.querySelector('#runTabView button[class^="instanceButton"]')) as HTMLElement
         deployButton.click()
       })
-      .pause(500)
+      .pause(2000)
       .perform(function () { callback() })
   }
 }

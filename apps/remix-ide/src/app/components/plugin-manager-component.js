@@ -17,8 +17,9 @@
  * limitations under the License.
  */
 
-import { ViewPlugin, WebsocketPlugin } from '@remixproject/engine-web'
+import { ViewPlugin } from '@remixproject/engine-web'
 import { SecureIframePlugin as IframePlugin } from './secure-iframe-plugin'
+import { SecureWebsocketPlugin } from './secure-websocket-plugin'
 import { PluginManagerSettings } from './plugin-manager-settings'
 import * as packageJson from '../../../../../package.json'
 const yo = require('yo-yo')
@@ -227,7 +228,7 @@ class PluginManagerComponent extends ViewPlugin {
       if (this.appManager.getIds().includes(profile.name)) {
         throw new Error('This name has already been used')
       }
-      plugin = profile.type === 'iframe' ? new IframePlugin(profile) : new WebsocketPlugin(profile)
+      plugin = profile.type === 'iframe' ? new IframePlugin(profile) : new SecureWebsocketPlugin(profile)
       this.engine.register(plugin)
       await this.appManager.activatePlugin(plugin.name)
     } catch (err) {
@@ -244,8 +245,7 @@ class PluginManagerComponent extends ViewPlugin {
     const isFiltered = (profile) => (profile.displayName ? profile.displayName : profile.name).toLowerCase().includes(this.filter)
     const isNotRequired = (profile) => !this.appManager.isRequired(profile.name)
     const isNotDependent = (profile) => !this.appManager.isDependent(profile.name)
-    // Temporarily keep the Git integration out of the plugin manager UI.
-    const isVisibleInManager = (profile) => !['home', 'gitPanel'].includes(profile.name)
+    const isNotHome = (profile) => profile.name !== 'home'
     const sortByName = (profileA, profileB) => {
       const nameA = ((profileA.displayName) ? profileA.displayName : profileA.name).toUpperCase()
       const nameB = ((profileB.displayName) ? profileB.displayName : profileB.name).toUpperCase()
@@ -257,7 +257,7 @@ class PluginManagerComponent extends ViewPlugin {
       .filter(isFiltered)
       .filter(isNotRequired)
       .filter(isNotDependent)
-      .filter(isVisibleInManager)
+      .filter(isNotHome)
       .sort(sortByName)
       .reduce(({ actives, inactives }, profile) => {
         return this.isActive(profile.name)

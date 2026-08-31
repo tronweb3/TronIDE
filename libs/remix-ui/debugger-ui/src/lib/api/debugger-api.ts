@@ -99,8 +99,10 @@ export const DebuggerApiMixin = (Base) =>
     }
 
     async fetchContractAndCompile (address, receipt) {
+      if (!receipt) throw new Error('transaction receipt unavailable')
       const target = address && remixDebug.traceHelper.isContractCreation(address) ? receipt.contractAddress : address
       const targetAddress = target || receipt.contractAddress || receipt.to
+      if (!targetAddress) throw new Error('transaction contract address unavailable')
       const codeAtAddress = await this._web3.eth.getCode(targetAddress)
       const output = await this.call('fetchAndCompile', 'resolve', targetAddress, codeAtAddress, 'browser/.debug')
       if (output) {
@@ -118,7 +120,7 @@ export const DebuggerApiMixin = (Base) =>
         web3 = this.web3()
       }
       if (!web3) {
-        const webDebugNode = remixDebug.init.web3DebugNode(network.name)
+        const webDebugNode = network && network.name ? remixDebug.init.web3DebugNode(network.name) : null
         web3 = !webDebugNode ? this.web3() : webDebugNode
       }
       remixDebug.init.extendWeb3(web3)

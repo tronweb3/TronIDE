@@ -3,6 +3,7 @@
   "compilerOptions": {
     "outDir": "../../build/out-tsc",
     "module": "commonjs",
+    "rootDir": "../..",
     "types": ["jest", "node"]
   },
   "include": [

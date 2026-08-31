@@ -40,18 +40,19 @@ module.exports = {
     browser.waitForElementVisible('#icon-panel', 10000)
       .testContracts('receiveAndFallback.sol', sources[0]['receiveAndFallback.sol'], ['CheckSpecials']) // compile
       .clickLaunchIcon('udapp')
+      .clickIfPresent('*[data-id="deployAndRunClearInstances"]')
       .selectAccount('0xCA35b7d915458EF540aDe6068dFe2F44E8fa733c') // this account will be used for this test suite
       .selectContract('CheckSpecials')
       .createContract('') // deploy
-      .clickInstance(0)
+      .clickInstance(1)
       .perform((done) => {
         browser.getAddressAtPosition(0, (address) => {
           browser.sendLowLevelTx(address, '0', '0xaa')
             .pause(1000)
             .journalLastChildIncludes('to: CheckSpecials.(fallback)')
-            .journalLastChildIncludes('value: 0 wei')
+            .journalLastChildIncludes('value: 0 sun')
             .journalLastChildIncludes('data: 0xaa')
-            .perform(done)
+            .perform(() => done())
         })
       })
   },
@@ -64,7 +65,7 @@ module.exports = {
           .pause(1000)
           .waitForElementVisible(`#instance${address} label[id="deployAndRunLLTxError"]`)
           .assert.containsText(`#instance${address} label[id="deployAndRunLLTxError"]`, 'The calldata should be a valid hexadecimal value with size of at least one byte.')
-          .perform(done)
+          .perform(() => done())
       })
     })
   },
@@ -76,7 +77,7 @@ module.exports = {
           .pause(1000)
           .waitForElementVisible(`#instance${address} label[id="deployAndRunLLTxError"]`)
           .assert.containsText(`#instance${address} label[id="deployAndRunLLTxError"]`, 'The calldata should be a valid hexadecimal value.')
-          .perform(done)
+          .perform(() => done())
       })
     })
   },
@@ -87,9 +88,9 @@ module.exports = {
         browser.sendLowLevelTx(address, '1', '')
           .pause(1000)
           .journalLastChildIncludes('to: CheckSpecials.(receive)')
-          .journalLastChildIncludes('value: 1 wei')
+          .journalLastChildIncludes('value: 1 sun')
           .journalLastChildIncludes('data: 0x')
-          .perform(done)
+          .perform(() => done())
       })
     })
   },
@@ -99,9 +100,9 @@ module.exports = {
       browser.getAddressAtPosition(0, (address) => {
         browser.sendLowLevelTx(address, '10', '0xaa')
           .pause(1000)
-          .journalLastChildIncludes('to CheckSpecials.(fallback) errored:')
-          .journalLastChildIncludes('The called function should be payable if you send value')
-          .perform(done)
+          .waitForElementVisible(`#instance${address} label[id="deployAndRunLLTxError"]`)
+          .assert.containsText(`#instance${address} label[id="deployAndRunLLTxError"]`, 'The called function should be payable if you send value')
+          .perform(() => done())
       })
     })
   },
@@ -109,29 +110,33 @@ module.exports = {
     browser.waitForElementVisible('#icon-panel', 10000)
       .testContracts('receiveOnly.sol', sources[1]['receiveOnly.sol'], ['CheckSpecials'])
       .clickLaunchIcon('udapp')
+      .clickIfPresent('*[data-id="deployAndRunClearInstances"]')
       .selectContract('CheckSpecials')
+      .waitForElementVisible('#value')
+      .clearValue('#value')
+      .setValue('#value', '0')
       .createContract('')
       .clickInstance(1)
       .perform((done) => {
-        browser.getAddressAtPosition(1, (address) => {
+        browser.getAddressAtPosition(0, (address) => {
           browser.sendLowLevelTx(address, '1', '')
             .pause(1000)
             .journalLastChildIncludes('to: CheckSpecials.(receive)')
-            .journalLastChildIncludes('value: 1 wei')
+            .journalLastChildIncludes('value: 1 sun')
             .journalLastChildIncludes('data: 0x')
-            .perform(done)
+            .perform(() => done())
         })
       })
   },
   'Use special functions receive/fallback - only receive is declared, failing, fallback is not declared, sending data': function (browser: NightwatchBrowser) {
     // don't need to redeploy it, same contract
     browser.perform((done) => {
-      browser.getAddressAtPosition(1, (address) => {
+      browser.getAddressAtPosition(0, (address) => {
         browser.sendLowLevelTx(address, '0', '0xaa')
           .pause(1000)
           .waitForElementVisible(`#instance${address} label[id="deployAndRunLLTxError"]`)
           .assert.containsText(`#instance${address} label[id="deployAndRunLLTxError"]`, '\'Fallback\' function is not defined')
-          .perform(done)
+          .perform(() => done())
       })
     })
   },
@@ -139,30 +144,34 @@ module.exports = {
     browser.waitForElementVisible('#icon-panel', 10000)
       .testContracts('fallbackOnlyPayable.sol', sources[2]['fallbackOnlyPayable.sol'], ['CheckSpecials'])
       .clickLaunchIcon('udapp')
+      .clickIfPresent('*[data-id="deployAndRunClearInstances"]')
       .selectContract('CheckSpecials')
+      .waitForElementVisible('#value')
+      .clearValue('#value')
+      .setValue('#value', '0')
       .createContract('')
-      .clickInstance(2)
+      .clickInstance(1)
       .perform((done) => {
-        browser.getAddressAtPosition(2, (address) => {
+        browser.getAddressAtPosition(0, (address) => {
           browser.sendLowLevelTx(address, '1', '')
             .pause(1000)
             .journalLastChildIncludes('to: CheckSpecials.(fallback)')
-            .journalLastChildIncludes('value: 1 wei')
+            .journalLastChildIncludes('value: 1 sun')
             .journalLastChildIncludes('data: 0x')
-            .perform(done)
+            .perform(() => done())
         })
       })
   },
   'Use special functions receive/fallback - only fallback is diclared and is payable, sending data and wei': function (browser: NightwatchBrowser) {
     // don't need to redeploy it, same contract
     browser.perform((done) => {
-      browser.getAddressAtPosition(2, (address) => {
+      browser.getAddressAtPosition(0, (address) => {
         browser.sendLowLevelTx(address, '1', '0xaa')
           .pause(1000)
           .journalLastChildIncludes('to: CheckSpecials.(fallback)')
-          .journalLastChildIncludes('value: 1 wei')
+          .journalLastChildIncludes('value: 1 sun')
           .journalLastChildIncludes('data: 0xaa')
-          .perform(done)
+          .perform(() => done())
       })
     })
   },
@@ -170,16 +179,20 @@ module.exports = {
     browser.waitForElementVisible('#icon-panel', 10000)
       .testContracts('fallbackOnlyNotPayable.sol', sources[3]['fallbackOnlyNotPayable.sol'], ['CheckSpecials'])
       .clickLaunchIcon('udapp')
+      .clickIfPresent('*[data-id="deployAndRunClearInstances"]')
       .selectContract('CheckSpecials')
+      .waitForElementVisible('#value')
+      .clearValue('#value')
+      .setValue('#value', '0')
       .createContract('')
-      .clickInstance(3)
+      .clickInstance(1)
       .perform((done) => {
-        browser.getAddressAtPosition(3, (address) => {
+        browser.getAddressAtPosition(0, (address) => {
           browser.sendLowLevelTx(address, '1', '')
             .pause(1000)
             .waitForElementVisible(`#instance${address} label[id="deployAndRunLLTxError"]`)
             .assert.containsText(`#instance${address} label[id="deployAndRunLLTxError"]`, 'should have either \'receive\' or payable \'fallback\'')
-            .perform(done)
+            .perform(() => done())
         })
       })
   },
@@ -187,33 +200,37 @@ module.exports = {
     browser.waitForElementVisible('#icon-panel', 10000)
       .testContracts('receiveAndFallbackBothPayable.sol', sources[4]['receiveAndFallbackBothPayable.sol'], ['CheckSpecials'])
       .clickLaunchIcon('udapp')
+      .clickIfPresent('*[data-id="deployAndRunClearInstances"]')
       .selectContract('CheckSpecials')
       .waitForElementVisible('#value')
       .clearValue('#value')
       .setValue('#value', '0')
       .createContract('')
-      .clickInstance(4)
+      .clickInstance(1)
       .pause(1000)
       .perform((done) => {
-        browser.getAddressAtPosition(4, (address) => {
-          browser.sendLowLevelTx(address, '999999998765257135', '0xaa')
+        browser.getAddressAtPosition(0, (address) => {
+          // Keep the value below the VM account balance while exercising a
+          // large SUN amount; the old wei-sized fixture could never succeed
+          // on TRON's 1e12-SUN default VM account.
+          browser.sendLowLevelTx(address, '900000000000', '0xaa')
             .pause(1000)
             .journalLastChildIncludes('to: CheckSpecials.(fallback)')
-            .journalLastChildIncludes('value: 999999998765257135 wei')
+            .journalLastChildIncludes('value: 900000000000 sun')
             .journalLastChildIncludes('data: 0xaa')
-            .perform(done)
+            .perform(() => done())
         })
       })
   },
   'Use special functions receive/fallback - receive and fallback are declared and payable, sending wei': function (browser: NightwatchBrowser) {
     browser.perform((done) => {
-      browser.getAddressAtPosition(4, (address) => {
+      browser.getAddressAtPosition(0, (address) => {
         browser.sendLowLevelTx(address, '1', '')
           .pause(1000)
           .journalLastChildIncludes('to: CheckSpecials.(receive)')
-          .journalLastChildIncludes('value: 1 wei')
+          .journalLastChildIncludes('value: 1 sun')
           .journalLastChildIncludes('data: 0x')
-          .perform(done)
+          .perform(() => done())
       })
     })
   },
@@ -221,20 +238,21 @@ module.exports = {
     browser.waitForElementVisible('#icon-panel', 10000)
       .testContracts('notSpecial.sol', sources[5]['notSpecial.sol'], ['CheckSpecials'])
       .clickLaunchIcon('udapp')
+      .clickIfPresent('*[data-id="deployAndRunClearInstances"]')
       .selectContract('CheckSpecials')
       .waitForElementVisible('#value')
       .clearValue('#value')
       .setValue('#value', '0')
       .createContract('')
-      .clickInstance(5)
+      .clickInstance(1)
       .pause(1000)
       .perform((done) => {
-        browser.getAddressAtPosition(5, (address) => {
+        browser.getAddressAtPosition(0, (address) => {
           browser.sendLowLevelTx(address, '0', '')
             .pause(1000)
             .waitForElementVisible(`#instance${address} label[id="deployAndRunLLTxError"]`)
             .assert.containsText(`#instance${address} label[id="deployAndRunLLTxError"]`, 'Both \'receive\' and \'fallback\' functions are not defined')
-            .perform(done)
+            .perform(() => done())
         })
       })
       .end()

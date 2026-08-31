@@ -21,12 +21,16 @@ import { Plugin } from '@remixproject/engine'
 import { BN } from 'ethereumjs-util'
 import * as remixLib from '@remix-project/remix-lib'
 import * as packageJson from '../../../../../package.json'
+const { withUserPermission } = require('../ui/permission-security')
+const { assertReadOnlyProviderRequest } = require('../../lib/provider-rpc-security')
+const { isTrustedHostPluginProfile } = require('../../lib/plugin-trust-security')
 
 export const profile = {
   name: 'web3Provider',
   displayName: 'Global Web3 Provider',
   description: 'Represent the current web3 provider used by the app at global scope',
   methods: ['sendAsync'],
+  permission: true,
   version: packageJson.version,
   kind: 'provider'
 }
@@ -35,6 +39,26 @@ export class Web3ProviderModule extends Plugin {
   constructor (blockchain) {
     super(profile)
     this.blockchain = blockchain
+  }
+
+  callPluginMethod (key, args) {
+    return withUserPermission(this, key, `use provider capability ${key}`, () => {
+      return super.callPluginMethod(key, args)
+    })
+  }
+
+  async assertExternalRpcAllowed (payload) {
+    const caller = this.currentRequest && this.currentRequest.from
+    if (!caller) return true
+    let callerProfile = null
+    try {
+      callerProfile = await this.call('manager', 'getProfile', caller)
+    } catch (e) {
+      // Missing manager/profile context is untrusted and falls through to the
+      // read-only allowlist instead of widening access.
+    }
+    if (callerProfile && callerProfile.name === caller && isTrustedHostPluginProfile(callerProfile)) return true
+    return assertReadOnlyProviderRequest(payload)
   }
 
   async sendTronWebRequest (tronWeb, payload) {
@@ -140,7 +164,8 @@ export class Web3ProviderModule extends Plugin {
     that is used by plugins to call the current ethereum provider.
     Should be taken carefully and probably not be release as it is now.
   */
-  sendAsync (payload) {
+  async sendAsync (payload) {
+    await this.assertExternalRpcAllowed(payload)
     return new Promise((resolve, reject) => {
       const web3 = this.blockchain.web3()
       const provider = web3.currentProvider

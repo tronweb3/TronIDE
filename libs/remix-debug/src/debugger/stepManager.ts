@@ -29,6 +29,9 @@ export class DebuggerStepManager {
   codeTraceLength: number
   revertionPoint
   currentCall
+  _newTraceLoadedHandler
+  _callTreeReadyHandler
+  _indexChangedHandler
 
   constructor (_debugger, traceManager) {
     this.event = new EventManager()
@@ -43,7 +46,7 @@ export class DebuggerStepManager {
   }
 
   listenToEvents () {
-    this.debugger.event.register('newTraceLoaded', this, () => {
+    this._newTraceLoadedHandler = () => {
       this.traceManager.getLength((error, newLength) => {
         if (error) {
           return console.log(error)
@@ -55,15 +58,17 @@ export class DebuggerStepManager {
         }
         this.jumpTo(0)
       })
-    })
+    }
+    this.debugger.event.register('newTraceLoaded', this, this._newTraceLoadedHandler)
 
-    this.debugger.callTree.event.register('callTreeReady', () => {
+    this._callTreeReadyHandler = () => {
       if (this.debugger.callTree.functionCallStack.length) {
         this.jumpTo(this.debugger.callTree.functionCallStack[0])
       }
-    })
+    }
+    this.debugger.callTree.event.register('callTreeReady', this, this._callTreeReadyHandler)
 
-    this.event.register('indexChanged', this, (index) => {
+    this._indexChangedHandler = (index) => {
       if (index < 0) return
       if (this.currentStepIndex !== index) return
 
@@ -85,7 +90,17 @@ export class DebuggerStepManager {
         console.log(error)
         this.event.trigger('revertWarning', [''])
       })
-    })
+    }
+    this.event.register('indexChanged', this, this._indexChangedHandler)
+  }
+
+  dispose () {
+    if (this._newTraceLoadedHandler) this.debugger.event.unregister('newTraceLoaded', this, this._newTraceLoadedHandler)
+    if (this._callTreeReadyHandler) this.debugger.callTree.event.unregister('callTreeReady', this, this._callTreeReadyHandler)
+    if (this._indexChangedHandler) this.event.unregister('indexChanged', this, this._indexChangedHandler)
+    this._newTraceLoadedHandler = null
+    this._callTreeReadyHandler = null
+    this._indexChangedHandler = null
   }
 
   triggerStepChanged (step) {
@@ -109,26 +124,26 @@ export class DebuggerStepManager {
   stepIntoBack (solidityMode) {
     if (!this.traceManager.isLoaded()) return
     let step = this.currentStepIndex - 1
-    this.currentStepIndex = step
     if (solidityMode) {
       step = this.resolveToReducedTrace(step, -1)
     }
     if (!this.traceManager.inRange(step)) {
       return
     }
+    this.currentStepIndex = step
     this.triggerStepChanged(step)
   }
 
   stepIntoForward (solidityMode) {
     if (!this.traceManager.isLoaded()) return
     let step = this.currentStepIndex + 1
-    this.currentStepIndex = step
     if (solidityMode) {
       step = this.resolveToReducedTrace(step, 1)
     }
     if (!this.traceManager.inRange(step)) {
       return
     }
+    this.currentStepIndex = step
     this.triggerStepChanged(step)
   }
 
@@ -153,6 +168,7 @@ export class DebuggerStepManager {
     if (solidityMode) {
       step = this.resolveToReducedTrace(step, 1)
     }
+    if (!this.traceManager.inRange(step)) return
     this.currentStepIndex = step
     this.triggerStepChanged(step)
   }
@@ -163,6 +179,7 @@ export class DebuggerStepManager {
     if (solidityMode) {
       step = this.resolveToReducedTrace(step, 0)
     }
+    if (!this.traceManager.inRange(step)) return
     this.currentStepIndex = step
     this.triggerStepChanged(step)
   }
@@ -204,8 +221,8 @@ export class DebuggerStepManager {
   }
 
   calculateCodeLength () {
-    this.calculateCodeStepList().reverse()
-    return this.calculateCodeStepList().reverse()[1] || this.traceLength
+    const steps = this.calculateCodeStepList()
+    return steps.length ? steps[steps.length - 1] : this.traceLength
   }
 
   nextStep () {
@@ -224,7 +241,7 @@ export class DebuggerStepManager {
     nextSource = nextSource + incr
     if (nextSource <= 0) {
       nextSource = 0
-    } else if (nextSource > this.debugger.callTree.reducedTrace.length) {
+    } else if (nextSource >= this.debugger.callTree.reducedTrace.length) {
       nextSource = this.debugger.callTree.reducedTrace.length - 1
     }
     return this.debugger.callTree.reducedTrace[nextSource]

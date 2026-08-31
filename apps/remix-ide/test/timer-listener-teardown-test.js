@@ -76,6 +76,7 @@ test('LandingPage removes global and registry listeners on deactivation', functi
   t.ok(/this\._themeHandlers\.forEach\(\(handler\)\s*=>\s*this\._themeEvents\.removeListener\('themeChanged', handler\)\)/.test(source), 'deactivation removes theme handlers')
   t.ok(/this\._fileEventSubscriptions\.forEach/.test(source), 'deactivation iterates file/workspace event subscriptions')
   t.ok(/this\._workspaceStatusTimers\.forEach\(\(timerId\)\s*=>\s*clearTimeout\(timerId\)\)/.test(source), 'deactivation clears scheduled workspace refresh timers')
+  t.ok(/this\._homeActionGate\.clear\(\)/.test(source), 'deactivation clears Home action cooldown timers')
   t.end()
 })
 

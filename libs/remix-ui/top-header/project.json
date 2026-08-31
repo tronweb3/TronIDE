@@ -7,10 +7,12 @@
   "targets": {
     "lint": {
       "executor": "@nrwl/linter:eslint",
+      "outputs": ["{options.outputFile}"],
       "options": {
-        "linter": "eslint",
-        "tsConfig": ["libs/remix-ui/top-header/tsconfig.lib.json"],
-        "exclude": ["**/node_modules/**", "!libs/remix-ui/top-header/**/*"]
+        "lintFilePatterns": [
+          "libs/remix-ui/top-header/**/*.{js,jsx,ts,tsx}"
+        ],
+        "eslintConfig": "libs/remix-ui/top-header/.eslintrc"
       }
     }
   }

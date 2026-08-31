@@ -35,6 +35,14 @@ export class LogsManager {
     this.oldLogs = []
   }
 
+  clear () {
+    this.notificationCallbacks = []
+    this.subscriptions = {}
+    this.filters = {}
+    this.filterTracking = {}
+    this.oldLogs = []
+  }
+
   checkBlock (blockNumber, block, web3) {
     eachOf(block.transactions, (tx, i, next) => {
       const txHash = '0x' + Buffer.from(tx.hash()).toString('hex')

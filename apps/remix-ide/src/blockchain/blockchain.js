@@ -26,6 +26,11 @@ import VMProvider from './providers/vm.js'
 import InjectedProvider from './providers/injected.js'
 import NodeProvider from './providers/node.js'
 import { util, execution, EventManager, helpers } from '@remix-project/remix-lib'
+const {
+  guardPluginTransactionCommit,
+  inheritExternalPluginTransaction,
+  verifyPluginTransactionNetwork
+} = require('./transaction-network-security')
 const { txFormat, txExecution, typeConversion, txListener: Txlistener, TxRunner, TxRunnerWeb3, txHelper } = execution
 const { txResultHelper: resultToRemixTx } = helpers
 const { createRuntimeFacade } = execution.runtimeFacade
@@ -130,6 +135,11 @@ class Blockchain {
         }
         if (host === this._lastInjectedHost) return
         this._lastInjectedHost = host
+        // Record the transition before refreshing. Even if the wallet returns
+        // to the prior host before a transaction-status poll finishes, the
+        // monotonic context epoch still proves that its RPC evidence crossed a
+        // provider transition.
+        this.executionContext.getProviderContextEpoch()
         this.executionContext.invalidateNetworkDetectionCache()
         this._refreshNetworkStatus()
       }, 1000)
@@ -169,6 +179,10 @@ class Blockchain {
 
   getCurrentNetworkStatus () {
     return this.networkStatus
+  }
+
+  getProviderContextEpoch () {
+    return this.executionContext.getProviderContextEpoch()
   }
 
   setupProviders () {
@@ -211,9 +225,13 @@ class Blockchain {
       if (error) return statusCb(`creation of ${selectedContract.name} errored: ` + error)
 
       statusCb(`creation of ${selectedContract.name} pending...`)
-      this.createContract(selectedContract, data, continueCb, promptCb, confirmationCb, finalCb, txMeta)
+      this.createContract(selectedContract, data, continueCb, promptCb, confirmationCb, finalCb, txMeta, statusCb)
     }, statusCb, (data, runTxCallback) => {
       // called for libraries deployment
+      if (data) {
+        inheritExternalPluginTransaction(txMeta, data)
+        data.cancelState = txMeta && txMeta.cancelState
+      }
       this.runTx(data, confirmationCb, continueCb, promptCb, runTxCallback)
     })
   }
@@ -225,26 +243,37 @@ class Blockchain {
       if (error) return statusCb(`creation of ${selectedContract.name} errored: ` + (error.message ? error.message : error))
 
       statusCb(`creation of ${selectedContract.name} pending...`)
-      this.createContract(selectedContract, data, continueCb, promptCb, confirmationCb, finalCb)
+      this.createContract(selectedContract, data, continueCb, promptCb, confirmationCb, finalCb, null, statusCb)
     })
   }
 
-  createContract (selectedContract, data, continueCb, promptCb, confirmationCb, finalCb, txMeta) {
+  createContract (selectedContract, data, continueCb, promptCb, confirmationCb, finalCb, txMeta, statusCb) {
     if (data) {
       data.contractName = selectedContract.name
       data.linkReferences = selectedContract.bytecodeLinkReferences
       data.contractABI = selectedContract.abi
+      data.deployedBytecode = selectedContract.deployedBytecode
     }
 
-    this.runTx({ data: data, useCall: false, from: txMeta && txMeta.from, value: txMeta && txMeta.value, tokenId: txMeta && txMeta.tokenId, tokenValue: txMeta && txMeta.tokenValue }, confirmationCb, continueCb, promptCb,
+    const runArgs = { data: data, useCall: false, from: txMeta && txMeta.from, value: txMeta && txMeta.value, tokenId: txMeta && txMeta.tokenId, tokenValue: txMeta && txMeta.tokenValue, cancelState: txMeta && txMeta.cancelState }
+    inheritExternalPluginTransaction(txMeta, runArgs)
+    this.runTx(runArgs, confirmationCb, continueCb, promptCb,
       (error, txResult, address) => {
         if (error) {
-          return finalCb(`creation of ${selectedContract.name} errored: ${(error.message ? error.message : error)}`)
+          const message = `creation of ${selectedContract.name} errored: ${(error.message ? error.message : error)}`
+          if (statusCb) statusCb(message, { phase: 'error', operation: `creation of ${selectedContract.name}`, error, txResult })
+          return finalCb(message)
         }
         if (txResult.receipt.status === false || txResult.receipt.status === '0x0') {
-          return finalCb(`creation of ${selectedContract.name} errored: transaction execution failed`)
+          const message = `creation of ${selectedContract.name} errored: transaction execution failed`
+          if (statusCb) statusCb(message, { phase: 'error', operation: `creation of ${selectedContract.name}`, txResult })
+          return finalCb(message)
         }
-        finalCb(null, selectedContract, address)
+        // Preserve the receipt/hash for programmatic callers. Existing UI
+        // callbacks ignore the fourth argument; AI deploy needs it to resolve
+        // the exact transaction instead of asking the model to guess.
+        if (statusCb) statusCb(`creation of ${selectedContract.name} succeeded.`, { phase: 'success', operation: `creation of ${selectedContract.name}`, txResult, address })
+        finalCb(null, selectedContract, address, txResult)
       }
     )
   }
@@ -392,14 +421,14 @@ class Blockchain {
   // txMeta (optional): { value, tokenId, tokenValue } — explicit amounts for
   // this call (AI tools). UI flows omit it: value/TRC10 then come from the
   // Deploy & Run panel fields as before.
-  runOrCallContractMethod (contractName, contractAbi, funABI, contract, value, address, callType, lookupOnly, logMsg, logCallback, outputCb, confirmationCb, continueCb, promptCb, txMeta) {
+  runOrCallContractMethod (contractName, contractAbi, funABI, contract, value, address, callType, lookupOnly, logMsg, logCallback, outputCb, confirmationCb, continueCb, promptCb, txMeta, completionCb) {
     // contractsDetails is used to resolve libraries
     txFormat.buildData(contractName, contractAbi, {}, false, funABI, callType, (error, data) => {
       if (error) {
         return logCallback(`${logMsg} errored: ${error} `)
       }
       if (!lookupOnly) {
-        logCallback(`${logMsg} pending ... `)
+        logCallback(`${logMsg} pending ... `, { phase: 'pending', operation: logMsg })
       } else {
         logCallback(`${logMsg}`)
       }
@@ -411,13 +440,21 @@ class Blockchain {
         data.contract = contract
       }
       const useCall = funABI.stateMutability === 'view' || funABI.stateMutability === 'pure'
-      this.runTx({ to: address, data, useCall, from: txMeta && txMeta.from, value: txMeta && txMeta.value, tokenId: txMeta && txMeta.tokenId, tokenValue: txMeta && txMeta.tokenValue }, confirmationCb, continueCb, promptCb, (error, txResult, _address, returnValue) => {
+      const runArgs = { to: address, data, useCall, from: txMeta && txMeta.from, value: txMeta && txMeta.value, tokenId: txMeta && txMeta.tokenId, tokenValue: txMeta && txMeta.tokenValue, cancelState: txMeta && txMeta.cancelState }
+      inheritExternalPluginTransaction(txMeta, runArgs)
+      this.runTx(runArgs, confirmationCb, continueCb, promptCb, (error, txResult, _address, returnValue) => {
         if (error) {
-          return logCallback(`${logMsg} errored: ${error} `)
+          if (!lookupOnly && typeof completionCb === 'function') {
+            try { completionCb(error, txResult, _address, returnValue) } catch (e) { console.warn('[blockchain] completion callback failed after transaction error', e) }
+          }
+          return logCallback(`${logMsg} errored: ${error} `, { phase: 'error', operation: logMsg, error, txResult })
         }
         if (lookupOnly) {
           outputCb(returnValue)
+        } else if (typeof completionCb === 'function') {
+          try { completionCb(null, txResult, _address, returnValue) } catch (e) { console.warn('[blockchain] completion callback failed after transaction success', e) }
         }
+        if (!lookupOnly) logCallback(`${logMsg} succeeded.`, { phase: 'success', operation: logMsg, txResult })
       })
     },
     (msg) => {
@@ -425,6 +462,10 @@ class Blockchain {
     },
     (data, runTxCallback) => {
       // called for libraries deployment
+      if (data) {
+        inheritExternalPluginTransaction(txMeta, data)
+        data.cancelState = txMeta && txMeta.cancelState
+      }
       this.runTx(data, confirmationCb, runTxCallback, promptCb, () => {})
     })
   }
@@ -525,14 +566,20 @@ class Blockchain {
    */
   sendTransaction (tx) {
     return new Promise((resolve, reject) => {
-      this.executionContext.detectNetwork((error, network) => {
-        if (error) return reject(error)
-        if (network.name === 'Main' && network.id === '1') {
-          return reject(new Error('It is not allowed to make this action against mainnet'))
+      verifyPluginTransactionNetwork((callback) => this.executionContext.detectNetwork(callback)).then((verifiedNetwork) => {
+        // Bind raw plugin transactions to the same freshly verified network
+        // used by the allowlist. TxRunnerWeb3 rechecks this snapshot before
+        // signing and again before broadcast, so a wallet switch after this
+        // probe cannot silently establish a new (possibly mainnet) baseline.
+        const guardedTx = {
+          ...tx,
+          pendingTransactionSnapshot: {
+            account: tx && tx.from,
+            network: [verifiedNetwork.name, verifiedNetwork.id].filter(Boolean).join('/')
+          }
         }
-
         this.txRunner.rawRun(
-          tx,
+          guardedTx,
           (network, tx, gasEstimation, continueTxExecution, cancelCb) => { continueTxExecution() },
           (error, continueTxExecution, cancelCb) => { if (error) { reject(error) } else { continueTxExecution() } },
           (okCb, cancelCb) => { okCb() },
@@ -546,14 +593,25 @@ class Blockchain {
             }
           }
         )
-      })
+      }).catch(reject)
     })
   }
 
   runTx (args, confirmationCb, continueCb, promptCb, cb) {
     const self = this
     waterfall([
+      function validateDeploymentCompatibility (next) {
+        if (args.to || args.useCall || !self.transactionContextAPI.validateDeploymentCompatibility) return next()
+        try {
+          self.transactionContextAPI.validateDeploymentCompatibility(args.data, (error) => next(error))
+        } catch (error) {
+          next(error)
+        }
+      },
       function getGasLimit (next) {
+        if (args.gasLimit !== undefined && args.gasLimit !== null) {
+          return next(null, args.gasLimit)
+        }
         if (self.transactionContextAPI.getGasLimit) {
           return self.transactionContextAPI.getGasLimit((err, gasLimit) => {
             next(err, gasLimit)
@@ -562,7 +620,9 @@ class Blockchain {
         next(null, 400000000)
       },
       function queryValue (gasLimit, next) {
-        if (args.value) {
+        // Zero is a meaningful recorded call value. A truthiness check would
+        // silently replace it with the current RunTab setting during replay.
+        if (args.value !== undefined && args.value !== null) {
           return next(null, args.value, gasLimit)
         }
         if (args.useCall || !self.transactionContextAPI.getValue) {
@@ -600,8 +660,8 @@ class Blockchain {
         next(null, address, value, gasLimit, {})
       },
       function runTransaction (fromAddress, value, gasLimit, extend, next) {
-        const tx = { to: args.to, data: args.data.dataHex, useCall: args.useCall, from: fromAddress, value: value, gasLimit: gasLimit, timestamp: args.data.timestamp }
-        const payLoad = { funAbi: args.data.funAbi, funArgs: args.data.funArgs, contractBytecode: args.data.contractBytecode, contractName: args.data.contractName, contractABI: args.data.contractABI, linkReferences: args.data.linkReferences }
+        const tx = { to: args.to, data: args.data.dataHex, useCall: args.useCall, from: fromAddress, value: value, gasLimit: gasLimit, timestamp: args.data.timestamp, cancelState: args.cancelState }
+        const payLoad = { funAbi: args.data.funAbi, funArgs: args.data.funArgs, contractBytecode: args.data.contractBytecode, contractName: args.data.contractName, contractABI: args.data.contractABI, linkReferences: args.data.linkReferences, recorderContextGeneration: args.data.recorderContextGeneration }
         if (!tx.timestamp) tx.timestamp = Date.now()
 
         Object.assign(tx, extend)
@@ -610,6 +670,17 @@ class Blockchain {
         // Values inputs — `extend` was assigned above, so re-apply the args.
         if (args.tokenId !== undefined && args.tokenId !== null) tx.tokenId = args.tokenId
         if (args.tokenValue !== undefined && args.tokenValue !== null) tx.tokenValue = args.tokenValue
+        if (args.cancelState !== undefined && args.cancelState !== null) tx.cancelState = args.cancelState
+        // Replay and explicit callers may provide fee/TRC10 metadata that
+        // must take precedence over the mutable panel settings returned by
+        // getExtendValue(). Keep the same values in the payload so Recorder
+        // can reject late events from an old context.
+        for (const field of ['feeLimit', 'callValue', 'tokenId', 'tokenValue', 'userFeePercentage', 'originEnergyLimit', 'permissionId', 'cancelState']) {
+          if (args[field] !== undefined && args[field] !== null) {
+            tx[field] = args[field]
+            payLoad[field] = args[field]
+          }
+        }
         const runtimeFacade = createRuntimeFacade({
           kind: 'tvm',
           environment: self.executionContext.isVM() ? 'vm' : 'injected',
@@ -626,81 +697,91 @@ class Blockchain {
           data: tx.data
         })
         if (!runtimeValidation.ok) return next(runtimeValidation.errors[0])
-        const networkName = self.networkStatus?.network?.name || self.networkStatus?.name || self.executionContext.getProvider()
-        // The snapshot label must discriminate TRON networks: name is 'TRON' for
-        // nile/shasta/main alike, only the id differs (WAL-NET-1). It captures
-        // what the UI displayed when the tx was initiated; txRunner compares it
-        // against the wallet's live network before building and broadcasting.
-        const snapshotNetworkLabel = self._networkSnapshotFresh === false
-          ? undefined // context just switched; the polled status is the OLD provider's
-          : (self.networkStatus?.network
-            ? [self.networkStatus.network.name, self.networkStatus.network.id].filter(Boolean).join('/')
-            : networkName)
-        tx.runtimeSummary = runtimeFacade.createTransactionSummary({
-          tokenId: tx.tokenId,
-          tokenValue: tx.tokenValue,
-          feeLimit: tx.feeLimit || tx.gasLimit,
-          callValue: tx.callValue || tx.value,
-          from: tx.from,
-          to: tx.to,
-          data: tx.data,
-          network: networkName
-        })
-        tx.pendingTransactionSnapshot = runtimeFacade.createTransactionSnapshot({
-          from: tx.from,
-          network: snapshotNetworkLabel
-        })
-        tx.funAbi = args.data.funAbi
-        tx.contractName = args.data.contractName
-        tx.contractABI = args.data.contractABI
+        const commitTransaction = (verifiedNetwork) => {
+          const networkName = (verifiedNetwork && verifiedNetwork.name) || self.networkStatus?.network?.name || self.networkStatus?.name || self.executionContext.getProvider()
+          // A restricted plugin transaction uses the fresh commit-time probe as
+          // its wallet snapshot baseline. The injected runner validates this
+          // again before both signing and broadcast, closing a network-switch
+          // race after the allowlist check.
+          const snapshotNetworkLabel = verifiedNetwork
+            ? [verifiedNetwork.name, verifiedNetwork.id].filter(Boolean).join('/')
+            : (self._networkSnapshotFresh === false
+              ? undefined // context just switched; the polled status is the OLD provider's
+              : (self.networkStatus?.network
+                ? [self.networkStatus.network.name, self.networkStatus.network.id].filter(Boolean).join('/')
+                : networkName))
+          tx.runtimeSummary = runtimeFacade.createTransactionSummary({
+            tokenId: tx.tokenId,
+            tokenValue: tx.tokenValue,
+            feeLimit: tx.feeLimit || tx.gasLimit,
+            callValue: tx.callValue || tx.value,
+            from: tx.from,
+            to: tx.to,
+            data: tx.data,
+            network: networkName
+          })
+          tx.pendingTransactionSnapshot = runtimeFacade.createTransactionSnapshot({
+            from: tx.from,
+            network: snapshotNetworkLabel
+          })
+          tx.funAbi = args.data.funAbi
+          tx.contractName = args.data.contractName
+          tx.contractABI = args.data.contractABI
 
-        const timestamp = tx.timestamp
-        self.event.trigger('initiatingTransaction', [timestamp, tx, payLoad])
-        self.txRunner.rawRun(tx, confirmationCb, continueCb, promptCb,
-          async (error, result) => {
-            if (error) {
-              // TRON runners surface on-chain reverts and wallet rejections as
-              // ERRORS (txRunnerWeb3 rejects on txn.result === 'FAILED'), so a
-              // silent return here starves every 'transactionExecuted' listener
-              // of the outcome: the recorder could never stamp record.failed on
-              // the injected path (reverted steps exported as live TronBox
-              // migration code) and the AI write path waited its full timeout.
-              // Announce the failure for transactions; calls keep the old
-              // no-event behavior (their listeners never handled errors).
-              if (!tx.useCall) {
-                self.event.trigger('transactionExecuted', [error, tx.from, tx.to, tx.data, tx.useCall, result, timestamp, payLoad])
+          const timestamp = tx.timestamp
+          self.event.trigger('initiatingTransaction', [timestamp, tx, payLoad])
+          self.txRunner.rawRun(tx, confirmationCb, continueCb, promptCb,
+            async (error, result) => {
+              if (error) {
+                // TRON runners surface on-chain reverts and wallet rejections as
+                // ERRORS (txRunnerWeb3 rejects on txn.result === 'FAILED'), so a
+                // silent return here starves every 'transactionExecuted' listener
+                // of the outcome: the recorder could never stamp record.failed on
+                // the injected path (reverted steps exported as live TronBox
+                // migration code) and the AI write path waited its full timeout.
+                // Announce the failure for transactions; calls keep the old
+                // no-event behavior (their listeners never handled errors).
+                if (!tx.useCall) {
+                  self.event.trigger('transactionExecuted', [error, tx.from, tx.to, tx.data, tx.useCall, result, timestamp, payLoad])
+                }
+                return next(error, result, tx)
               }
-              return next(error)
-            }
 
-            const isVM = self.executionContext.isVM()
-            if (isVM && tx.useCall) {
-              try {
-                result.transactionHash = await self.web3().eth.getHashFromTagBySimulator(timestamp)
-              } catch (e) {
-                console.log('unable to retrieve back the "call" hash', e)
+              const isVM = self.executionContext.isVM()
+              if (isVM && tx.useCall) {
+                try {
+                  result.transactionHash = await self.web3().eth.getHashFromTagBySimulator(timestamp)
+                } catch (e) {
+                  console.log('unable to retrieve back the "call" hash', e)
+                }
               }
-            }
-            if (result) {
-              result.runtime = runtimeFacade.normalizeReceipt(result.receipt ? result.receipt : result)
-            }
-            const eventName = (tx.useCall ? 'callExecuted' : 'transactionExecuted')
-            self.event.trigger(eventName, [error, tx.from, tx.to, tx.data, tx.useCall, result, timestamp, payLoad])
+              if (result) {
+                result.runtime = runtimeFacade.normalizeReceipt(result.receipt ? result.receipt : result)
+              }
+              const eventName = (tx.useCall ? 'callExecuted' : 'transactionExecuted')
+              self.event.trigger(eventName, [error, tx.from, tx.to, tx.data, tx.useCall, result, timestamp, payLoad])
 
-            if (error && (typeof (error) !== 'string')) {
-              if (error.message) error = error.message
-              else {
-                try { error = 'error: ' + JSON.stringify(error) } catch (e) { error = 'error: [unserializable]' }
+              if (error && (typeof (error) !== 'string')) {
+                if (error.message) error = error.message
+                else {
+                  try { error = 'error: ' + JSON.stringify(error) } catch (e) { error = 'error: [unserializable]' }
+                }
               }
+              next(error, result, tx)
             }
-            next(error, result, tx)
-          }
-        )
+          )
+        }
+
+        guardPluginTransactionCommit(
+          args,
+          (callback) => self.executionContext.detectNetwork(callback),
+          commitTransaction
+        ).catch(next)
       }
     ],
     async (error, txResult, tx) => {
       if (error) {
-        return cb(error)
+        return cb(error, txResult, tx)
       }
 
       /*
@@ -721,7 +802,11 @@ class Blockchain {
           returnValue = execResult ? execResult.returnValue : toBuffer(addHexPrefix(txResult.result) || '0x0000000000000000000000000000000000000000000000000000000000000000')
           const vmError = txExecution.checkVMError(execResult, args.data.contractABI, args.data.contract)
           if (vmError.error) {
-            return cb(vmError.message)
+            // Keep the simulator result on the callback error path. The AI
+            // transaction adapter uses the hash to recover the concise
+            // decoded revert reason; callers that only consume the first
+            // argument retain the existing verbose terminal message.
+            return cb(vmError.message, txResult, tx)
           }
         }
       }

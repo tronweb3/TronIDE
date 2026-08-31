@@ -109,7 +109,7 @@ module.exports = {
       .click('*[data-id="Deploy - transact (not payable)"]')
       .pause(5000)
       .testFunction('last', {
-        status: 'true Transaction mined and execution succeed'
+        status: 'true Transaction mined and execution succeeded'
       })
   },
 
@@ -121,7 +121,7 @@ module.exports = {
       .click('*[data-id="pluginManagerSettingsDeployAndRunLLTxSendTransaction"]')
       .pause(5000)
       .testFunction('last', {
-        status: 'true Transaction mined and execution succeed'
+        status: 'true Transaction mined and execution succeeded'
       })
       // When this is removed and tests are running by connecting to metamask
       // Consider adding tests to check return value of contract call

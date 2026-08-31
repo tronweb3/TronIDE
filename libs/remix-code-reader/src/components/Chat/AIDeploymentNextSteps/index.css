@@ -1,0 +1,77 @@
+.ai-deploy-next {
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid var(--ai-dialogue-border, #d7dbe1);
+  border-left: 3px solid #c8302d;
+  background: var(--ai-dialogue, #fff);
+  color: var(--ai-dialogue-text, #30343b);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ai-deploy-next-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-deploy-next-head > div > strong {
+  font-size: 14px;
+}
+
+.ai-deploy-next-context {
+  margin-top: 3px;
+  color: #858b96;
+  overflow-wrap: anywhere;
+}
+
+.ai-deploy-next-dismiss {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.ai-deploy-next p {
+  margin: 8px 0 10px;
+  color: #858b96;
+}
+
+.ai-deploy-next-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+}
+
+.ai-deploy-next-grid button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid #d7dbe1;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-deploy-next-grid button:hover:not(:disabled),
+.ai-deploy-next-grid button:focus-visible {
+  border-color: #c8302d;
+  outline: 1px solid rgba(200, 48, 45, .2);
+}
+
+.ai-deploy-next-grid button:disabled {
+  cursor: wait;
+  opacity: .6;
+}
+
+.ai-deploy-next-grid span {
+  color: #858b96;
+  font-size: 11px;
+}

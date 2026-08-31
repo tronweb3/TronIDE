@@ -108,7 +108,11 @@ export class TxListener {
     })
 
     opt.event.udapp.register('transactionExecuted', (error, from, to, data, lookupOnly, txResult) => {
-      if (error) return
+      // A mined TRON transaction can fail on-chain while still carrying the
+      // exact tx and receipt needed by the terminal. Ignore pre-broadcast
+      // failures, but retain mined failures so users can inspect them instead
+      // of seeing the transaction disappear after signing.
+      if (error && (!txResult || !txResult.tx || !txResult.receipt)) return
       if (lookupOnly) return
       // we go for that case if
       // in VM mode

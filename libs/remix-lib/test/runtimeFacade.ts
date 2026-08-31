@@ -28,7 +28,7 @@ tape('runtimeFacade accepts a 256-bit callValue beyond the safe-integer range', 
 })
 
 tape('runtimeFacade builds transaction summary and invalidates stale pending signatures', function (t) {
-  t.plan(10)
+  t.plan(11)
 
   const facade = createRuntimeFacade({ kind: 'tvm', environment: 'injected', account: 'TAccount1', network: 'Nile' })
   const summary = facade.createTransactionSummary({
@@ -49,15 +49,23 @@ tape('runtimeFacade builds transaction summary and invalidates stale pending sig
   t.equal(facade.validatePendingTransaction(snapshot, { account: 'TAccount1', network: 'Nile' }).ok, true)
 
   const accountChanged = facade.validatePendingTransaction(snapshot, { account: 'TAccount2', network: 'Nile' })
-  t.equal(accountChanged.errors[0], 'Wallet account changed. Please reconnect TronLink.')
+  t.equal(accountChanged.errors[0], 'TronLink account changed. Reconnect to continue.')
+
+  const accountChangedDuringProbe = facade.validatePendingTransaction(snapshot, {
+    account: 'TAccount2',
+    accountAtProbeStart: 'TAccount1',
+    accountChangedDuringProbe: true,
+    network: 'Nile'
+  })
+  t.equal(accountChangedDuringProbe.errors[0], 'TronLink account changed. Reconnect to continue.')
 
   const networkChanged = facade.validatePendingTransaction(snapshot, { account: 'TAccount1', network: 'Shasta' })
-  t.equal(networkChanged.errors[0], 'Wallet network changed. Please review the selected network.')
+  t.equal(networkChanged.errors[0], 'TronLink network changed. Review the selected network.')
 
   // Regression: account vanishing (disconnect/lock) during pending signature must abort, not pass.
   const accountVanished = facade.validatePendingTransaction(snapshot, { network: 'Nile' })
   t.equal(accountVanished.ok, false, 'missing current account aborts the pending broadcast')
-  t.equal(accountVanished.errors[0], 'Wallet account changed. Please reconnect TronLink.')
+  t.equal(accountVanished.errors[0], 'TronLink account changed. Reconnect to continue.')
   // Network detection being transiently unavailable should NOT, by itself, abort.
   t.equal(facade.validatePendingTransaction(snapshot, { account: 'TAccount1' }).ok, true, 'missing current network does not false-abort')
 })

@@ -40,7 +40,7 @@ module.exports = {
     browser
       .addFile('test_jsCompile.js', { content: jsCompile })
       .executeTerminalScript('remix.exeCurrent()')
-      .waitForElementContainsText('*[data-id="terminalJournal"]', '"languageversion": "0.6.8+commit.0bbfe453"', 60000)
+      .waitForElementContainsText('*[data-id="terminalJournal"]', '"languageversion": "0.6.8+commit.f8ac1157"', 60000)
       .click('*[data-id="terminalClearConsole"]')
   },
 
@@ -66,12 +66,12 @@ module.exports = {
       .executeTerminalScript('remix.exeCurrent()')
       .pause(5000)
       .addFile('test_updateConfiguration.sol', { content: simpleContract })
-      .verifyContracts(['StorageTestUpdateConfiguration'], { wait: 5000, version: '0.6.8+commit.0bbfe453' })
+      .verifyContracts(['StorageTestUpdateConfiguration'], { wait: 5000, version: '0.6.8+commit.f8ac1157' })
   },
 
   'Should produce a stack too deep error': function (browser: NightwatchBrowser) {
     browser
-      .setSolidityCompilerVersion('soljson-v0.8.1+commit.df193b15.js')
+      .setSolidityCompilerVersion('soljson-v0.8.6+commit.0e36fba0.js')
       .addFile('ContractStackLimit.sol', { content: contractStackLimit })
       .clickLaunchIcon('solidity')
       .waitForElementContainsText('*[data-id="compiledErrors"]', 'CompilerError: Stack too deep when compiling inline assembly: Variable headStart is 1 slot(s) too deep inside the stack.', 60000)
@@ -119,7 +119,7 @@ const jsCompile = `(async () => {
           optimize: false,
           evmVersion: null,
           language: 'Solidity',
-          version: '0.6.8+commit.0bbfe453'
+          version: '0.6.8+commit.f8ac1157'
       }
       const result = await remix.call('solidity', 'compileWithParameters', contract, params)
       console.log('result ', result)
@@ -139,7 +139,7 @@ const jsCompileWithOptimization = `(async () => {
           runs: 300,
           evmVersion: null,
           language: 'Solidity',
-          version: '0.6.8+commit.0bbfe453'
+          version: '0.6.8+commit.f8ac1157'
       }
       const result = await remix.call('solidity', 'compileWithParameters', contract, params)
       console.log('result ', result)
@@ -170,7 +170,7 @@ const updateConfiguration = `(async () => {
           optimize: false,
           evmVersion: null,
           language: 'Solidity',
-          version: '0.6.8+commit.0bbfe453'
+          version: '0.6.8+commit.f8ac1157'
       }
       await remix.call('solidity', 'setCompilerConfig', params)
   } catch (e) {

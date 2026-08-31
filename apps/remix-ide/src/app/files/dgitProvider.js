@@ -29,35 +29,95 @@ import {
   saveAs
 } from 'file-saver'
 import * as githubAuth from '../../lib/github-auth'
+import { getGithubRepositoryAccess, GITHUB_BFF } from '../../lib/github-bff'
 
 const JSZip = require('jszip')
 const path = require('path')
 const FormData = require('form-data')
 const axios = require('axios')
+const { withUserPermission } = require('../ui/permission-security')
+const { normalizeGithubRemoteUrl, redactRemoteUrl } = require('../../lib/git-url-security')
 
 // CORS proxy for isomorphic-git smart-HTTP. The IDE is a static site so the
 // browser cannot reach github.com's git endpoints directly; isomorphic-git
-// routes every request through this proxy (our Deno OAuth service, which also
-// hosts the `/git/` forwarder). Change here if the Deno deployment URL changes.
-const GIT_CORS_PROXY = 'https://tronide-gh-oauth.redchar1992.deno.net/git'
+// routes every request through the configured BFF, which also hosts the
+// `/git/` forwarder. The base URL may include a reverse-proxy path prefix.
+const GIT_CORS_PROXY = GITHUB_BFF.baseUrl + '/git'
 
-// A trailing slash in a pasted repo URL (github.com/owner/repo/) survives into
-// the proxied path as '//', which the proxy's SSRF guard rejects — normalize
-// before it reaches isomorphic-git. Real git accepts both forms.
+// Explicit remote URLs are restricted to the GitHub HTTPS endpoint served by
+// the pinned proxy. Undefined means "use the configured remote" for fetch,
+// pull and push; an empty or malformed URL is never silently normalized.
 function normalizeGitUrl (url) {
-  if (!url) return undefined
-  return String(url).trim().replace(/\/+$/, '')
+  if (url === undefined || url === null) return undefined
+  return normalizeGithubRemoteUrl(url)
 }
 
-// isomorphic-git auth callback. GitHub accepts the personal/OAuth token as the
-// HTTP-basic *username* with a fixed password. The token now lives only in
-// memory (lib/github-auth) — never in sessionStorage — so we read it from there.
-// If absent (e.g. after a full reload), fail loudly so the UI can point the user
-// at "Connect to GitHub" instead of hanging on a 401 loop.
+function normalizeImportedRelativePath (filePath) {
+  if (typeof filePath !== 'string') throw new Error('IPFS file paths must be strings.')
+  const normalized = filePath.replace(/\\/g, '/')
+  const relative = normalized.replace(/^\/+/, '')
+  if (!relative || /^[A-Za-z]:/.test(relative) || [...relative].some(character => character.charCodeAt(0) < 0x20)) {
+    throw new Error('IPFS file paths must name a relative file.')
+  }
+  const segments = relative.split('/')
+  if (segments.some(segment => !segment || segment === '.' || segment === '..')) {
+    throw new Error('IPFS file paths must stay within the imported workspace.')
+  }
+  return segments.join('/')
+}
+
+// Every operation proactively sends only TronIDE's opaque BFF session header,
+// so private GitHub discovery succeeds on the first request. Keep onAuth as a
+// retry callback in case isomorphic-git receives a 401 after a session refresh.
 function gitOnAuth () {
-  const token = githubAuth.getToken()
-  if (!token) throw new Error('Connect GitHub first (use the "Connect to GitHub" button).')
-  return { username: token, password: 'x-oauth-basic' }
+  const session = githubAuth.getSession()
+  if (!session) throw new Error('Connect GitHub first (use the "Connect to GitHub" button).')
+  return { headers: { 'X-TronIDE-Session': session } }
+}
+
+function gitOnAuthFailure () {
+  // Do not clear the BFF session here: GitHub App installations intentionally
+  // return repository-specific 401/403 failures while the same user session
+  // can still be valid for gists and other selected repositories. The BFF and
+  // normal session validation clear only truly revoked upstream credentials.
+  return { cancel: true }
+}
+
+function githubOwnerRepo (url) {
+  try {
+    const target = new URL(normalizeGithubRemoteUrl(url))
+    const match = target.pathname.match(/^\/([^/]+)\/([^/]+?)(?:\.git)?$/)
+    return match ? { owner: match[1], repo: match[2] } : null
+  } catch (error) {
+    return null
+  }
+}
+
+async function githubRepositoryAccessHint (url) {
+  try {
+    const target = githubOwnerRepo(url)
+    if (!target) return ''
+    const status = await getGithubRepositoryAccess(target.owner, target.repo)
+    if (!status || !status.required) return ''
+    return status.installed
+      ? ' The repository may not be selected for the TronIDE GitHub App; manage repository access and try again.'
+      : ' Grant TronIDE access to this repository, then try again.'
+  } catch (error) {
+    console.debug('[dGitProvider] GitHub App installation lookup failed', error)
+    return ''
+  }
+}
+
+async function withGithubRepositoryAccessHint (error, url) {
+  const detail = String((error && error.message) || error || 'GitHub request failed.')
+  if (!/401|403|404|Unauthorized|Forbidden|Not Found|authentication/i.test(detail)) return error
+  const hint = await githubRepositoryAccessHint(url)
+  return hint ? new Error(detail + hint) : error
+}
+
+function gitSessionHeaders () {
+  const session = githubAuth.getSession()
+  return session ? { 'X-TronIDE-Session': session } : {}
 }
 
 // Pinata calls carry the pinata_secret_api_key in axios request headers. On
@@ -80,6 +140,7 @@ const profile = {
   description: '',
   icon: 'assets/img/fileManager.webp',
   version: '0.0.1',
+  permission: true,
   methods: ['init', 'status', 'log', 'commit', 'add', 'remove', 'rm', 'resetIndex', 'lsfiles', 'readblob', 'resolveref', 'branches', 'branch', 'checkout', 'currentbranch', 'workspaceIdentity', 'push', 'pin', 'pull', 'pinList', 'unPin', 'setIpfsConfig', 'zip', 'clone', 'fetchRemote', 'pullRemote', 'pushRemote', 'addRemote', 'listRemotes'],
   events: ['gitChanged'],
   kind: 'file-system'
@@ -101,6 +162,21 @@ class DGitProvider extends Plugin {
       protocol: 'https',
       ipfsurl: 'https://ipfs.io/ipfs/'
     }
+  }
+
+  callPluginMethod (key, args) {
+    // A remembered grant for ordinary pushes must never authorize a destructive
+    // force push. Use a separate permission target so an external plugin gets a
+    // force-specific prompt at this boundary even when it already has generic
+    // `pushRemote` permission.
+    const forcePush = key === 'pushRemote' && Array.isArray(args) && args[0] && args[0].force === true
+    const permissionKey = forcePush ? 'forcePushRemote' : key
+    const permissionMessage = forcePush
+      ? 'force push remote history through decentralized git'
+      : `use decentralized git capability ${key}`
+    return withUserPermission(this, permissionKey, permissionMessage, () => {
+      return super.callPluginMethod(key, args)
+    })
   }
 
   // isomorphic-git 1.36 binds a fixed command list onto the fs, including
@@ -143,6 +219,8 @@ class DGitProvider extends Plugin {
   }
 
   _beginGitMutation (action) {
+    const storage = window.tronideWorkspaceStorage
+    if (storage && storage.mode === 'indexeddb-mirror') storage.assertWritable()
     if (this._gitMutationOwner) {
       throw new Error(`Another Git operation is already in progress. Retry ${action} when it finishes.`)
     }
@@ -151,8 +229,19 @@ class DGitProvider extends Plugin {
     return token
   }
 
-  _endGitMutation (token) {
-    if (this._gitMutationOwner === token) this._gitMutationOwner = null
+  async _waitForWorkspaceDurability () {
+    const storage = window.tronideWorkspaceStorage
+    if (!storage || storage.mode !== 'indexeddb-mirror') return true
+    const checkpoint = storage.checkpoint()
+    await storage.whenDurable(checkpoint)
+    return true
+  }
+
+  async _endGitMutation (token, { skipDurability = false } = {}) {
+    if (this._gitMutationOwner !== token) return false
+    if (!skipDurability) await this._waitForWorkspaceDurability()
+    this._gitMutationOwner = null
+    return true
   }
 
   _emitGitChanged (operation) {
@@ -162,62 +251,138 @@ class DGitProvider extends Plugin {
     this.emit('gitChanged', { operation })
   }
 
-  async _mutationContext (cmd = {}) {
-    const { expectedWorkspace, expectedBranch, ...gitCmd } = cmd
+  _safeGitCommand (cmd, allowedKeys) {
+    if (cmd === undefined || cmd === null) return {}
+    if (typeof cmd !== 'object' || Array.isArray(cmd)) throw new Error('Git command arguments must be an object.')
+    const allowed = new Set(allowedKeys || [])
+    const unknown = Object.keys(cmd).filter((key) => !allowed.has(key))
+    if (unknown.length) throw new Error(`Unsupported Git command option(s): ${unknown.join(', ')}`)
+    const safePath = (value) => typeof value === 'string' && value.length > 0 && value.length <= 300 && !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(value) && !value.split(/[\\/]/).some((segment) => segment === '' || segment === '.' || segment === '..')
+    if (Object.prototype.hasOwnProperty.call(cmd, 'filepath') && !safePath(cmd.filepath)) throw new Error('Git file paths must stay within the current workspace.')
+    if (Object.prototype.hasOwnProperty.call(cmd, 'filepaths') && (!Array.isArray(cmd.filepaths) || cmd.filepaths.some((filepath) => !safePath(filepath)))) throw new Error('Git file paths must stay within the current workspace.')
+    return Object.keys(cmd).reduce((result, key) => {
+      result[key] = cmd[key]
+      return result
+    }, {})
+  }
+
+  async _assertExpectedRemote (config, expectedRemote) {
+    const remotes = await git.listRemotes(config)
+    if (expectedRemote === null) {
+      if (remotes.length) throw new Error('Remote configuration changed before the Git operation started. Nothing was changed.')
+      return
+    }
+    if (!expectedRemote || typeof expectedRemote !== 'object' || typeof expectedRemote.name !== 'string' || typeof expectedRemote.url !== 'string') {
+      throw new Error('Invalid approved remote context. Nothing was changed.')
+    }
+    const current = remotes.find((remote) => remote.remote === expectedRemote.name)
+    let expectedUrl
+    let currentUrl
+    try {
+      expectedUrl = normalizeGithubRemoteUrl(expectedRemote.url)
+      currentUrl = current && normalizeGithubRemoteUrl(current.url)
+    } catch (error) {
+      throw new Error('Only GitHub HTTPS remotes are supported. Nothing was changed.')
+    }
+    if (!current || currentUrl !== expectedUrl) {
+      throw new Error('Remote configuration changed before the Git operation started. Nothing was changed.')
+    }
+  }
+
+  async _remoteUrl (config, remoteName, explicitUrl) {
+    if (explicitUrl !== undefined && explicitUrl !== null) return normalizeGitUrl(explicitUrl)
+    const remotes = await git.listRemotes(config)
+    const remote = remotes.find((entry) => entry.remote === remoteName)
+    if (!remote) throw new Error(`Remote "${remoteName}" is not configured.`)
+    try { return normalizeGithubRemoteUrl(remote.url) } catch (error) {
+      throw new Error('Only GitHub HTTPS remotes are supported.')
+    }
+  }
+
+  async _mutationContext (cmd = {}, allowedKeys = []) {
+    if (cmd === undefined || cmd === null) cmd = {}
+    if (typeof cmd !== 'object' || Array.isArray(cmd)) throw new Error('Git command arguments must be an object.')
+    const { expectedWorkspace, expectedBranch, expectedRemote, ...rawGitCmd } = cmd
+    const gitCmd = this._safeGitCommand(rawGitCmd, allowedKeys)
     const config = await this.getGitConfig()
-    if (expectedWorkspace && config.dir !== expectedWorkspace) {
+    if (Object.prototype.hasOwnProperty.call(cmd, 'expectedWorkspace') && (typeof expectedWorkspace !== 'string' || !expectedWorkspace || config.dir !== expectedWorkspace)) {
       throw new Error('Workspace changed before the Git operation started. Nothing was changed.')
     }
     if (Object.prototype.hasOwnProperty.call(cmd, 'expectedBranch')) {
+      if (typeof expectedBranch !== 'string') throw new Error('Invalid approved branch context. Nothing was changed.')
       let currentBranch = ''
       try { currentBranch = await git.currentBranch(config) || '' } catch (e) { currentBranch = '' }
       if (currentBranch !== expectedBranch) {
         throw new Error('Branch changed before the Git operation started. Nothing was changed.')
       }
     }
+    if (Object.prototype.hasOwnProperty.call(cmd, 'expectedRemote')) await this._assertExpectedRemote(config, expectedRemote)
     return { config, gitCmd }
+  }
+
+  async _initializeGitMetadata (config) {
+    await git.init({ ...config, defaultBranch: 'main' })
+
+    // isomorphic-git treats an existing .git/config as proof that init already
+    // completed and returns without checking HEAD. Browser storage restores,
+    // interrupted workspace creation and older imports can therefore leave a
+    // usable index/config but no HEAD; the first commit then fails while trying
+    // to resolve the branch that should receive it. Repair only that unborn
+    // metadata edge. Never replace a detached or otherwise valid HEAD.
+    try {
+      await git.resolveRef({ ...config, ref: 'HEAD', depth: 2 })
+    } catch (error) {
+      const branches = await git.listBranches(config).catch(() => [])
+      // A repository with a local branch and no HEAD is ambiguous; silently
+      // pointing it at a new branch could create an unrelated root. Remote refs
+      // alone are expected after Add remote + Fetch on an unborn repository and
+      // do not prevent the user from making an intentional local root commit.
+      if (branches.length) throw new Error('Git HEAD is missing or invalid. Check out a valid branch before committing.')
+      await git.branch({ ...config, ref: 'main', checkout: true })
+    }
   }
 
   async init (cmd = {}) {
     const mutationToken = this._beginGitMutation('initializing the repository')
     try {
-      const { config } = await this._mutationContext(cmd)
-      await git.init({
-        ...config,
-        defaultBranch: 'main'
-      })
+      const { config } = await this._mutationContext(cmd, [])
+      await this._initializeGitMetadata(config)
       this._emitGitChanged('init')
     } finally {
-      this._endGitMutation(mutationToken)
+      await this._endGitMutation(mutationToken)
     }
   }
 
   async status (cmd) {
-    const config = await this.getGitConfig()
-    return this._verifiedStatusMatrix(config, cmd)
+    const { config, gitCmd } = await this._mutationContext(cmd, ['ref', 'filepaths'])
+    return this._verifiedStatusMatrix(config, gitCmd)
   }
 
   async add (cmd) {
     const mutationToken = this._beginGitMutation('staging files')
     try {
-      const { config, gitCmd } = await this._mutationContext(cmd)
+      const { config, gitCmd } = await this._mutationContext(cmd, ['filepath'])
       await git.add({ ...config, ...gitCmd })
       await this.call('fileManager', 'refresh')
       this._emitGitChanged('add')
     } finally {
-      this._endGitMutation(mutationToken)
+      await this._endGitMutation(mutationToken)
     }
+  }
+
+  async remove (cmd) {
+    return this.rm(cmd)
   }
 
   async rm (cmd) {
     const mutationToken = this._beginGitMutation('staging file deletions')
     try {
-      const { config, gitCmd } = await this._mutationContext(cmd)
+      const { config, gitCmd } = await this._mutationContext(cmd, ['filepath'])
       await git.remove({ ...config, ...gitCmd })
       await this.call('fileManager', 'refresh')
       this._emitGitChanged('rm')
     } finally {
-      this._endGitMutation(mutationToken)
+      await this._endGitMutation(mutationToken)
     }
   }
 
@@ -227,12 +392,12 @@ class DGitProvider extends Plugin {
   async resetIndex (cmd) {
     const mutationToken = this._beginGitMutation('unstaging files')
     try {
-      const { config, gitCmd } = await this._mutationContext(cmd)
+      const { config, gitCmd } = await this._mutationContext(cmd, ['filepath'])
       await git.resetIndex({ ...config, ...gitCmd })
       await this.call('fileManager', 'refresh')
       this._emitGitChanged('resetIndex')
     } finally {
-      this._endGitMutation(mutationToken)
+      await this._endGitMutation(mutationToken)
     }
   }
 
@@ -345,7 +510,7 @@ class DGitProvider extends Plugin {
       // Lock the active editor before saving/checking. This closes the remaining
       // check-to-checkout window and also serializes concurrent rewrites.
       rewriteToken = await this.call('fileManager', 'beginWorkspaceRewrite', { warningAfterMs: 65000 })
-      const mutation = await this._mutationContext(cmd)
+      const mutation = await this._mutationContext(cmd, ['ref', 'remote'])
       config = mutation.config
       // isomorphic-git 1.36 can silently overwrite staged changes and unstaged
       // deletions during checkout. Keep this guard at the provider boundary so
@@ -368,6 +533,7 @@ class DGitProvider extends Plugin {
 
     let reconciliationError = null
     let unlockError = null
+    let durabilityError = null
     try {
       // A checkout can fail after partially rewriting BrowserFS. Reconcile
       // from the bytes that actually landed on BOTH success and failure paths.
@@ -375,6 +541,11 @@ class DGitProvider extends Plugin {
       // lookup rejects, unlocking the old Ace buffer would let autosave corrupt
       // the newly checked-out bytes.
       if (checkoutStarted && config) {
+        // AsyncMirror changes the in-memory worktree synchronously, but the
+        // editor must not become writable until those exact Git bytes have
+        // reached IndexedDB. Otherwise a successful-looking checkout can be
+        // lost on reload and then overwritten by autosave.
+        try { await this._waitForWorkspaceDurability() } catch (error) { durabilityError = error }
         try {
           const landedMatrix = await this._verifiedStatusMatrix(config)
           landedMatrix.forEach((row) => rewritePaths.add(row[0]))
@@ -386,7 +557,7 @@ class DGitProvider extends Plugin {
       // Fail closed. A known-stale editor is kept read-only if reconciliation
       // failed; the user is told to reload instead of being allowed to autosave
       // source-branch content over the target branch.
-      if (rewriteToken !== undefined && !reconciliationError) {
+      if (rewriteToken !== undefined && !reconciliationError && !durabilityError) {
         try {
           const unlocked = await this.call('fileManager', 'endWorkspaceRewrite', rewriteToken)
           if (unlocked !== true) unlockError = new Error('The editor rejected the Git rewrite token.')
@@ -396,7 +567,7 @@ class DGitProvider extends Plugin {
       // A failed reconcile/unlock poisons the session until reload. Keep the
       // provider mutation lease as well as the editor lock so a direct or AI
       // commit/push cannot publish a partially rewritten worktree.
-      if (!reconciliationError && !unlockError) this._endGitMutation(mutationToken)
+      if (!reconciliationError && !unlockError && !durabilityError) await this._endGitMutation(mutationToken, { skipDurability: checkoutStarted })
     }
 
     if (reconciliationError) {
@@ -406,6 +577,10 @@ class DGitProvider extends Plugin {
     if (unlockError) {
       const original = operationError ? `${(operationError && operationError.message) || operationError} ` : ''
       throw new Error(`${original}Checkout finished, but the editor safety lock could not be released. Reload TronIDE. Details: ${(unlockError && unlockError.message) || unlockError}`)
+    }
+    if (durabilityError) {
+      const original = operationError ? `${(operationError && operationError.message) || operationError} ` : ''
+      throw new Error(`${original}Checkout reached memory but could not be saved to IndexedDB. The editor remains protected; retry local storage recovery or reload before editing. Details: ${(durabilityError && durabilityError.message) || durabilityError}`)
     }
     if (operationError) throw operationError
     this._emitGitChanged('checkout')
@@ -423,10 +598,8 @@ class DGitProvider extends Plugin {
   }
 
   async log (cmd) {
-    const status = await git.log({
-      ...await this.getGitConfig(),
-      ...cmd
-    })
+    const { config, gitCmd } = await this._mutationContext(cmd, ['ref', 'depth', 'since', 'until', 'author', 'committer', 'order', 'follow', 'skip'])
+    const status = await git.log({ ...config, ...gitCmd })
     return status
   }
 
@@ -444,7 +617,7 @@ class DGitProvider extends Plugin {
       if (cmd && cmd.checkout) {
         rewriteToken = await this.call('fileManager', 'beginWorkspaceRewrite', { warningAfterMs: 65000 })
       }
-      const { config, gitCmd } = await this._mutationContext(cmd)
+      const { config, gitCmd } = await this._mutationContext(cmd, ['ref', 'checkout'])
       status = await git.branch({ ...config, ...gitCmd })
       await this.call('fileManager', 'refresh')
     } catch (error) {
@@ -452,7 +625,11 @@ class DGitProvider extends Plugin {
     }
 
     let unlockError = null
+    let durabilityError = null
     if (rewriteToken !== undefined) {
+      try { await this._waitForWorkspaceDurability() } catch (error) { durabilityError = error }
+    }
+    if (rewriteToken !== undefined && !durabilityError) {
       try {
         const unlocked = await this.call('fileManager', 'endWorkspaceRewrite', rewriteToken)
         if (unlocked !== true) unlockError = new Error('The editor rejected the Git branch-change token.')
@@ -460,12 +637,16 @@ class DGitProvider extends Plugin {
     }
     // As with checkout/pull, keep the Git mutation lease poisoned if the
     // provider write fence cannot be released safely.
-    if (!unlockError) {
-      this._endGitMutation(mutationToken)
+    if (!unlockError && !durabilityError) {
+      await this._endGitMutation(mutationToken, { skipDurability: rewriteToken !== undefined })
     }
     if (unlockError) {
       const original = operationError ? `${(operationError && operationError.message) || operationError} ` : ''
       throw new Error(`${original}The branch changed, but the editor safety lock could not be released. Reload TronIDE. Details: ${(unlockError && unlockError.message) || unlockError}`)
+    }
+    if (durabilityError) {
+      const original = operationError ? `${(operationError && operationError.message) || operationError} ` : ''
+      throw new Error(`${original}The branch changed in memory but could not be saved to IndexedDB. The editor remains protected; retry local storage recovery or reload before editing. Details: ${(durabilityError && durabilityError.message) || durabilityError}`)
     }
     if (operationError) throw operationError
     this._emitGitChanged('branch')
@@ -480,21 +661,18 @@ class DGitProvider extends Plugin {
   }
 
   async branches (cmd) {
-    cmd = cmd || {}
-    const branches = await git.listBranches({
-      ...await this.getGitConfig(),
-      remote: cmd.remote || undefined
-    })
+    const { config, gitCmd } = await this._mutationContext(cmd || {}, ['remote'])
+    const branches = await git.listBranches({ ...config, remote: gitCmd.remote || undefined })
     return branches
   }
 
   async commit (cmd) {
     const mutationToken = this._beginGitMutation('committing changes')
     try {
-      const { config, gitCmd } = await this._mutationContext(cmd)
+      const { config, gitCmd } = await this._mutationContext(cmd, ['message', 'author', 'committer'])
       // Avoid calling the public init() here: commit already owns the mutation
       // lease, and a nested acquisition would either race or deadlock.
-      await git.init({ ...config, defaultBranch: 'main' })
+      await this._initializeGitMetadata(config)
       const sha = await git.commit({
         ...config,
         ...gitCmd
@@ -505,36 +683,30 @@ class DGitProvider extends Plugin {
       console.error('Git commit failed:', e)
       throw e
     } finally {
-      this._endGitMutation(mutationToken)
+      await this._endGitMutation(mutationToken)
     }
   }
 
   async lsfiles (cmd) {
-    const filesInStaging = await git.listFiles({
-      ...await this.getGitConfig(),
-      ...cmd
-    })
+    const { config, gitCmd } = await this._mutationContext(cmd, ['ref'])
+    const filesInStaging = await git.listFiles({ ...config, ...gitCmd })
     return filesInStaging
   }
 
   async resolveref (cmd) {
-    const oid = await git.resolveRef({
-      ...await this.getGitConfig(),
-      ...cmd
-    })
+    const { config, gitCmd } = await this._mutationContext(cmd, ['ref'])
+    const oid = await git.resolveRef({ ...config, ...gitCmd })
     return oid
   }
 
   async readblob (cmd) {
-    const readBlobResult = await git.readBlob({
-      ...await this.getGitConfig(),
-      ...cmd
-    })
+    const { config, gitCmd } = await this._mutationContext(cmd, ['oid', 'filepath'])
+    const readBlobResult = await git.readBlob({ ...config, ...gitCmd })
     return readBlobResult
   }
 
   // ---------------------------------------------------------------------------
-  // Remote git (GitHub) over smart-HTTP via isomorphic-git + the Deno CORS proxy.
+  // Remote git (GitHub) over smart-HTTP via isomorphic-git + the BFF CORS proxy.
   // These are DISTINCT from the IPFS push/pull above. They run in the browser
   // against the current workspace fs. Network reads stay shallow to keep
   // browser memory bounded while retaining all remote branch refs.
@@ -543,26 +715,32 @@ class DGitProvider extends Plugin {
   // Clone a remote repo into the current workspace dir. Keep the clone shallow
   // for browser storage, but retain every remote branch ref so the branch
   // picker can discover and check out non-default branches.
-  // `cmd`: { url, branch?, depth?, dir?, singleBranch? }
+  // `cmd`: { url, branch?, depth?, singleBranch? }
   async clone (cmd) {
     const mutationToken = this._beginGitMutation('cloning the repository')
+    let remoteUrl = ''
     try {
-      const { config, gitCmd } = await this._mutationContext(cmd || {})
+      const { config, gitCmd } = await this._mutationContext(cmd || {}, ['url', 'branch', 'depth', 'singleBranch'])
+      remoteUrl = normalizeGitUrl(gitCmd.url)
       await git.clone({
         ...config,
-        dir: gitCmd.dir || config.dir,
+        dir: config.dir,
         http,
         corsProxy: GIT_CORS_PROXY,
-        url: normalizeGitUrl(gitCmd.url),
+        headers: gitSessionHeaders(),
+        url: remoteUrl,
         ref: gitCmd.branch || undefined,
         singleBranch: gitCmd.singleBranch === true,
         depth: gitCmd.depth || 1,
-        onAuth: gitOnAuth
+        onAuth: gitOnAuth,
+        onAuthFailure: gitOnAuthFailure
       })
       await this.call('fileManager', 'refresh')
       this._emitGitChanged('clone')
+    } catch (error) {
+      throw await withGithubRepositoryAccessHint(error, remoteUrl)
     } finally {
-      this._endGitMutation(mutationToken)
+      await this._endGitMutation(mutationToken)
     }
   }
 
@@ -570,15 +748,19 @@ class DGitProvider extends Plugin {
   // `cmd`: { url?, remote?, branch?, ref?, singleBranch? }
   async fetchRemote (cmd) {
     const mutationToken = this._beginGitMutation('fetching remote branches')
+    let remoteUrl = ''
     try {
-      const { config, gitCmd } = await this._mutationContext(cmd || {})
+      const { config, gitCmd } = await this._mutationContext(cmd || {}, ['url', 'remote', 'branch', 'ref', 'singleBranch', 'depth'])
       const singleBranch = gitCmd.singleBranch === true || !!gitCmd.branch
+      const remote = gitCmd.remote || 'origin'
+      remoteUrl = await this._remoteUrl(config, remote, gitCmd.url)
       const result = await git.fetch({
         ...config,
         http,
         corsProxy: GIT_CORS_PROXY,
-        url: normalizeGitUrl(gitCmd.url),
-        remote: gitCmd.remote || 'origin',
+        headers: gitSessionHeaders(),
+        url: remoteUrl,
+        remote,
         // isomorphic-git tries to resolve the local HEAD when ref is omitted,
         // which fails for the exact Add-remote-on-an-unborn-repo flow. Remote
         // HEAD is a safe negotiation target while singleBranch=false still
@@ -588,12 +770,15 @@ class DGitProvider extends Plugin {
         // what makes Add remote / Fetch populate the complete branch picker.
         singleBranch,
         depth: gitCmd.depth || 1,
-        onAuth: gitOnAuth
+        onAuth: gitOnAuth,
+        onAuthFailure: gitOnAuthFailure
       })
       this._emitGitChanged('fetchRemote')
       return result
+    } catch (error) {
+      throw await withGithubRepositoryAccessHint(error, remoteUrl)
     } finally {
-      this._endGitMutation(mutationToken)
+      await this._endGitMutation(mutationToken)
     }
   }
 
@@ -602,14 +787,16 @@ class DGitProvider extends Plugin {
     const mutationToken = this._beginGitMutation('pulling remote changes')
     let rewriteToken
     let config
+    let remoteUrl = ''
     let localRewriteStarted = false
     let operationError = null
     const rewritePaths = new Set()
     try {
-      const mutation = await this._mutationContext(cmd || {})
+      const mutation = await this._mutationContext(cmd || {}, ['url', 'remote', 'branch', 'author'])
       config = mutation.config
       const gitCmd = mutation.gitCmd
       const remote = gitCmd.remote || 'origin'
+      remoteUrl = await this._remoteUrl(config, remote, gitCmd.url)
       const startingBranch = await git.currentBranch(config)
       const ref = gitCmd.branch || startingBranch
       if (!ref) throw new Error('Check out a branch before pulling.')
@@ -626,11 +813,13 @@ class DGitProvider extends Plugin {
         cache,
         http,
         corsProxy: GIT_CORS_PROXY,
-        url: normalizeGitUrl(gitCmd.url),
+        headers: gitSessionHeaders(),
+        url: remoteUrl,
         remote,
         ref,
         singleBranch: true,
-        onAuth: gitOnAuth
+        onAuth: gitOnAuth,
+        onAuthFailure: gitOnAuthFailure
       })
 
       // Fetch is intentionally allowed to update remote-tracking refs, just
@@ -672,8 +861,10 @@ class DGitProvider extends Plugin {
 
     let reconciliationError = null
     let unlockError = null
+    let durabilityError = null
     try {
       if (localRewriteStarted && config) {
+        try { await this._waitForWorkspaceDurability() } catch (error) { durabilityError = error }
         try {
           const landedMatrix = await this._verifiedStatusMatrix(config)
           landedMatrix.forEach((row) => rewritePaths.add(row[0]))
@@ -686,14 +877,14 @@ class DGitProvider extends Plugin {
           reconciliationError = error
         }
       }
-      if (rewriteToken !== undefined && !reconciliationError) {
+      if (rewriteToken !== undefined && !reconciliationError && !durabilityError) {
         try {
           const unlocked = await this.call('fileManager', 'endWorkspaceRewrite', rewriteToken)
           if (unlocked !== true) unlockError = new Error('The editor rejected the Git rewrite token.')
         } catch (error) { unlockError = error }
       }
     } finally {
-      if (!reconciliationError && !unlockError) this._endGitMutation(mutationToken)
+      if (!reconciliationError && !unlockError && !durabilityError) await this._endGitMutation(mutationToken, { skipDurability: localRewriteStarted })
     }
 
     if (reconciliationError) {
@@ -704,7 +895,11 @@ class DGitProvider extends Plugin {
       const original = operationError ? `${(operationError && operationError.message) || operationError} ` : ''
       throw new Error(`${original}Pull finished, but the editor safety lock could not be released. Reload TronIDE. Details: ${(unlockError && unlockError.message) || unlockError}`)
     }
-    if (operationError) throw operationError
+    if (durabilityError) {
+      const original = operationError ? `${(operationError && operationError.message) || operationError} ` : ''
+      throw new Error(`${original}Pull reached memory but could not be saved to IndexedDB. The editor remains protected; retry local storage recovery or reload before editing. Details: ${(durabilityError && durabilityError.message) || durabilityError}`)
+    }
+    if (operationError) throw await withGithubRepositoryAccessHint(operationError, remoteUrl)
     this._emitGitChanged('pullRemote')
   }
 
@@ -714,17 +909,23 @@ class DGitProvider extends Plugin {
   // inspect the result and throw a clear message.
   async pushRemote (cmd) {
     const mutationToken = this._beginGitMutation('pushing remote changes')
+    let remoteUrl = ''
     try {
-      const { config, gitCmd } = await this._mutationContext(cmd || {})
+      const { config, gitCmd } = await this._mutationContext(cmd || {}, ['url', 'remote', 'branch', 'force'])
+      if (Object.prototype.hasOwnProperty.call(gitCmd, 'force') && typeof gitCmd.force !== 'boolean') throw new Error('The Git force option must be boolean.')
+      const remote = gitCmd.remote || 'origin'
+      remoteUrl = await this._remoteUrl(config, remote, gitCmd.url)
       const result = await git.push({
         ...config,
         http,
         corsProxy: GIT_CORS_PROXY,
-        url: normalizeGitUrl(gitCmd.url),
-        remote: gitCmd.remote || 'origin',
+        headers: gitSessionHeaders(),
+        url: remoteUrl,
+        remote,
         ref: gitCmd.branch || undefined,
         force: !!gitCmd.force,
-        onAuth: gitOnAuth
+        onAuth: gitOnAuth,
+        onAuthFailure: gitOnAuthFailure
       })
       if (result && result.ok === false) {
         const reason = (result.error) || (result.errors && result.errors.join('; ')) || 'push rejected'
@@ -732,8 +933,10 @@ class DGitProvider extends Plugin {
       }
       this._emitGitChanged('pushRemote')
       return result
+    } catch (error) {
+      throw await withGithubRepositoryAccessHint(error, remoteUrl)
     } finally {
-      this._endGitMutation(mutationToken)
+      await this._endGitMutation(mutationToken)
     }
   }
 
@@ -741,23 +944,23 @@ class DGitProvider extends Plugin {
   async addRemote (cmd) {
     const mutationToken = this._beginGitMutation('adding a remote')
     try {
-      const { config, gitCmd } = await this._mutationContext(cmd || {})
+      const { config, gitCmd } = await this._mutationContext(cmd || {}, ['name', 'url'])
       await git.addRemote({
         ...config,
         remote: gitCmd.name,
-        url: gitCmd.url,
-        force: true
+        url: normalizeGithubRemoteUrl(gitCmd.url)
       })
       this._emitGitChanged('addRemote')
     } finally {
-      this._endGitMutation(mutationToken)
+      await this._endGitMutation(mutationToken)
     }
   }
 
   async listRemotes () {
-    return git.listRemotes({
+    const remotes = await git.listRemotes({
       ...await this.getGitConfig()
     })
+    return remotes.map((remote) => ({ ...remote, url: redactRemoteUrl(remote.url) }))
   }
 
   async setIpfsConfig (config) {
@@ -895,9 +1098,7 @@ class DGitProvider extends Plugin {
   async pull (cmd) {
     const mutationToken = this._beginGitMutation('importing files from IPFS')
     try {
-      const permission = await this.askUserPermission('pull', 'Import multiple files into your workspaces.')
       console.log(this.ipfsconfig)
-      if (!permission) return false
       const cid = cmd.cid
       if (!cmd.local) {
         this.ipfs = IpfsHttpClient(this.globalIPFSConfig)
@@ -905,31 +1106,31 @@ class DGitProvider extends Plugin {
         if (!await this.checkIpfsConfig()) return false
       }
       await this.call('filePanel', 'createWorkspace', `workspace_${Date.now()}`, false)
-      const workspace = await this.call('filePanel', 'getCurrentWorkspace')
+      const mutationContext = await this.call('fileManager', 'captureWorkspaceMutationContext', '/')
       for await (const file of this.ipfs.get(cid)) {
-        file.path = file.path.replace(cid, '')
         if (!file.content) {
           continue
         }
+        const cidPrefix = `${cid}/`
+        const slashCidPrefix = `/${cid}/`
+        let rawPath = file.path
+        if (rawPath === cid || rawPath === `/${cid}`) continue
+        if (rawPath.startsWith(cidPrefix)) rawPath = rawPath.slice(cidPrefix.length)
+        else if (rawPath.startsWith(slashCidPrefix)) rawPath = rawPath.slice(slashCidPrefix.length)
+        const relativePath = normalizeImportedRelativePath(rawPath)
         const content = []
         for await (const chunk of file.content) {
           content.push(chunk)
         }
-        const dir = path.dirname(file.path)
         try {
-          this.createDirectories(`${workspace.absolutePath}/${dir}`)
+          await this.call('fileManager', 'writeFile', relativePath, Buffer.concat(content) || new Uint8Array(), mutationContext)
         } catch (e) {
-          console.error(`Failed to create directories for ${file.path}:`, e)
-        }
-        try {
-          window.remixFileSystem.writeFileSync(`${workspace.absolutePath}/${file.path}`, Buffer.concat(content) || new Uint8Array())
-        } catch (e) {
-          console.error(`Failed to write file ${file.path}:`, e)
+          console.error(`Failed to write file ${relativePath}:`, e)
         }
       }
       this.call('fileManager', 'refresh')
     } finally {
-      this._endGitMutation(mutationToken)
+      await this._endGitMutation(mutationToken)
     }
   }
 

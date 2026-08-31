@@ -41,15 +41,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
         with:
           version: 10.12.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 20.19.2
           cache: pnpm
@@ -57,11 +57,28 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Validate GitHub BFF configuration
+        env:
+          TRONIDE_GITHUB_BFF_ORIGIN: ${{ vars.TRONIDE_GITHUB_BFF_ORIGIN }}
+        run: |
+          if [ -z "$TRONIDE_GITHUB_BFF_ORIGIN" ]; then
+            echo "::error::Set the TRONIDE_GITHUB_BFF_ORIGIN repository variable before deploying."
+            exit 1
+          fi
+          case "$TRONIDE_GITHUB_BFF_ORIGIN" in
+            https://*) ;;
+            *)
+              echo "::error::TRONIDE_GITHUB_BFF_ORIGIN must be an HTTPS base URL."
+              exit 1
+              ;;
+          esac
+
       # build.sh runs the production nx build (baseHref "./", path-agnostic) and
       # normalises index.html. Output: build/apps/remix-ide.
       - name: Build
         env:
           NODE_OPTIONS: --max-old-space-size=6144
+          TRONIDE_GITHUB_BFF_ORIGIN: ${{ vars.TRONIDE_GITHUB_BFF_ORIGIN }}
         run: bash build.sh
 
       # Pages serves a CNAME file as the custom domain. A push to main always
@@ -75,7 +92,7 @@ jobs:
           if [ -n "$CUSTOM_DOMAIN" ]; then echo "$CUSTOM_DOMAIN" > build/apps/remix-ide/CNAME; fi
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: build/apps/remix-ide
 
@@ -89,4 +106,4 @@ jobs:
     steps:
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

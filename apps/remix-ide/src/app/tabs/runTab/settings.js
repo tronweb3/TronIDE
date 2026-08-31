@@ -227,7 +227,11 @@ class SettingsUI {
       value = value.mul(this.getValueUnitMultiplier())
     }
 
-    if (['value', 'gasLimit', 'tokenId', 'tokenValue'].includes(id) && value.gt(SAFE_INTEGER_MAX)) {
+    // Transaction value is a 256-bit SUN quantity and can exceed the
+    // JavaScript safe-integer limit; the execution runners preserve it as a
+    // decimal string/BigInt. Fee and TRC10 fields still use the legacy
+    // number-based APIs and must remain within the safe range.
+    if (['gasLimit', 'tokenId', 'tokenValue'].includes(id) && value.gt(SAFE_INTEGER_MAX)) {
       return txIntegerUtils.formatSafeIntegerRangeError(this.getFieldLabel(id))
     }
 
@@ -931,7 +935,8 @@ class SettingsUI {
     return {
       provider: this.blockchain.getProvider(),
       network: this.netUI ? this.netUI.innerText : '',
-      account
+      account,
+      walletProvider: this.blockchain.getProvider() === 'injected' ? this.blockchain.web3() : null
     }
   }
 
@@ -939,9 +944,14 @@ class SettingsUI {
     const txOrigin = this.el.querySelector('#txorigin')
     const currentAccount = txOrigin && txOrigin.selectedOptions[0] ? txOrigin.selectedOptions[0].value : ''
     const currentContext = this.getSignMessageContext(currentAccount)
+    const liveWalletAccount = currentContext.provider === 'injected' && typeof window !== 'undefined'
+      ? window.tronWeb?.defaultAddress?.base58 || ''
+      : currentAccount
     return currentContext.provider === expectedContext.provider &&
       currentContext.network === expectedContext.network &&
-      currentContext.account === expectedContext.account
+      currentContext.account === expectedContext.account &&
+      liveWalletAccount === expectedContext.account &&
+      currentContext.walletProvider === expectedContext.walletProvider
   }
 
   showSignMessageConfirmation (context, message, messageHash, okCb, cancelCb) {

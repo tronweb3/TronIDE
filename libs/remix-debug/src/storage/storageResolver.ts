@@ -31,6 +31,7 @@ export class StorageResolver {
   maxSize
   web3
   zeroSlot
+  pendingStorageByAddress
 
   constructor (options) {
     this.storageByAddress = {}
@@ -38,6 +39,7 @@ export class StorageResolver {
     this.maxSize = 100
     this.web3 = options.web3
     this.zeroSlot = '0x0000000000000000000000000000000000000000000000000000000000000000'
+    this.pendingStorageByAddress = {}
   }
 
   /**
@@ -105,19 +107,31 @@ export class StorageResolver {
    */
   async storageRangeInternal (self, slotKey, tx, stepIndex, address) {
     var cached = this.fromCache(self, address)
-    if (cached && cached.storage[slotKey]) { // we have the current slot in the cache and maybe the next 1000...
+    if (cached && cached.storage && cached.storage[slotKey]) { // we have the current slot in the cache and maybe the next 1000...
       return cached.storage
     }
-    const result = await this.storageRangeWeb3Call(tx, address, slotKey, self.maxSize)
-    const [storage, nextKey] = result
-    if (!storage[slotKey] && slotKey !== self.zeroSlot) { // we don't cache the zero slot (could lead to inconsistency)
-      storage[slotKey] = { key: slotKey, value: self.zeroSlot }
+    const pendingBySlot = self.pendingStorageByAddress[address] || (self.pendingStorageByAddress[address] = {})
+    if (pendingBySlot[slotKey]) return pendingBySlot[slotKey]
+
+    const pending = (async () => {
+      const result = await self.storageRangeWeb3Call(tx, address, slotKey, self.maxSize)
+      const [storage, nextKey] = result
+      if (!storage[slotKey] && slotKey !== self.zeroSlot) { // we don't cache the zero slot (could lead to inconsistency)
+        storage[slotKey] = { key: slotKey, value: self.zeroSlot }
+      }
+      self.toCache(self, address, storage)
+      if (slotKey === self.zeroSlot && !nextKey) { // only working if keys are sorted !!
+        self.storageByAddress[address].complete = true
+      }
+      return self.storageByAddress[address].storage
+    })()
+    pendingBySlot[slotKey] = pending
+    try {
+      return await pending
+    } finally {
+      if (pendingBySlot[slotKey] === pending) delete pendingBySlot[slotKey]
+      if (Object.keys(pendingBySlot).length === 0) delete self.pendingStorageByAddress[address]
     }
-    self.toCache(self, address, storage)
-    if (slotKey === self.zeroSlot && !nextKey) { // only working if keys are sorted !!
-      self.storageByAddress[address].complete = true
-    }
-    return storage
   }
 
   /**

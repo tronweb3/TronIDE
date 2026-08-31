@@ -92,6 +92,6 @@ Clean checkout reproduction:
 pnpm install --frozen-lockfile --ignore-scripts
 ```
 
-A fully fresh checkout that runs normal `pnpm install` also needs network access for the documented postinstall compiler download.
+A fully fresh checkout should run `pnpm setup-workspace` after `pnpm install`; that explicit bootstrap step needs network access for the compiler download.
 
 Current unsupported browser coverage: this environment provides Chromium-based browser smoke only. A non-Chromium run cannot be executed from the available Hermes browser tool here, so the non-Chromium part of that checklist item remains an environment limitation unless a Firefox/Safari-capable runner is provided.

@@ -21,7 +21,7 @@
 
 // import yo from 'yo-yo'
 import async from 'async'
-import { notification } from 'antd'
+import notification from 'antd/lib/notification'
 import { Plugin } from '@remixproject/engine'
 import * as packageJson from '../../../../../package.json'
 const EventEmitter = require('events')
@@ -29,6 +29,7 @@ const globalRegistry = require('../../global/registry')
 // const toaster = require('../ui/tooltip')
 const modalDialogCustom = require('../ui/modal-dialog-custom')
 const helper = require('../../lib/helper.js')
+const { hasUserPermission, requireUserPermission } = require('../ui/permission-security')
 
 /*
   attach to files event (removed renamed)
@@ -46,6 +47,7 @@ const profile = {
   // replace worktree files. getOpenedFiles lets the AI panel see which tabs
   // are open without a key ever leaving.
   methods: ['file', 'exists', 'open', 'writeFile', 'readFile', 'copyFile', 'copyDir', 'rename', 'mkdir', 'readdir', 'remove', 'getCurrentFile', 'getOpenedFiles', 'getFile', 'getFolder', 'setFile', 'switchFile', 'refresh', 'getProviderOf', 'getProviderByName', 'saveCurrentFileChecked', 'captureWorkspaceMutationContext', 'beginWorkspaceRewrite', 'endWorkspaceRewrite', 'syncEditor', 'reconcileOpenFilesAfterRewrite'],
+  events: ['currentFileChanged', 'fileAdded', 'fileClosed', 'fileRemoved', 'fileRenamed', 'fileSaved', 'filesAllClosed', 'noFileSelected'],
   kind: 'file-system'
 }
 const errorMsg = {
@@ -73,15 +75,49 @@ class FileManager extends Plugin {
     this._components = {}
     this._components.registry = globalRegistry
     this.appManager = appManager
+    // Invalidate callbacks from reads that started before a workspace or
+    // provider switch. BrowserFS callbacks are asynchronous, so a read that
+    // resumes after closeAllFiles must never repopulate the editor session.
+    this._fileReadEpoch = 0
     this.init()
   }
 
+  _withUserPermission (method, message, action) {
+    if (!this.currentRequest) return action()
+    return requireUserPermission(this, method, message).then(action)
+  }
+
   getOpenedFiles () {
-    return this.openedFiles
+    return this._withUserPermission('getOpenedFiles', 'inspect opened files', () => this.openedFiles)
   }
 
   setMode (mode) {
+    if (mode !== this.mode) this._fileReadEpoch++
     this.mode = mode
+  }
+
+  _captureFileReadContext (path, provider) {
+    const readContext = {
+      epoch: this._fileReadEpoch,
+      provider,
+      mutationContext: undefined
+    }
+    if (provider && typeof provider.captureMutationContext === 'function') {
+      try { readContext.mutationContext = provider.captureMutationContext() } catch (error) {}
+    }
+    return readContext
+  }
+
+  _isFileReadContextCurrent (path, readContext) {
+    if (!readContext || readContext.epoch !== this._fileReadEpoch) return false
+    if (this.fileProviderOf(path) !== readContext.provider) return false
+    if (readContext.mutationContext && typeof readContext.provider.captureMutationContext === 'function') {
+      let currentContext
+      try { currentContext = readContext.provider.captureMutationContext() } catch (error) { return false }
+      return currentContext && currentContext.workspace === readContext.mutationContext.workspace &&
+        currentContext.generation === readContext.mutationContext.generation
+    }
+    return true
   }
 
   _assertNoWorkspaceRewrite (action) {
@@ -123,13 +159,26 @@ class FileManager extends Plugin {
   }
 
   captureWorkspaceMutationContext (path = '/') {
-    path = this.limitPluginScope(path)
-    const context = this._captureWorkspaceMutationContext(path)
-    if (!context) throw new Error('The active workspace could not be bound to this file operation.')
-    return context
+    return this._withUserPermission('captureWorkspaceMutationContext', `bind ${path} to the active workspace`, () => {
+      path = this.limitPluginScope(path)
+      const context = this._captureWorkspaceMutationContext(path)
+      if (!context) throw new Error('The active workspace could not be bound to this file operation.')
+      return context
+    })
   }
 
   limitPluginScope (path) {
+    if (typeof path !== 'string') throw new TypeError('File paths must be strings')
+    // `browser` is the BrowserFS provider namespace, not a plugin-visible
+    // directory. Only the complete `browser/` prefix may be translated to a
+    // workspace-relative path; otherwise `browser` exposes the root (and
+    // `browserfoo` could be routed to the provider by prefix matching).
+    const isBrowserNamespace = path === 'browser' || path === '/browser' ||
+      (path.startsWith('browser') && !path.startsWith('browser/')) ||
+      (path.startsWith('/browser') && !path.startsWith('/browser/'))
+    if (this.currentRequest && isBrowserNamespace) {
+      throw new Error('Browser provider root paths are not available to plugins.')
+    }
     return path.replace(/^\/browser\//, '').replace(/^browser\//, '') // forbids plugin to access the root filesystem
   }
 
@@ -139,7 +188,7 @@ class FileManager extends Plugin {
    * @param {string} message message to display if path doesn't exist.
    */
   async _handleExists (path, message) {
-    const exists = await this.exists(path)
+    const exists = await this._exists(path)
 
     if (!exists) {
       throw createError({ code: 'ENOENT', message })
@@ -174,14 +223,17 @@ class FileManager extends Plugin {
 
   /** The current opened file */
   file () {
-    try {
-      const file = this.currentFile()
+    return this._withUserPermission('file', 'get the current file', () => this._currentFileOrThrow())
+  }
 
-      if (!file) throw createError({ code: 'ENOENT', message: 'No file selected' })
-      return file
-    } catch (e) {
-      throw new Error(e)
-    }
+  getCurrentFile () {
+    return this._withUserPermission('getCurrentFile', 'get the current file', () => this._currentFileOrThrow())
+  }
+
+  _currentFileOrThrow () {
+    const file = this.currentFile()
+    if (!file) throw createError({ code: 'ENOENT', message: 'No file selected' })
+    return file
   }
 
   /**
@@ -192,19 +244,25 @@ class FileManager extends Plugin {
   exists (path) {
     try {
       path = this.limitPluginScope(path)
-      const provider = this.fileProviderOf(path)
-      const result = provider.exists(path)
-
-      return result
+      return this._withUserPermission('exists', `check whether ${path} exists`, () => this._exists(path))
     } catch (e) {
       throw new Error(e)
     }
+  }
+
+  _exists (path) {
+    const provider = this.fileProviderOf(path)
+    return provider.exists(path)
   }
 
   /*
   * refresh the file explorer
   */
   refresh (changedPaths = []) {
+    return this._withUserPermission('refresh', 'refresh the file explorer', () => this._refresh(changedPaths))
+  }
+
+  _refresh (changedPaths = []) {
     const provider = this.fileProviderOf('/')
     // emit folderAdded so that File Explorer reloads the file tree
     provider.event.emit('folderAdded', '/')
@@ -262,12 +320,27 @@ class FileManager extends Plugin {
   async open (path) {
     try {
       path = this.limitPluginScope(path)
-      await this._handleExists(path, `Cannot open file ${path}`)
-      await this._handleIsFile(path, `Cannot open file ${path}`)
-      return this.openFile(path)
+      await requireUserPermission(this, 'open', `open ${path}`)
+      return this._open(path)
     } catch (e) {
       throw new Error(e)
     }
+  }
+
+  async switchFile (path) {
+    try {
+      path = this.limitPluginScope(path)
+      await requireUserPermission(this, 'switchFile', `open ${path}`)
+      return this._open(path)
+    } catch (e) {
+      throw new Error(e)
+    }
+  }
+
+  async _open (path) {
+    await this._handleExists(path, `Cannot open file ${path}`)
+    await this._handleIsFile(path, `Cannot open file ${path}`)
+    return this.openFile(path)
   }
 
   /**
@@ -282,17 +355,35 @@ class FileManager extends Plugin {
       this._assertNoWorkspaceRewrite('write files')
       path = this.limitPluginScope(path)
       if (writeContext === undefined) writeContext = this._captureWorkspaceMutationContext(path)
-      if (await this.exists(path)) {
-        await this._handleIsFile(path, `Cannot write file ${path}`)
-        return await this.setFileContent(path, data, writeContext)
-      } else {
-        const ret = await this.setFileContent(path, data, writeContext)
-        this.emit('fileAdded', path)
-        return ret
-      }
+      await requireUserPermission(this, 'writeFile', `modify ${path}`)
+      return this._writeFile(path, data, writeContext)
     } catch (e) {
       throw new Error(e)
     }
+  }
+
+  async setFile (path, data, mutationContext) {
+    let writeContext = mutationContext
+    try {
+      this._assertNoWorkspaceRewrite('write files')
+      path = this.limitPluginScope(path)
+      if (writeContext === undefined) writeContext = this._captureWorkspaceMutationContext(path)
+      await requireUserPermission(this, 'setFile', `modify ${path}`)
+      return this._writeFile(path, data, writeContext)
+    } catch (e) {
+      throw new Error(e)
+    }
+  }
+
+  async _writeFile (path, data, mutationContext) {
+    const writeContext = mutationContext === undefined ? this._captureWorkspaceMutationContext(path) : mutationContext
+    if (await this._exists(path)) {
+      await this._handleIsFile(path, `Cannot write file ${path}`)
+      return await this.setFileContent(path, data, writeContext)
+    }
+    const ret = await this.setFileContent(path, data, writeContext)
+    this.emit('fileAdded', path)
+    return ret
   }
 
   /**
@@ -303,12 +394,27 @@ class FileManager extends Plugin {
   async readFile (path) {
     try {
       path = this.limitPluginScope(path)
-      await this._handleExists(path, `Cannot read file ${path}`)
-      await this._handleIsFile(path, `Cannot read file ${path}`)
-      return this.getFileContent(path)
+      await requireUserPermission(this, 'readFile', `read ${path}`)
+      return this._readFile(path)
     } catch (e) {
       throw new Error(e)
     }
+  }
+
+  async getFile (path) {
+    try {
+      path = this.limitPluginScope(path)
+      await requireUserPermission(this, 'getFile', `read ${path}`)
+      return this._readFile(path)
+    } catch (e) {
+      throw new Error(e)
+    }
+  }
+
+  async _readFile (path) {
+    await this._handleExists(path, `Cannot read file ${path}`)
+    await this._handleIsFile(path, `Cannot read file ${path}`)
+    return this.getFileContent(path)
   }
 
   /**
@@ -324,18 +430,24 @@ class FileManager extends Plugin {
       src = this.limitPluginScope(src)
       dest = this.limitPluginScope(dest)
       if (writeContext === undefined) writeContext = this._captureWorkspaceMutationContext(dest)
-      await this._handleExists(src, `Cannot copy from ${src}. Path does not exist.`)
-      await this._handleIsFile(src, `Cannot copy from ${src}. Path is not a file.`)
-      await this._handleExists(dest, `Cannot paste content into ${dest}. Path does not exist.`)
-      await this._handleIsDir(dest, `Cannot paste content into ${dest}. Path is not directory.`)
-      const content = await this.readFile(src)
-      let copiedFilePath = dest + (customName ? '/' + customName : '/' + `Copy_${helper.extractNameFromKey(src)}`)
-      copiedFilePath = await helper.createNonClashingNameAsync(copiedFilePath, this)
-
-      await this.writeFile(copiedFilePath, content, writeContext)
+      await requireUserPermission(this, 'copyFile', `copy ${src} into ${dest}`)
+      await this._saveActiveCopySource(src, false)
+      return this._copyFile(src, dest, customName, writeContext)
     } catch (e) {
       throw new Error(e)
     }
+  }
+
+  async _copyFile (src, dest, customName, mutationContext) {
+    await this._handleExists(src, `Cannot copy from ${src}. Path does not exist.`)
+    await this._handleIsFile(src, `Cannot copy from ${src}. Path is not a file.`)
+    await this._handleExists(dest, `Cannot paste content into ${dest}. Path does not exist.`)
+    await this._handleIsDir(dest, `Cannot paste content into ${dest}. Path is not directory.`)
+    const content = await this._readFile(src)
+    let copiedFilePath = dest + (customName ? '/' + customName : '/' + `Copy_${helper.extractNameFromKey(src)}`)
+    copiedFilePath = await helper.createNonClashingNameAsync(copiedFilePath, this._permissionlessFileLookup())
+
+    await this._writeFile(copiedFilePath, content, mutationContext)
   }
 
   /**
@@ -351,30 +463,61 @@ class FileManager extends Plugin {
       src = this.limitPluginScope(src)
       dest = this.limitPluginScope(dest)
       if (writeContext === undefined) writeContext = this._captureWorkspaceMutationContext(dest)
-      await this._handleExists(src, `Cannot copy from ${src}. Path does not exist.`)
-      await this._handleIsDir(src, `Cannot copy from ${src}. Path is not a directory.`)
-      await this._handleExists(dest, `Cannot paste content into ${dest}. Path does not exist.`)
-      await this._handleIsDir(dest, `Cannot paste content into ${dest}. Path is not directory.`)
-      await this.inDepthCopy(src, dest, 0, writeContext)
+      await requireUserPermission(this, 'copyDir', `copy directory ${src} into ${dest}`)
+      await this._saveActiveCopySource(src, true)
+      return this._copyDir(src, dest, writeContext)
     } catch (e) {
       throw new Error(e)
     }
   }
 
-  async inDepthCopy (src, dest, count = 0, mutationContext) {
-    const content = await this.readdir(src)
-    let copiedFolderPath = count === 0 ? dest + '/' + `Copy_${helper.extractNameFromKey(src)}` : dest + '/' + helper.extractNameFromKey(src)
-    copiedFolderPath = await helper.createNonClashingDirNameAsync(copiedFolderPath, this)
+  async _saveActiveCopySource (src, isDirectory) {
+    const currentFile = this._deps.config.get('currentFile')
+    if (!currentFile || !this.editor.current()) return
 
-    await this.mkdir(copiedFolderPath, mutationContext)
+    const normalize = (value) => String(value).replace(/^\/+/, '').replace(/\/+$/, '')
+    const sourcePath = normalize(src)
+    const currentPath = normalize(currentFile)
+    const containsCurrentFile = isDirectory
+      ? currentPath === sourcePath || currentPath.startsWith(sourcePath + '/')
+      : currentPath === sourcePath
+
+    // Copy reads provider bytes, not the live editor buffer. Flush the active
+    // source through the durable save barrier first so an immediate copy can
+    // never reproduce an older or empty on-disk version.
+    if (containsCurrentFile) await this._saveCurrentFileChecked()
+  }
+
+  async _copyDir (src, dest, mutationContext) {
+    await this._handleExists(src, `Cannot copy from ${src}. Path does not exist.`)
+    await this._handleIsDir(src, `Cannot copy from ${src}. Path is not a directory.`)
+    await this._handleExists(dest, `Cannot paste content into ${dest}. Path does not exist.`)
+    await this._handleIsDir(dest, `Cannot paste content into ${dest}. Path is not directory.`)
+    return this._inDepthCopy(src, dest, 0, mutationContext)
+  }
+
+  async inDepthCopy (src, dest, count = 0, mutationContext) {
+    return this._inDepthCopy(src, dest, count, mutationContext)
+  }
+
+  async _inDepthCopy (src, dest, count = 0, mutationContext) {
+    const content = await this._readdir(src)
+    let copiedFolderPath = count === 0 ? dest + '/' + `Copy_${helper.extractNameFromKey(src)}` : dest + '/' + helper.extractNameFromKey(src)
+    copiedFolderPath = await helper.createNonClashingDirNameAsync(copiedFolderPath, this._permissionlessFileLookup())
+
+    await this._mkdir(copiedFolderPath, mutationContext)
 
     for (const [key, value] of Object.entries(content)) {
       if (!value.isDirectory) {
-        await this.copyFile(key, copiedFolderPath, helper.extractNameFromKey(key), mutationContext)
+        await this._copyFile(key, copiedFolderPath, helper.extractNameFromKey(key), mutationContext)
       } else {
-        await this.inDepthCopy(key, copiedFolderPath, count + 1, mutationContext)
+        await this._inDepthCopy(key, copiedFolderPath, count + 1, mutationContext)
       }
     }
+  }
+
+  _permissionlessFileLookup () {
+    return { exists: (path) => this._exists(this.limitPluginScope(path)) }
   }
 
   /**
@@ -390,9 +533,10 @@ class FileManager extends Plugin {
       oldPath = this.limitPluginScope(oldPath)
       newPath = this.limitPluginScope(newPath)
       if (mutationContext === undefined) mutationContext = this._captureWorkspaceMutationContext(oldPath)
+      await requireUserPermission(this, 'rename', `rename ${oldPath} to ${newPath}`)
       await this._handleExists(oldPath, `Cannot rename ${oldPath}`)
       const isFile = await this.isFile(oldPath)
-      const newPathExists = await this.exists(newPath)
+      const newPathExists = await this._exists(newPath)
       const provider = this.fileProviderOf(oldPath)
 
       if (isFile) {
@@ -424,15 +568,19 @@ class FileManager extends Plugin {
       this._assertNoWorkspaceRewrite('create folders')
       path = this.limitPluginScope(path)
       if (writeContext === undefined) writeContext = this._captureWorkspaceMutationContext(path)
-      if (await this.exists(path)) {
-        throw createError({ code: 'EEXIST', message: `Cannot create directory ${path}` })
-      }
-      const provider = this.fileProviderOf(path)
-
-      return provider.createDir(path, undefined, writeContext)
+      await requireUserPermission(this, 'mkdir', `create directory ${path}`)
+      return this._mkdir(path, writeContext)
     } catch (e) {
       throw new Error(e)
     }
+  }
+
+  async _mkdir (path, mutationContext) {
+    if (await this._exists(path)) {
+      throw createError({ code: 'EEXIST', message: `Cannot create directory ${path}` })
+    }
+    const provider = this.fileProviderOf(path)
+    return provider.createDir(path, undefined, mutationContext)
   }
 
   /**
@@ -443,20 +591,34 @@ class FileManager extends Plugin {
   async readdir (path) {
     try {
       path = this.limitPluginScope(path)
-      await this._handleExists(path)
-      await this._handleIsDir(path)
-
-      return new Promise((resolve, reject) => {
-        const provider = this.fileProviderOf(path)
-
-        provider.resolveDirectory(path, (error, filesProvider) => {
-          if (error) reject(error)
-          resolve(filesProvider)
-        })
-      })
+      await requireUserPermission(this, 'readdir', `list directory ${path}`)
+      return this._readdir(path)
     } catch (e) {
       throw new Error(e)
     }
+  }
+
+  async getFolder (path) {
+    try {
+      path = this.limitPluginScope(path)
+      await requireUserPermission(this, 'getFolder', `list directory ${path}`)
+      return this._readdir(path)
+    } catch (e) {
+      throw new Error(e)
+    }
+  }
+
+  async _readdir (path) {
+    await this._handleExists(path)
+    await this._handleIsDir(path)
+
+    return new Promise((resolve, reject) => {
+      const provider = this.fileProviderOf(path)
+      provider.resolveDirectory(path, (error, filesProvider) => {
+        if (error) reject(error)
+        else resolve(filesProvider)
+      })
+    })
   }
 
   /**
@@ -470,6 +632,7 @@ class FileManager extends Plugin {
       this._assertNoWorkspaceRewrite('remove files')
       path = this.limitPluginScope(path)
       if (mutationContext === undefined) mutationContext = this._captureWorkspaceMutationContext(path)
+      await requireUserPermission(this, 'remove', `remove ${path}`)
       await this._handleExists(path, `Cannot remove file or directory ${path}`)
       const provider = this.fileProviderOf(path)
       return await provider.remove(path, mutationContext)
@@ -498,12 +661,6 @@ class FileManager extends Plugin {
     this._deps.workspaceExplorer.event.on('fileRenamed', (oldName, newName, isFolder) => { this.fileRenamedEvent(oldName, newName, isFolder) })
     this._deps.workspaceExplorer.event.on('fileRemoved', (path) => { this.fileRemovedEvent(path) })
     this._deps.workspaceExplorer.event.on('fileAdded', (path) => { this.fileAddedEvent(path) })
-
-    this.getCurrentFile = this.file
-    this.getFile = this.readFile
-    this.getFolder = this.readdir
-    this.setFile = this.writeFile
-    this.switchFile = this.open
   }
 
   fileAddedEvent (path) {
@@ -553,6 +710,7 @@ class FileManager extends Plugin {
   }
 
   closeAllFiles () {
+    this._fileReadEpoch++
     // TODO: Only keep `this.emit` (issue#2210)
     this.emit('filesAllClosed')
     this.events.emit('filesAllClosed')
@@ -589,11 +747,20 @@ class FileManager extends Plugin {
     const provider = this.fileProviderOf(path)
 
     if (!provider) throw createError({ code: 'ENOENT', message: `${path} not available` })
+    const readContext = this._captureFileReadContext(path, provider)
     // TODO: change provider to Promise
     return new Promise((resolve, reject) => {
-      if (this.currentFile() === path) return resolve(this.editor.currentContent())
+      if (this.currentFile() === path) {
+        if (!this._isFileReadContextCurrent(path, readContext)) {
+          return reject(new Error(`File read for ${path} was invalidated by a workspace change.`))
+        }
+        return resolve(this.editor.currentContent())
+      }
       provider.get(path, (err, content) => {
-        if (err) reject(err)
+        if (err) return reject(err)
+        if (!this._isFileReadContextCurrent(path, readContext)) {
+          return reject(new Error(`File read for ${path} was invalidated by a workspace change.`))
+        }
         resolve(content)
       })
     })
@@ -602,7 +769,6 @@ class FileManager extends Plugin {
   async setFileContent (path, content, mutationContext) {
     const writeContext = mutationContext === undefined ? this._captureWorkspaceMutationContext(path) : mutationContext
     if (this.currentRequest) {
-      const canCall = await this.askUserPermission('writeFile', '')
       // Derived build outputs (contracts/artifacts/*) are rewritten on EVERY
       // compile the user just clicked — two "is modifying" toasts per compile
       // is pure noise. Exempt the PATH class rather than one hardcoded writer
@@ -610,7 +776,7 @@ class FileManager extends Plugin {
       // adding a second artifact writer must not resurrect the noise, and a
       // plugin writing outside artifacts/ still notifies.
       const isDerivedArtifactWrite = /(^|\/)artifacts\//.test(path)
-      if (canCall && !isDerivedArtifactWrite) {
+      if (!isDerivedArtifactWrite) {
         // inform the user about modification after permission is granted and even if permission was saved before
         // toaster(yo`
         //   <div>
@@ -664,7 +830,7 @@ class FileManager extends Plugin {
     return new Promise((resolve, reject) => {
       provider.set(path, content, (error) => {
         if (error) return reject(error)
-        this.syncEditor(path)
+        this._syncEditor(path)
         this.emit('fileSaved', path)
         resolve(true)
       }, writeContext)
@@ -729,9 +895,11 @@ class FileManager extends Plugin {
           return resolve(false)
         }
         file = provider.getPathFromUrl(file) || file // in case an external URL is given as input, we resolve it to the right internal path
+        const readContext = this._captureFileReadContext(file, provider)
         this._deps.config.set('currentFile', file)
         this.openedFiles[file] = file
         provider.get(file, (error, content) => {
+          if (!this._isFileReadContextCurrent(file, readContext) || this._deps.config.get('currentFile') !== file) return resolve(false)
           if (error) {
             console.log(error)
             return resolve(false)
@@ -786,10 +954,8 @@ class FileManager extends Plugin {
   */
 
   async getProviderOf (file) {
-    const cancall = await this.askUserPermission('getProviderByName')
-    if (cancall) {
-      return file ? this.fileProviderOf(file) : this.currentFileProvider()
-    }
+    if (!await hasUserPermission(this, 'getProviderOf', 'inspect a file provider')) return
+    return file ? this.fileProviderOf(file) : this.currentFileProvider()
   }
 
   /**
@@ -799,10 +965,8 @@ class FileManager extends Plugin {
   */
 
   async getProviderByName (name) {
-    const cancall = await this.askUserPermission('getProviderByName')
-    if (cancall) {
-      return this.getProvider(name)
-    }
+    if (!await hasUserPermission(this, 'getProviderByName', 'inspect a named file provider')) return
+    return this.getProvider(name)
   }
 
   getProvider (name) {
@@ -810,10 +974,11 @@ class FileManager extends Plugin {
   }
 
   fileProviderOf (file) {
-    if (file.startsWith('localhost') || this.mode === 'localhost') {
+    if (typeof file !== 'string') throw new TypeError('File paths must be strings')
+    if (file === 'localhost' || file.startsWith('localhost/') || this.mode === 'localhost') {
       return this._deps.filesProviders.localhost
     }
-    if (file.startsWith('browser')) {
+    if (file === 'browser' || file.startsWith('browser/')) {
       return this._deps.filesProviders.browser
     }
     return this._deps.filesProviders.workspace
@@ -855,8 +1020,13 @@ class FileManager extends Plugin {
       if ((input !== null) && (input !== undefined)) {
         var provider = this.fileProviderOf(currentFile)
         if (provider) {
-          provider.set(currentFile, input)
-          this.emit('fileSaved', currentFile)
+          provider.set(currentFile, input, (error) => {
+            if (error) {
+              console.error(`Could not persist ${currentFile}:`, error)
+              return
+            }
+            this.emit('fileSaved', currentFile)
+          })
         } else {
           console.log('cannot save ' + currentFile + '. Does not belong to any explorer')
         }
@@ -865,6 +1035,10 @@ class FileManager extends Plugin {
   }
 
   saveCurrentFileChecked (rewriteToken) {
+    return this._withUserPermission('saveCurrentFileChecked', 'save the current file before a workspace rewrite', () => this._saveCurrentFileChecked(rewriteToken))
+  }
+
+  _saveCurrentFileChecked (rewriteToken) {
     if (this._workspaceRewriteLock && this._workspaceRewriteLock.token !== rewriteToken) {
       return Promise.reject(new Error('A Git workspace rewrite is already in progress. Save cancelled.'))
     }
@@ -935,6 +1109,10 @@ class FileManager extends Plugin {
   }
 
   beginWorkspaceRewrite (options = {}) {
+    return this._withUserPermission('beginWorkspaceRewrite', 'lock the active workspace for a Git rewrite', () => this._beginWorkspaceRewrite(options))
+  }
+
+  _beginWorkspaceRewrite (options = {}) {
     if (this._workspaceRewriteLock) throw new Error('Another workspace rewrite is already in progress.')
     if (this._workspaceMutationOwner !== null) throw new Error('A workspace change is already in progress. Retry the Git operation when it finishes.')
     const token = ++this._workspaceRewriteToken
@@ -979,6 +1157,10 @@ class FileManager extends Plugin {
   }
 
   endWorkspaceRewrite (token) {
+    return this._withUserPermission('endWorkspaceRewrite', 'unlock the active workspace after a Git rewrite', () => this._endWorkspaceRewrite(token))
+  }
+
+  _endWorkspaceRewrite (token) {
     if (!this._workspaceRewriteLock || this._workspaceRewriteLock.token !== token) return false
     // Do not make provider writes available until reconciliation has completed
     // and the owner token is validated at both layers.
@@ -1000,6 +1182,10 @@ class FileManager extends Plugin {
   }
 
   syncEditor (path) {
+    return this._withUserPermission('syncEditor', `reload ${path} in the editor`, () => this._syncEditor(path))
+  }
+
+  _syncEditor (path) {
     const currentFile = this._deps.config.get('currentFile')
     if (path !== currentFile) return Promise.resolve(false)
 
@@ -1009,10 +1195,12 @@ class FileManager extends Plugin {
       console.log(error.message)
       return Promise.resolve(false)
     }
+    const readContext = this._captureFileReadContext(currentFile, provider)
 
     return new Promise((resolve, reject) => {
       provider.get(currentFile, async (error, content) => {
         try {
+          if (!this._isFileReadContextCurrent(currentFile, readContext)) return resolve(false)
           if (this._deps.config.get('currentFile') !== currentFile || this.editor.current() !== currentFile) return resolve(false)
           if (error) {
             console.log(error)
@@ -1038,6 +1226,10 @@ class FileManager extends Plugin {
   }
 
   async reconcileOpenFilesAfterRewrite (rewriteToken) {
+    return this._withUserPermission('reconcileOpenFilesAfterRewrite', 'reconcile open files after a Git rewrite', () => this._reconcileOpenFilesAfterRewrite(rewriteToken))
+  }
+
+  async _reconcileOpenFilesAfterRewrite (rewriteToken) {
     if (this._workspaceRewriteLock && this._workspaceRewriteLock.token !== rewriteToken) {
       throw new Error('Only the active Git rewrite can reconcile editor sessions.')
     }
@@ -1069,7 +1261,7 @@ class FileManager extends Plugin {
       return { synced: true, fallback }
     }
     try {
-      const result = await this.syncEditor(currentFile)
+      const result = await this._syncEditor(currentFile)
       if (result === false) throw new Error('The active editor changed while Git was reconciling it.')
       return result
     } catch (error) {
@@ -1078,7 +1270,7 @@ class FileManager extends Plugin {
       this.fileRemovedEvent(currentFile)
       currentFile = this._deps.config.get('currentFile')
       if (currentFile) {
-        const result = await this.syncEditor(currentFile)
+        const result = await this._syncEditor(currentFile)
         if (result === false) throw new Error('Could not reconcile the replacement editor tab after the Git workspace update.')
         return result
       }
@@ -1107,7 +1299,7 @@ class FileManager extends Plugin {
         } catch (e) {
           return callback(e.message || e)
         }
-        self.syncEditor(fileProvider + file)
+        self._syncEditor(fileProvider + file)
         return callback()
       }
 
@@ -1124,7 +1316,7 @@ class FileManager extends Plugin {
             } catch (e) {
               return callback(e.message || e)
             }
-            self.syncEditor(fileProvider + name)
+            self._syncEditor(fileProvider + name)
           }
           callback()
         })

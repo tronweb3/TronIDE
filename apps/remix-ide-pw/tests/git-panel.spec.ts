@@ -63,6 +63,91 @@ test.describe('Git panel (local)', () => {
     await expect(page.locator('[data-id="gitBranchHint"]')).toContainText(/first commit/i)
   })
 
+  test('TC-GIT-020: first commit repairs a repository whose HEAD metadata is missing', { tag: '@gate' }, async ({ page }) => {
+    await openHome(page)
+
+    // Browser storage restores and interrupted imports can retain .git/config
+    // while losing .git/HEAD. isomorphic-git init treats config as sufficient
+    // and used to leave this half-initialized repository broken, so committing
+    // the staged template/sample files failed with "Could not find HEAD."
+    const workspace = await page.locator('select[data-id="workspacesSelect"]').inputValue()
+    await page.evaluate(({ workspace }) => {
+      const fs = (window as any).remixFileSystem
+      const gitdir = `.workspaces/${workspace}/.git`
+      try { fs.mkdirSync(gitdir) } catch (error) { /* already exists */ }
+      fs.writeFileSync(`${gitdir}/config`, '[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n')
+      try { fs.unlinkSync(`${gitdir}/HEAD`) } catch (error) { /* reproduced state */ }
+    }, { workspace })
+
+    await openGitPanel(page)
+    await page.locator('[data-id="gitStageAll"]').click()
+    await expect(page.locator('[data-id="gitUnstageFile"]').first()).toBeVisible({ timeout: 15_000 })
+    await page.locator('[data-id="gitCommitMessage"]').fill('recover first commit')
+    await page.locator('[data-id="gitCommit"]').click()
+
+    await expect(page.locator('[data-id="gitLogEntry"]').filter({ hasText: 'recover first commit' })).toBeVisible({ timeout: 15_000 })
+    await expect(page.locator('[data-id="gitBranchSelect"]')).toHaveValue('main')
+    await expect(page.locator('[data-id="gitStatus"]')).not.toContainText(/could not find head/i)
+  })
+
+  test('TC-GIT-021: missing HEAD with an existing local branch fails closed', { tag: '@gate' }, async ({ page }) => {
+    await openHome(page)
+    const workspace = await page.locator('select[data-id="workspacesSelect"]').inputValue()
+
+    // A local branch means this is not an unborn repository. Recovery must not
+    // silently point HEAD at a new unrelated root and commit the current index.
+    await page.evaluate(({ workspace }) => {
+      const fs = (window as any).remixFileSystem
+      const gitdir = `.workspaces/${workspace}/.git`
+      const oid = '0123456789012345678901234567890123456789'
+      try { fs.mkdirSync(gitdir) } catch (error) { /* already exists */ }
+      try { fs.mkdirSync(`${gitdir}/refs`) } catch (error) { /* already exists */ }
+      try { fs.mkdirSync(`${gitdir}/refs/heads`) } catch (error) { /* already exists */ }
+      fs.writeFileSync(`${gitdir}/config`, '[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n')
+      fs.writeFileSync(`${gitdir}/refs/heads/existing`, `${oid}\n`)
+      try { fs.unlinkSync(`${gitdir}/HEAD`) } catch (error) { /* reproduced state */ }
+    }, { workspace })
+
+    await openGitPanel(page)
+    await page.locator('[data-id="gitStageAll"]').click()
+    await expect(page.locator('[data-id="gitUnstageFile"]').first()).toBeVisible({ timeout: 15_000 })
+    await page.locator('[data-id="gitCommitMessage"]').fill('must not commit')
+    await page.locator('[data-id="gitCommit"]').click()
+
+    await expect(page.locator('[data-id="gitStatus"]')).toContainText(/head is missing or invalid/i)
+    await expect(page.locator('[data-id="gitLogEntry"]')).toHaveCount(0)
+    const headExists = await page.evaluate(({ workspace }) => {
+      const fs = (window as any).remixFileSystem
+      return fs.existsSync(`.workspaces/${workspace}/.git/HEAD`)
+    }, { workspace })
+    expect(headExists).toBe(false)
+  })
+
+  test('TC-GIT-022: switching workspaces clears Git feedback from the previous workspace', { tag: '@gate' }, async ({ page }) => {
+    await openHome(page)
+    await openGitPanel(page)
+    const initBtn = page.locator('[data-id="gitInit"]')
+    if (await initBtn.isVisible().catch(() => false)) await initBtn.click()
+
+    // Produce an unmistakable error in workspace A.
+    await page.locator('[data-id="gitCommitMessage"]').fill('nothing staged')
+    await page.locator('[data-id="gitCommit"]').click()
+    await expect(page.locator('[data-id="gitStatus"]')).toContainText(/stage at least one change/i)
+
+    // Create workspace B from the header. The workspace flow may focus File
+    // Explorer, but Git's retained state must already be clean when reopened.
+    await page.locator('[data-id="headerWorkspaceDropdown"]').click()
+    await page.locator('[data-id="headerCreateWorkspace"]').click()
+    await page.locator('input[data-id="modalDialogCustomPromptTextCreate"]').fill('git-status-clean-workspace')
+    await page.locator('select[data-id="modalDialogCustomSelectTemplate"]').selectOption('empty')
+    await page.locator('[data-id="workspacesModalDialog-modal-footer-ok-react"]').click()
+
+    await expect(page.locator('[data-id="headerWorkspaceDropdown"]')).toContainText('git-status-clean-workspace', { timeout: 15_000 })
+    await openGitPanel(page)
+    await expect(page.locator('[data-id="gitStatus"]')).toHaveCount(0)
+    await expect(page.locator('[data-id="gitCommitMessage"]')).toHaveValue('')
+  })
+
   test('TC-GIT-001: init → stage → commit → history', async ({ page }) => {
     await openHome(page)
     await openGitPanel(page)

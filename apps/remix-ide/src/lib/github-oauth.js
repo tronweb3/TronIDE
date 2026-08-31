@@ -5,76 +5,46 @@
  */
 
 /**
- * Connect to GitHub via the OAuth authorization popup instead of pasting a PAT.
+ * Start the server-owned GitHub OAuth flow.
  *
- * Flow (the IDE is static on GitHub Pages, so a tiny Deno proxy does the secret
- * exchange — see services/github-oauth):
- *   1. open a popup to GitHub's authorize URL (public client_id + state)
- *   2. user approves; GitHub redirects the popup to the proxy /callback
- *   3. the proxy exchanges code->token and postMessages { token, login, state }
- *      back to this window
- *   4. we verify origin + state and resolve { token, login }
- *
- * This module is pure: it only obtains the token. Apply it through the existing
- * connect path so the gist-token mirror and the header stay consistent, e.g.
- *
- *   import { connectWithGithubOAuth } from '../../lib/github-oauth'
- *   const { token, login } = await connectWithGithubOAuth()
- *   saveGithubToken(token)        // existing: stores for this tab (lib/github-auth)
- *   persistGithubUser(login)      // existing: header sync + 'tronideGithubConnectionChanged'
+ * The BFF generates and validates OAuth state + PKCE, exchanges the code,
+ * verifies /user, encrypts the GitHub token in KV, and postMessages only an
+ * opaque TronIDE session handle. The browser never receives a GitHub token.
  */
 
+import { assertBffReady, GITHUB_BFF } from './github-bff'
+
 export const GITHUB_OAUTH = {
-  // Public — the OAuth App client id (safe to ship; the secret lives in the Deno proxy).
-  clientId: 'Ov23liQFiVI9mMjBfAVK',
-  // The Deno proxy origin and its /callback (must equal the OAuth App callback URL).
-  proxyOrigin: 'https://tronide-gh-oauth.redchar1992.deno.net',
-  get redirectUri () { return this.proxyOrigin + '/callback' },
-  authorizeUrl: 'https://github.com/login/oauth/authorize',
-  // gist = read/write gists; repo = the local Git panel commit/push.
-  // KEEP `repo` (do not narrow to `public_repo`): the just-shipped remote-git
-  // feature (dgitProvider clone/push/pull, gitOnAuth) supports PRIVATE repos, and
-  // `public_repo` cannot push to them. The tab-scoped token store avoids
-  // persistent localStorage/config rather than narrowing the OAuth scope;
-  // tightening scope to fine-grained/auto-expiring tokens is Stage 2
-  // (GitHub App installation tokens), not this change.
-  scope: 'gist repo'
+  proxyOrigin: GITHUB_BFF.messageOrigin,
+  get startUrl () { return GITHUB_BFF.baseUrl + '/oauth/start' }
 }
 
-function randomState () {
-  const a = new Uint8Array(16)
-  ;(window.crypto || window.msCrypto).getRandomValues(a)
-  return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('')
+function randomChannel () {
+  const bytes = new Uint8Array(24)
+  ;(window.crypto || window.msCrypto).getRandomValues(bytes)
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
 }
 
 /**
- * @param {object} [opts]
- * @param {string} [opts.scope] override the requested scopes
- * @returns {Promise<{ token: string, login: string }>}
+ * @returns {Promise<{ session: string, login: string, userId: number, expiresAt: number }>}
  */
-export function connectWithGithubOAuth (opts = {}) {
+export function connectWithGithubOAuth () {
   return new Promise((resolve, reject) => {
-    if (!GITHUB_OAUTH.clientId || GITHUB_OAUTH.clientId.startsWith('<')) {
-      return reject(new Error('GitHub OAuth is not configured (missing client id).'))
-    }
-
-    const state = randomState()
-    const authorize = `${GITHUB_OAUTH.authorizeUrl}?` + new URLSearchParams({
-      client_id: GITHUB_OAUTH.clientId,
-      redirect_uri: GITHUB_OAUTH.redirectUri,
-      scope: opts.scope || GITHUB_OAUTH.scope,
-      state,
-      allow_signup: 'false'
+    let capabilities = null
+    const channel = randomChannel()
+    const start = `${GITHUB_OAUTH.startUrl}?` + new URLSearchParams({
+      origin: window.location.origin,
+      channel
     }).toString()
 
-    const w = 720
-    const h = 720
-    const left = window.screenX + Math.max(0, (window.outerWidth - w) / 2)
-    const top = window.screenY + Math.max(0, (window.outerHeight - h) / 2)
-    // A per-attempt name prevents an unrelated pre-existing named window from
-    // being reused as the OAuth browsing context.
-    const popup = window.open(authorize, 'tronide-github-oauth-' + state,
-      `width=${w},height=${h},left=${left},top=${top},resizable,scrollbars`)
+    const width = 720
+    const height = 720
+    const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2)
+    const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2)
+    // Open synchronously to satisfy popup blockers, but do not send users to a
+    // legacy proxy that would expose a GitHub token to the browser.
+    const popup = window.open('about:blank', 'tronide-github-oauth-' + channel,
+      `width=${width},height=${height},left=${left},top=${top},resizable,scrollbars`)
     if (!popup) return reject(new Error('Popup blocked — allow popups for this site, then try again.'))
 
     let settled = false
@@ -83,26 +53,47 @@ export function connectWithGithubOAuth (opts = {}) {
       clearInterval(closedTimer)
       clearTimeout(hardTimeout)
     }
-    const finish = (fn, arg) => { if (!settled) { settled = true; cleanup(); try { popup.close() } catch (e) {} fn(arg) } }
-
+    const finish = (fn, arg) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      try { popup.close() } catch (error) { console.debug('[githubOAuth] popup close failed', error) }
+      fn(arg)
+    }
     const onMessage = (event) => {
-      if (event.origin !== GITHUB_OAUTH.proxyOrigin) return
-      if (event.source !== popup) return
-      const d = event.data
-      if (!d || d.source !== 'tronide-github-oauth') return
-      if (d.state !== state) return finish(reject, new Error('GitHub OAuth state mismatch — aborted.'))
-      if (d.error) return finish(reject, new Error('GitHub authorization failed: ' + d.error))
-      if (!d.token) return finish(reject, new Error('GitHub authorization returned no token.'))
-      finish(resolve, { token: d.token, login: d.login || '' })
+      if (event.origin !== GITHUB_OAUTH.proxyOrigin || event.source !== popup) return
+      const data = event.data
+      if (!data || data.source !== 'tronide-github-oauth' || data.channel !== channel) return
+      if (data.error) return finish(reject, new Error('GitHub authorization failed: ' + data.error))
+      if (!/^[A-Za-z0-9_-]{43}$/.test(String(data.session || ''))) {
+        return finish(reject, new Error('GitHub authorization returned an invalid BFF session.'))
+      }
+      if (!data.login || !Number.isSafeInteger(Number(data.userId)) || Number(data.userId) <= 0) {
+        return finish(reject, new Error('GitHub authorization returned an unverified identity.'))
+      }
+      finish(resolve, {
+        session: String(data.session),
+        login: String(data.login || ''),
+        userId: Number(data.userId || 0),
+        expiresAt: Number(data.expiresAt || 0),
+        authProvider: capabilities && capabilities.authProvider ? capabilities.authProvider : 'oauth_app',
+        repositoryInstallationRequired: !!(capabilities && capabilities.repositoryInstallationRequired),
+        githubAppSlug: capabilities && capabilities.githubAppSlug ? capabilities.githubAppSlug : ''
+      })
     }
     window.addEventListener('message', onMessage)
 
-    // The user closed the popup without finishing.
     const closedTimer = setInterval(() => {
       if (popup.closed) finish(reject, new Error('GitHub connection cancelled.'))
     }, 500)
-
-    // Safety net so we never hang forever.
     const hardTimeout = setTimeout(() => finish(reject, new Error('GitHub connection timed out.')), 120000)
+
+    assertBffReady()
+      .then((readyCapabilities) => {
+        capabilities = readyCapabilities
+        if (popup.closed) return finish(reject, new Error('GitHub connection cancelled.'))
+        popup.location.replace(start)
+      })
+      .catch((error) => finish(reject, error))
   })
 }

@@ -93,7 +93,11 @@ export function analyseCallGraph (callGraph: Record<string, ContractCallGraph>, 
 function analyseCallGraphInternal (callGraph: Record<string, ContractCallGraph>, funcName: string, context: Context, combinator, nodeCheck: ((node: any, context: Context) => boolean), visited : Record<string, boolean>): boolean {
   const current: FunctionCallGraph | undefined = resolveCallGraphSymbol(callGraph, funcName)
 
-  if (current === undefined || visited[funcName] === true) return true
+  // An unresolved symbol is conservatively treated as a possible breaker, but
+  // a cycle itself is neutral: returning true here turns a pure recursive
+  // cycle into a false positive for the OR-based analyses.
+  if (current === undefined) return true
+  if (visited[funcName] === true) return false
   visited[funcName] = true
 
   return combinator(current.node.relevantNodes.reduce((acc, val) => combinator(acc, nodeCheck(val, context)), false),
@@ -116,7 +120,9 @@ function resolveCallGraphSymbolInternal (callGraph: Record<string, ContractCallG
       // resolve inheritance hierarchy
       if (current === undefined) {
         // resolve inheritance lookup in linearized fashion
-        const inheritsFromNames: string[] = currentContract.contract.inheritsFrom.reverse()
+        // Do not mutate the AST's linearized inheritance list. A second
+        // lookup must observe the same order as the first one.
+        const inheritsFromNames: string[] = [...currentContract.contract.inheritsFrom].reverse()
         for (let i = 0; i < inheritsFromNames.length; i++) {
           const res: FunctionCallGraph | undefined = resolveCallGraphSymbolInternal(callGraph, inheritsFromNames[i] + '.' + functionPart, true)
           if (!(res === undefined)) return res

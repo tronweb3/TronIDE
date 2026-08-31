@@ -33,11 +33,13 @@ export class TraceManager {
   traceAnalyser
   traceStepManager
   tx
+  _loadGeneration
 
   constructor (options) {
     this.web3 = options.web3
     this.isLoading = false
     this.trace = null
+    this._loadGeneration = 0
     this.traceCache = new TraceCache()
     this.traceAnalyser = new TraceAnalyser(this.traceCache)
     this.traceStepManager = new TraceStepManager(this.traceAnalyser)
@@ -47,14 +49,20 @@ export class TraceManager {
   async resolveTrace (tx) {
     this.tx = tx
     this.init()
+    const generation = this._loadGeneration
     if (!this.web3) throw new Error('web3 not loaded')
     this.isLoading = true
     try {
       const result = await this.getTrace(tx.hash)
+      if (generation !== this._loadGeneration) throw new Error('trace load superseded')
 
       // A trace can be empty if it's a simple value transfer, which is a valid case.
       // We should not throw an error.
-      this.trace = result['structLogs']
+      const traceResult: any = result
+      this.trace = Array.isArray(traceResult)
+        ? traceResult
+        : traceResult && Array.isArray(traceResult.structLogs) ? traceResult.structLogs : null
+      if (!this.trace) throw new Error('trace response does not contain structLogs')
       if (this.trace.length > 0) {
         // Only perform analysis if there are steps in the trace.
         try {
@@ -67,12 +75,12 @@ export class TraceManager {
         }
         this.traceAnalyser.analyse(this.trace, tx)
       }
-      this.isLoading = false
+      if (generation === this._loadGeneration) this.isLoading = false
       return true // return true even for an empty trace
     } catch (error) {
       console.log(error)
-      this.isLoading = false
-      throw new Error(error)
+      if (generation === this._loadGeneration) this.isLoading = false
+      throw error instanceof Error ? error : new Error(String(error))
     }
   }
 
@@ -94,6 +102,8 @@ export class TraceManager {
   init () {
     this.trace = null
     this.traceCache.init()
+    this.isLoading = false
+    this._loadGeneration++
   }
 
   getCurrentFork () {
@@ -102,7 +112,7 @@ export class TraceManager {
 
   // API section
   inRange (step) {
-    return this.isLoaded() && step >= 0 && step < this.trace.length
+    return this.isLoaded() && Number.isInteger(step) && step >= 0 && step < this.trace.length
   }
 
   isLoaded () {
@@ -299,7 +309,7 @@ export class TraceManager {
   checkRequestedStep (stepIndex) {
     if (!this.trace) {
       throw new Error('trace not loaded')
-    } else if (stepIndex >= this.trace.length) {
+    } else if (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex >= this.trace.length) {
       throw new Error('trace smaller than requested')
     }
   }

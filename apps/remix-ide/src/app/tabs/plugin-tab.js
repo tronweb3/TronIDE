@@ -21,12 +21,15 @@ var yo = require('yo-yo')
 var css = require('./styles/plugin-tab-styles')
 
 const ALLOWED_PROTOCOLS = ['http:', 'https:']
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])
 const PLUGIN_TAB_SANDBOX = 'allow-popups allow-scripts allow-same-origin allow-forms'
 
 function safePluginUrl (rawUrl) {
   try {
     const parsed = new URL(rawUrl, window.location.href)
     if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) return null
+    const hostname = parsed.hostname.replace(/^\[(.*)\]$/, '$1')
+    if (parsed.origin !== window.location.origin && !LOOPBACK_HOSTS.has(hostname)) return null
     return `${parsed.origin}${parsed.pathname.replace(/\/?$/, '/')}index.html`
   } catch (e) {
     return null

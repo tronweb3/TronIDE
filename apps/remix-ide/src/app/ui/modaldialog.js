@@ -20,31 +20,33 @@
 var yo = require('yo-yo')
 var css = require('./styles/modaldialog-styles')
 
-let incomingModal = false // in case modals are queued, ensure we are not hiding the last one.
+const modalQueue = []
+let activeRequest = null
+
 module.exports = (title, content, ok, cancel, focusSelector, opts) => {
+  const request = createRequest(title, content, ok, cancel, focusSelector, opts || {})
+  modalQueue.push(request)
+  drainQueue()
+  return request.controller
+}
+
+function createRequest (title, content, ok, cancel, focusSelector, opts) {
   let agreed = true
   let footerIsActive = false
-  opts = opts || {}
-  var container = document.getElementById('modal-dialog')
-  if (!container) {
-    document.querySelector('body').appendChild(html(opts))
-    container = document.getElementById('modal-dialog')
-    incomingModal = false
-  } else incomingModal = true
-
-  var closeDiv = document.getElementById('modal-close')
+  const container = html(opts)
+  const closeDiv = container.querySelector('#modal-close')
   if (opts.hideClose) closeDiv.style.display = 'none'
 
-  var okDiv = document.getElementById('modal-footer-ok')
+  const okDiv = container.querySelector('#modal-footer-ok')
   okDiv.textContent = (ok && ok.label !== undefined) ? ok.label : 'OK'
   okDiv.style.display = okDiv.textContent === '' ? 'none' : 'inline-block'
 
-  var cancelDiv = document.getElementById('modal-footer-cancel')
+  const cancelDiv = container.querySelector('#modal-footer-cancel')
   cancelDiv.textContent = (cancel && cancel.label !== undefined) ? cancel.label : 'Cancel'
   cancelDiv.style.display = cancelDiv.textContent === '' ? 'none' : 'inline-block'
 
-  var modal = document.getElementById('modal-body-id')
-  var modalTitle = document.getElementById('modal-title-h6')
+  const modal = container.querySelector('#modal-body-id')
+  const modalTitle = container.querySelector('#modal-title-h6')
 
   modalTitle.innerHTML = ''
   if (title) modalTitle.innerText = title
@@ -52,13 +54,9 @@ module.exports = (title, content, ok, cancel, focusSelector, opts) => {
   modal.innerHTML = ''
   if (content) modal.appendChild(content)
 
-  setFocusOn('ok')
-
-  show()
+  let request
 
   function setFocusOn (btn) {
-    var okDiv = document.getElementById('modal-footer-ok')
-    var cancelDiv = document.getElementById('modal-footer-cancel')
     if (btn === 'ok') {
       okDiv.className = okDiv.className.replace(/\bbtn-light\b/g, 'btn-dark')
       cancelDiv.className = cancelDiv.className.replace(/\bbtn-dark\b/g, 'btn-light')
@@ -69,23 +67,28 @@ module.exports = (title, content, ok, cancel, focusSelector, opts) => {
   }
 
   function okListener () {
-    removeEventListener()
-    if (ok && ok.fn && agreed) ok.fn()
-    if (!incomingModal) hide()
-    incomingModal = false
+    if (request.state !== 'active') return
+    settle(agreed && ok && ok.fn ? ok.fn : null)
   }
 
   function cancelListener () {
-    removeEventListener()
-    if (cancel && cancel.fn) cancel.fn()
-    if (!incomingModal) hide()
-    incomingModal = false
+    if (request.state === 'queued') {
+      removeQueuedRequest(request)
+      request.state = 'settled'
+      return
+    }
+    if (request.state !== 'active') return
+    settle(cancel && cancel.fn ? cancel.fn : null)
   }
 
   function modalKeyEvent (e) {
     if (e.keyCode === 27) { // Esc
       cancelListener()
     } else if (e.keyCode === 13) { // Enter
+      // Native buttons already translate Enter into exactly one click. Let that
+      // activation choose the focused action; otherwise a focused Cancel button
+      // is incorrectly routed through okListener by this legacy modal handler.
+      if (e.target === okDiv || e.target === cancelDiv) return
       e.preventDefault()
       okListener()
     } else if (e.keyCode === 37 && footerIsActive) { // Arrow Left
@@ -100,18 +103,18 @@ module.exports = (title, content, ok, cancel, focusSelector, opts) => {
   }
 
   function hide () {
-    if (!container) return
-    container.style.display = 'none'
-    if (container.parentElement) container.parentElement.removeChild(container)
-    container = null
-    incomingModal = false
+    if (request.state === 'queued') {
+      removeQueuedRequest(request)
+      request.state = 'settled'
+      return
+    }
+    if (request.state === 'active') settle(null)
   }
 
   function show () {
-    if (!container) return
     container.style.display = 'block'
     if (focusSelector) {
-      const focusTarget = document.querySelector(`.modal ${focusSelector}`)
+      const focusTarget = container.querySelector(focusSelector)
       if (focusTarget) {
         focusTarget.focus()
         if (typeof focusTarget.setSelectionRange === 'function') {
@@ -126,25 +129,65 @@ module.exports = (title, content, ok, cancel, focusSelector, opts) => {
     cancelDiv.removeEventListener('click', cancelListener)
     closeDiv.removeEventListener('click', cancelListener)
     document.removeEventListener('keydown', modalKeyEvent)
-    if (document.getElementById('modal-background')) {
-      document.getElementById('modal-background').removeEventListener('click', cancelListener)
+    container.removeEventListener('click', modalClickListener)
+  }
+
+  function modalClickListener (e) {
+    footerIsActive = document.activeElement === container
+    if (e.target === container) cancelListener()
+  }
+
+  function activate () {
+    document.querySelector('body').appendChild(container)
+    okDiv.hidden = Boolean(content && content.modalOkHidden)
+    setFocusOn('ok')
+    okDiv.addEventListener('click', okListener)
+    cancelDiv.addEventListener('click', cancelListener)
+    closeDiv.addEventListener('click', cancelListener)
+    document.addEventListener('keydown', modalKeyEvent)
+    container.addEventListener('click', modalClickListener)
+    show()
+  }
+
+  function settle (callback) {
+    if (request.state !== 'active') return
+    request.state = 'settling'
+    removeEventListener()
+    try {
+      if (callback) callback()
+    } finally {
+      container.style.display = 'none'
+      if (container.parentElement) container.parentElement.removeChild(container)
+      request.state = 'settled'
+      if (activeRequest === request) activeRequest = null
+      drainQueue()
     }
   }
-  okDiv.addEventListener('click', okListener)
-  cancelDiv.addEventListener('click', cancelListener)
-  closeDiv.addEventListener('click', cancelListener)
-  document.addEventListener('keydown', modalKeyEvent)
 
-  const modalDialog = document.getElementById('modal-dialog')
-  if (modalDialog) {
-    modalDialog.addEventListener('click', (e) => {
-      footerIsActive = document.activeElement === modalDialog
-      if (e.toElement === modalDialog) {
-        cancelListener() // click is outside of modal-content
-      }
-    })
+  request = {
+    activate,
+    container,
+    state: 'queued'
   }
-  return { container, okListener, cancelListener, hide }
+  request.controller = { container, okListener, cancelListener, hide }
+  return request
+}
+
+function removeQueuedRequest (request) {
+  const index = modalQueue.indexOf(request)
+  if (index !== -1) modalQueue.splice(index, 1)
+}
+
+function drainQueue () {
+  if (activeRequest) return
+  while (modalQueue.length) {
+    const request = modalQueue.shift()
+    if (request.state !== 'queued') continue
+    activeRequest = request
+    request.state = 'active'
+    request.activate()
+    return
+  }
 }
 
 function html (opts) {
@@ -160,8 +203,8 @@ function html (opts) {
         </div>
         <div id="modal-body-id" class="modal-body ${css.modalBody}" data-id="modalDialogModalBody"> - </div>
         <div class="modal-footer" data-id="modalDialogModalFooter" autofocus>
-          <span id="modal-footer-ok" class="${css.modalFooterOk} modal-ok btn btn-sm btn-light" tabindex='5'>OK</span>
-          <span id="modal-footer-cancel" class="${css.modalFooterCancel} modal-cancel btn btn-sm btn-light" tabindex='10' data-dismiss="modal">Cancel</span>
+          <button type="button" id="modal-footer-ok" class="${css.modalFooterOk} modal-ok btn btn-sm btn-light" tabindex='5'>OK</button>
+          <button type="button" id="modal-footer-cancel" class="${css.modalFooterCancel} modal-cancel btn btn-sm btn-light" tabindex='10' data-dismiss="modal">Cancel</button>
         </div>
       </div>
     </div>

@@ -29,7 +29,7 @@
 		THE SOFTWARE.
 		-->
 		<meta http-equiv="X-UA-Compatible" content="chrome=1">
-		<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://kit.fontawesome.com https://www.googletagmanager.com https://www.google-analytics.com https://tronprotocol.github.io https://binaries.soliditylang.org; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://use.fontawesome.com https://*.fontawesome.com; font-src 'self' data: https://use.fontawesome.com https://*.fontawesome.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss:; frame-src 'self' http://localhost:* https:; worker-src 'self' blob:; form-action 'self'">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://kit.fontawesome.com https://www.googletagmanager.com https://www.google-analytics.com https://tronprotocol.github.io https://binaries.soliditylang.org; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://use.fontawesome.com https://*.fontawesome.com; font-src 'self' data: https://use.fontawesome.com https://*.fontawesome.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss://localhost:* wss://127.0.0.1:*; frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*; worker-src 'self' blob:; form-action 'self'">
 		<!-- Clickjacking guard: GitHub Pages can't emit X-Frame-Options / CSP
 		     frame-ancestors (HTTP-header only). Bust out of any cross-origin frame;
 		     if top navigation is blocked (sandboxed), hide the page. -->
@@ -38,13 +38,144 @@
 		<link rel="stylesheet" href="assets/css/pygment_trac.css">
 		<link rel="icon" type="image/svg+xml" href="assets/img/tron-ide-icon.svg">
 		<link rel="alternate icon" type="image/x-icon" href="assets/img/favicon.ico">
-		<style>@media (prefers-color-scheme: dark) { :root { --splash-logo-invert: invert(1); } }</style>
-		<script src="assets/js/browserfs.min.js"></script>
+		<script>
+			(function () {
+				var themeQuality = {
+					Dark: 'dark', Light: 'light', Midcentury: 'light', Black: 'dark',
+					Cerulean: 'light', Flatly: 'light', Spacelab: 'light', Cyborg: 'dark'
+				}
+				var qualityFor = function (name) {
+					return Object.prototype.hasOwnProperty.call(themeQuality, name) ? themeQuality[name] : null
+				}
+				var theme = null
+				try {
+					var query = window.location.search.length > 1 ? window.location.search.slice(1) : window.location.hash.slice(1)
+					query.split('&').some(function (part) {
+						var separator = part.indexOf('=')
+						if ((separator === -1 ? part : part.slice(0, separator)) !== 'theme') return false
+						var candidate = separator === -1 ? '' : part.slice(separator + 1)
+						if (qualityFor(candidate)) theme = candidate
+						return true
+					})
+				} catch (e) {}
+				if (!theme) {
+					try {
+						var storedConfig = JSON.parse(window.localStorage.getItem('config-v0.8:.remix.config') || '{}')
+						if (qualityFor(storedConfig['settings/theme'])) theme = storedConfig['settings/theme']
+					} catch (e) {}
+				}
+				document.documentElement.setAttribute('data-splash-theme', qualityFor(theme) || 'dark')
+			})()
+		</script>
+		<style>
+			html[data-splash-theme="light"] {
+				--splash-bg: #eef1f6;
+				--splash-text: #2e3145;
+				--splash-spinner: #606d79;
+				--splash-spinner-track: rgba(96, 109, 121, .28);
+				--splash-logo-invert: none;
+			}
+			html[data-splash-theme="dark"] {
+				--splash-bg: #222336;
+				--splash-text: #f7f7fb;
+				--splash-spinner: #a2a3bd;
+				--splash-spinner-track: rgba(162, 163, 189, .28);
+				--splash-logo-invert: invert(1);
+			}
+			html[data-splash-theme] body {
+				margin: 0;
+				background: var(--splash-bg);
+				color: var(--splash-text);
+			}
+			#tronide-initial-splash {
+				position: fixed;
+				inset: 0;
+				z-index: 2147483647;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+				gap: 18px;
+				background: var(--splash-bg);
+				color: var(--splash-text);
+				font: 600 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+				letter-spacing: .02em;
+			}
+			#tronide-initial-splash img {
+				width: min(320px, 64vw);
+				height: auto;
+				filter: var(--splash-logo-invert);
+			}
+			.tronide-splash-spinner {
+				width: 28px;
+				height: 28px;
+				border: 3px solid var(--splash-spinner-track);
+				border-top-color: var(--splash-spinner);
+				border-radius: 50%;
+				animation: tronide-splash-spin .8s linear infinite;
+			}
+			.tronide-splash-error .tronide-splash-spinner { display: none; }
+			.tronide-splash-actions { display: flex; gap: 10px; }
+			.tronide-splash-actions button {
+				border: 1px solid var(--splash-spinner);
+				border-radius: 4px;
+				padding: 8px 18px;
+				background: transparent;
+				color: inherit;
+				font: inherit;
+				cursor: pointer;
+			}
+			.tronide-splash-actions button:focus-visible { outline: 2px solid var(--splash-spinner); outline-offset: 2px; }
+			.tronide-storage-status {
+				position: fixed;
+				right: 16px;
+				bottom: 42px;
+				z-index: 2147483000;
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				max-width: min(520px, calc(100vw - 32px));
+				box-sizing: border-box;
+				border: 1px solid rgba(255, 255, 255, .2);
+				border-radius: 5px;
+				padding: 10px 12px;
+				background: #2e3048;
+				box-shadow: 0 6px 24px rgba(0, 0, 0, .32);
+				color: #f7f7fb;
+				font: 500 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+			}
+			.tronide-storage-status[hidden] { display: none; }
+			.tronide-storage-status[data-state="failed"] { border-color: #f66; }
+			.tronide-storage-status[data-state="warning"] { border-color: #e6a23c; }
+			.tronide-storage-status button {
+				flex: none;
+				border: 1px solid currentColor;
+				border-radius: 4px;
+				padding: 4px 8px;
+				background: transparent;
+				color: inherit;
+				font: inherit;
+				cursor: pointer;
+			}
+			.tronide-storage-status button[hidden] { display: none; }
+			.tronide-storage-status button:disabled { cursor: wait; opacity: .65; }
+			.tronide-storage-status button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+			@keyframes tronide-splash-spin { to { transform: rotate(360deg); } }
+			@media (prefers-reduced-motion: reduce) {
+				.tronide-splash-spinner { animation-duration: 1.8s; }
+			}
+		</style>
 		<meta name="viewport" content="width=device-width, initial-scale=1">
 		<link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.8.1/css/all.css" integrity="sha384-50oBUHEmvpQ+1lW4y57PTFmhCaXp0ML5d60M1M7uH2+nqUivzIebhndOJK28anvf" crossorigin="anonymous">
 	</head>
 	<body>
+		<div id="tronide-initial-splash" role="status" aria-live="polite" aria-label="Loading TRON IDE">
+			<img src="assets/img/tron-ide-logo-horizontal.svg" alt="TRON IDE">
+			<div class="tronide-splash-spinner" aria-hidden="true"></div>
+			<div id="tronide-initial-status">Loading TRON IDE…</div>
+		</div>
 		<!-- No-op analytics stub: keeps gtag('event', ...) calls safe without loading or sending to any analytics provider. -->
 		<script>window.gtag = window.gtag || function () {}</script>
+		<script src="assets/js/browserfs.min.js"></script>
 	</body>
 </html>

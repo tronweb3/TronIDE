@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
-import { dismissWelcomeModal } from './helpers'
+import { dismissWelcomeModal, seedGithubBffSession } from './helpers'
 
 // TC-GIT-R1/R2/R3 (v2.3.2 remote-git): the Git panel exposes Clone (into a new
 // workspace) + Add-remote + Push/Pull against a GitHub remote, routed through
@@ -22,14 +22,49 @@ async function openGitPanel (page: Page) {
   await page.locator('[data-id="gitPanel"]').waitFor({ state: 'visible', timeout: 15_000 })
 }
 
-async function connectFakeGithubToken (page: Page) {
+async function connectFakeGithubSession (page: Page) {
+  // Keep this destructive-action test independent of whichever BFF origin the
+  // frontend was built with. A real local/deployed BFF correctly rejects the
+  // synthetic handle and clears it during reload; mock session and installation
+  // hydration (including CORS preflights) before seeding so the fixture remains
+  // an opaque TronIDE session rather than accidentally depending on a DNS error.
+  await page.route('**/session', (route) => {
+    const request = route.request()
+    if (request.method() === 'OPTIONS') {
+      return route.fulfill({
+        status: 204,
+        headers: {
+          'access-control-allow-origin': request.headers().origin || new URL(page.url()).origin,
+          'access-control-allow-methods': 'GET, DELETE, OPTIONS',
+          'access-control-allow-headers': request.headers()['access-control-request-headers'] || 'x-tronide-session'
+        }
+      })
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: { 'access-control-allow-origin': request.headers().origin || new URL(page.url()).origin },
+      body: JSON.stringify({ login: 'force-push-tester', repositoryInstallationRequired: false })
+    })
+  })
+  await page.route('**/installations', (route) => {
+    const request = route.request()
+    const corsHeaders = {
+      'access-control-allow-origin': request.headers().origin || new URL(page.url()).origin,
+      'access-control-allow-methods': 'GET, OPTIONS',
+      'access-control-allow-headers': request.headers()['access-control-request-headers'] || 'x-tronide-session'
+    }
+    if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: corsHeaders })
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: corsHeaders,
+      body: JSON.stringify({ provider: 'oauth_app', required: false, installed: true, installations: [] })
+    })
+  })
+  await seedGithubBffSession(page, 'force-push-tester', { mockBff: false })
   const advanced = page.locator('[data-id="landingAdvancedToolsToggle"]')
   if ((await advanced.getAttribute('aria-expanded')) === 'false') await advanced.click()
-  await page.locator('[data-id="landingGithubTokenConnect"]').click()
-  const tokenInput = page.locator('[data-id="modalDialogCustomPromptText"]')
-  await tokenInput.waitFor({ state: 'visible', timeout: 10_000 })
-  await tokenInput.fill('ghp_force_push_confirmation_test')
-  await page.locator('#modal-footer-ok').click()
   await expect(page.locator('[data-id="landingGithubTokenDisconnect"]')).toBeVisible({ timeout: 10_000 })
 }
 
@@ -73,14 +108,8 @@ test.describe('Git panel (remote)', () => {
   })
 
   test('TC-GIT-R7: force push requires confirmation; cancel blocks it and normal push remains direct', { tag: '@gate' }, async ({ page }) => {
-    await page.route('https://api.github.com/user', (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ login: 'force-push-tester' })
-      }))
     await openHome(page)
-    await connectFakeGithubToken(page)
+    await connectFakeGithubSession(page)
     await openGitPanel(page)
 
     const init = page.locator('[data-id="gitInit"]')
@@ -100,8 +129,21 @@ test.describe('Git panel (remote)', () => {
     }
 
     let proxiedPushes = 0
+    const proxiedHeaders: Array<Record<string, string>> = []
     await page.route('**/git/**', (route) => {
+      const request = route.request()
+      if (request.method() === 'OPTIONS') {
+        return route.fulfill({
+          status: 204,
+          headers: {
+            'access-control-allow-origin': request.headers().origin || new URL(page.url()).origin,
+            'access-control-allow-methods': 'GET, POST, OPTIONS',
+            'access-control-allow-headers': request.headers()['access-control-request-headers'] || 'x-tronide-session'
+          }
+        })
+      }
       proxiedPushes++
+      proxiedHeaders.push(request.headers())
       return route.abort()
     })
     await page.locator('[data-id="gitAddRemoteUrl"]').fill('https://github.com/octocat/Hello-World.git')
@@ -110,6 +152,7 @@ test.describe('Git panel (remote)', () => {
     // Add remote now performs an all-ref fetch. This test intentionally aborts
     // that request to remain an offline @gate test; count only later pushes.
     proxiedPushes = 0
+    proxiedHeaders.length = 0
 
     // Approval is scoped to the branch that was visible in the modal. Switch
     // branches programmatically while it is open; confirming the stale modal
@@ -143,6 +186,8 @@ test.describe('Git panel (remote)', () => {
     await page.locator('[data-id="gitForcePush"]').click()
     await page.locator('#modal-footer-ok').click()
     await expect.poll(() => proxiedPushes, { timeout: 15_000 }).toBeGreaterThan(0)
+    expect(proxiedHeaders.every((headers) => headers['x-tronide-session'] === 'test_bff_session_handle_012345678901234567890')).toBe(true)
+    expect(proxiedHeaders.every((headers) => !headers.authorization)).toBe(true)
     await expect(page.locator('[data-id="gitStatus"]')).toContainText(/push failed/i, { timeout: 15_000 })
 
     // Ordinary Push remains direct: no destructive-action modal is introduced.

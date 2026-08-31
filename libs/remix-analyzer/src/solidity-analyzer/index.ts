@@ -83,13 +83,15 @@ export default class staticAnalysisRunner {
     // but also perform new analysis.
     reports = reports.concat(modules.map((item: ModuleObj) => {
       let report: AnalysisReportObj[] | null = null
+      let error: string | undefined
       try {
         report = item.mod.report(compilationResult)
       } catch (e) {
-        console.debug('[static-analysis] module "' + item.name + '" report() failed; skipping it:', e && e.message)
+        error = e instanceof Error ? e.message : String(e)
+        console.debug('[static-analysis] module "' + item.name + '" report() failed; skipping it:', error)
         report = []
       }
-      return { name: item.name, report: report }
+      return { name: item.name, report: report || [], error: error }
     }))
     callback(reports)
   }

@@ -23,6 +23,19 @@ import EventEmitter from 'events'
 const deepequal = require('deep-equal')
 
 const getElementId = (element: Record<string, string>): string => element.ELEMENT || element[Object.keys(element)[0]]
+const normalizeDecodedValue = (value: unknown): unknown => {
+  if (!value || typeof value !== 'object') return value
+  const decoded = value as Record<string, unknown>
+  if (!Array.isArray(value) && decoded.type === 'BigNumber' && typeof decoded.hex === 'string') {
+    try {
+      return (globalThis as any).BigInt(decoded.hex).toString()
+    } catch (error) {
+      return value
+    }
+  }
+  if (Array.isArray(value)) return value.map(normalizeDecodedValue)
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, normalizeDecodedValue(entry)]))
+}
 
 class TestFunction extends EventEmitter {
   command (this: NightwatchBrowser, txHash: string, expectedValue: NightwatchTestFunctionExpectedInput): NightwatchBrowser {
@@ -47,7 +60,21 @@ class TestFunction extends EventEmitter {
           .execute(function () {
             document.querySelector('#webpack-dev-server-client-overlay')?.remove()
           })
-          .click(`[data-id="block_tx${txHash}"]`)
+          // The terminal is rendered below the editor and can be covered by
+          // the main-panel layer in headless Chrome. WebDriver's coordinate
+          // click then reports an intercepted element even though the
+          // transaction row is present. Dispatch the row's own click handler
+          // after scrolling it into view so the helper remains deterministic
+          // in both headed and headless CI.
+          .execute(function (selector) {
+            const block = document.querySelector(selector) as HTMLElement | null
+            if (!block) return false
+            const clickable = block.querySelector('span[id^="tx"] > div') as HTMLElement | null
+            const target = clickable || block
+            target.scrollIntoView({ block: 'center', inline: 'nearest' })
+            target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
+            return Boolean(clickable)
+          }, [`[data-id="block_tx${txHash}"]`])
           .waitForElementVisible(`*[data-id="txLoggerTable${txHash}"]`, 60000)
           .pause(10000)
         // fetch and format transaction logs as key => pair object
@@ -86,9 +113,9 @@ class TestFunction extends EventEmitter {
           try {
             const receivedValue = JSON.parse(logs[key])
 
-            equal = deepequal(receivedValue, expectedValue[key])
+            equal = deepequal(normalizeDecodedValue(receivedValue), normalizeDecodedValue(expectedValue[key]))
           } catch (err) {
-            equal = deepequal(logs[key], expectedValue[key])
+            equal = deepequal(normalizeDecodedValue(logs[key]), normalizeDecodedValue(expectedValue[key]))
           }
 
           if (!equal) {

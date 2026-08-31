@@ -21,7 +21,8 @@ import IconComponent from "../../common/IconComponent";
 import dayjs from "dayjs";
 // import { tv } from "@/utils/i18n";
 // import localforage from 'localforage';
-import { Dropdown, Menu } from 'antd';
+import Dropdown from 'antd/lib/dropdown';
+import Menu from 'antd/lib/menu';
 
 class ChatHistoryRecord extends Component {
   constructor(props) {
@@ -38,21 +39,22 @@ class ChatHistoryRecord extends Component {
 
   downChatHistoryRecord = async () => {
     const { intl, chatList } = this.props;
-    let content = ``;
     const newSessionDividLine = '------------------------';
-    chatList.forEach(item => {
-      content += item.type ? (`${item.type === "1" ? `${item.gptv}: \n${item.text}\n\n\n` : 
+    const content = chatList.map(item => item.type ? (`${item.type === "1" ? `${item.gptv}: \n${item.text}\n\n\n` :
                     item.newSession ? `${newSessionDividLine}${'New Chat'}${newSessionDividLine}\n\n` : 
-                    `Me: \n${item.text}\n\n\n`}`) : '';
-    });
+                    `Me: \n${item.text}\n\n\n`}`) : '').join('');
 
     const blob = new Blob([content]);
     let evt = document.createEvent("HTMLEvents");
     evt.initEvent("click", true, true);
     const aLink = document.createElement('a');
     aLink.download = `TRONIDEAI_Assistant_History_${dayjs().format('YYYYMMDD')}.txt`;
-    aLink.href = URL.createObjectURL(blob);
+    const objectUrl = URL.createObjectURL(blob);
+    aLink.href = objectUrl;
     aLink.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    // Keep the URL alive through the click dispatch, then release the Blob
+    // backing store so repeated exports do not leak memory.
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
     gtag("event", "click", {event_category: "ai_user_action",event_label: "download_records"})
   }
 

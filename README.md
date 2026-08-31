@@ -88,6 +88,20 @@ TronIDE is TRON-oriented and does not claim full Ethereum Remix parity. Highligh
 
 TronLink is the wallet path for real networks. Automated TronScan source submission/receipts and EVM-only verification services are unavailable or not applicable to TRON rather than marked as done.
 
+### v2.3.3 AI task workflow
+
+The v2.3.3 line turns individual AI tool calls into visible, recoverable development tasks:
+
+1. Start from one of the four TRON AI task cards on Home, or open the AI panel and describe the outcome you want.
+2. Bank of AI is selected by default; enter a dedicated low-limit Bank of AI API key, load its live model list if needed, and enable **Workspace Actions**. You can still switch to Anthropic, Google Gemini, or another OpenAI-compatible provider. API keys remain in browser memory and disappear after a reload or panel close.
+3. Review the generated plan and task timeline. Read-only steps run directly; file, Git remote, and on-chain writes show their target, risk, and approval snapshot before execution. Mainnet writes require an additional confirmation and are never retried automatically.
+4. If a step fails or is stopped, use its error code and suggested recovery action. Task history, safe artifacts, and recovery state are kept locally so the task can be reopened without pretending that an already-broadcast transaction was cancelled.
+5. After a successful deployment, use the next-step card to verify, interact, save a Recorder scenario, or export a TronBox project. The export boundary is generated files plus the public TronBox CLI; TronIDE does not embed TronBox as a browser runtime.
+
+For release validation, use an unlocked TronLink account on Nile with test funds. Confirm the network, account, contract, method, arguments, and value shown on every approval card. A missing wallet injection, unknown network, uncertain transaction, or unsupported model capability is a blocking state rather than a silent fallback.
+
+Task diagnostics can be exported as privacy-safe Markdown or JSON. Raw prompts, source code, transaction arguments, credentials, provider payloads, and raw errors are excluded. The AI settings also expose a separate local aggregate of workflow outcomes, duration buckets, canonical error codes, and approval decisions; it is never uploaded and can be cleared or disabled at any time.
+
 ------
 
 ## 3. How to Contribute
@@ -147,6 +161,8 @@ The master branch always has the latest stable build. It also contains a ZIP fil
 ## 5. Analytics & Privacy
 
 The hosted TronIDE application includes **Google Analytics (gtag.js, property `G-PPGK4JW2YY`)** to collect anonymous usage statistics (page views, feature interactions). No personally identifiable information is collected.
+
+The v2.3.3 AI task aggregate is separate from Google Analytics. It is stored only on the current device, contains fixed counters rather than raw task events, and excludes prompts, source code, addresses, transaction arguments, API keys, wallet data, task identifiers, and tool names. Use the AI settings to inspect the summary, clear it, or opt out; opting out deletes the stored aggregate and stops new counting.
 
 If you self-host or build from source, you can remove the `<script>` block referencing `googletagmanager.com` in `apps/remix-ide/src/index.html` to disable analytics entirely.
 

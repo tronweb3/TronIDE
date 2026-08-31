@@ -34,23 +34,27 @@ class GetLastTransactionHash extends EventEmitter {
 }
 
 function getLastTransactionHash (browser: NightwatchBrowser, callback: (hash: string) => void) {
+  const transactionSelector = '*[data-id="terminalJournal"] > div[data-id^="block_tx0x"], *[data-id="terminalJournal"] > div[data-id^="block_txcall0x"]'
+
   browser.waitForElementPresent('*[data-shared="universalDappUiInstance"]')
-    .execute(function () {
-      const deployedContracts = document.querySelectorAll('*[data-id="terminalJournal"] > div')
-      for (let i = deployedContracts.length - 1; i >= 0; i--) {
-        const current = deployedContracts[i]
-        const attr = current.getAttribute('data-id')
-        // For web3 provider, a contract call simulates a tx hash starting with 'block_txcall'
-        if (attr && (attr.replace('block_tx', '').startsWith('0x') || attr.replace('block_txcall', '').startsWith('0x'))) {
-          return attr.replace('block_tx', '')
-        }
-      }
-      return ''
-    }, [], function (result) {
+    .waitForElementPresent(transactionSelector, 60000)
+    .execute(findLastTransactionHash, [], function (result) {
       const hash = typeof result.value === 'string' ? result.value : null
 
       callback(hash)
     })
+}
+
+function findLastTransactionHash () {
+  const deployedContracts = document.querySelectorAll('*[data-id="terminalJournal"] > div')
+  for (let i = deployedContracts.length - 1; i >= 0; i--) {
+    const current = deployedContracts[i]
+    const attr = current.getAttribute('data-id')
+    // For web3 provider, a contract call simulates a tx hash starting with 'block_txcall'
+    if (attr?.startsWith('block_txcall0x')) return attr.slice('block_txcall'.length)
+    if (attr?.startsWith('block_tx0x')) return attr.slice('block_tx'.length)
+  }
+  return ''
 }
 
 module.exports = GetLastTransactionHash

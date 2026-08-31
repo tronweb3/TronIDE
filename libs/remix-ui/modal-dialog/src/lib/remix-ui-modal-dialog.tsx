@@ -31,6 +31,22 @@ export const ModalDialog = (props: ModalDialogProps) => {
     props.handleHide()
   }
 
+  const runActionAndHide = (action?: (...args: any[]) => any) => {
+    let result
+    try {
+      if (action) result = action()
+    } catch (error) {
+      // A modal action must not leave the dialog stuck open. Keep the failure
+      // observable while still running the common hide/cleanup path.
+      console.error('[ModalDialog] action failed', error)
+    } finally {
+      handleHide()
+    }
+    if (result && typeof result.catch === 'function') {
+      result.catch(error => console.error('[ModalDialog] async action failed', error))
+    }
+  }
+
   useEffect(() => {
     modal.current.focus()
   }, [props.hide])
@@ -52,11 +68,15 @@ export const ModalDialog = (props: ModalDialogProps) => {
     }
   }, [modal.current])
 
-  const modalKeyEvent = (keyCode) => {
+  const modalKeyEvent = (event) => {
+    const { keyCode, target } = event
     if (keyCode === 27) { // Esc
-      if (props.cancelFn) props.cancelFn()
-      handleHide()
+      runActionAndHide(props.cancelFn)
     } else if (keyCode === 13) { // Enter
+      // A native footer button dispatches its own click for Enter. Do not also
+      // execute the modal-level default action or the callback runs twice.
+      if (target instanceof HTMLButtonElement) return
+      event.preventDefault()
       enterHandler()
     } else if (keyCode === 37) {
       // todo && footerIsActive) { // Arrow Left
@@ -69,11 +89,10 @@ export const ModalDialog = (props: ModalDialogProps) => {
 
   const enterHandler = () => {
     if (state.toggleBtn) {
-      if (props.okFn) props.okFn()
+      runActionAndHide(props.okFn)
     } else {
-      if (props.cancelFn) props.cancelFn()
+      runActionAndHide(props.cancelFn)
     }
-    handleHide()
   }
 
   return (
@@ -90,7 +109,7 @@ export const ModalDialog = (props: ModalDialogProps) => {
           ref={modal}
           tabIndex={-1}
           className={'modal-content remixModalContent ' + (props.modalClass ? props.modalClass : '')}
-          onKeyDown={({ keyCode }) => { modalKeyEvent(keyCode) }}
+          onKeyDown={modalKeyEvent}
         >
           <div className="modal-header">
             <h6 className="modal-title" data-id={`${props.id}ModalDialogModalTitle-react`}>
@@ -108,29 +127,29 @@ export const ModalDialog = (props: ModalDialogProps) => {
           <div className="modal-footer" data-id={`${props.id}ModalDialogModalFooter-react`}>
             {/* todo add autofocus ^^ */}
             { props.okLabel &&
-              <span
+              <button
+                type="button"
                 data-id={`${props.id}-modal-footer-ok-react`}
                 className={'modal-ok btn btn-sm ' + (state.toggleBtn ? 'btn-dark' : 'btn-light')}
                 onClick={() => {
-                  if (props.okFn) props.okFn()
-                  handleHide()
+                  runActionAndHide(props.okFn)
                 }}
               >
                 { props.okLabel ? props.okLabel : 'OK' }
-              </span>
+              </button>
             }
             { props.cancelLabel &&
-              <span
+              <button
+                type="button"
                 data-id={`${props.id}-modal-footer-cancel-react`}
                 className={'modal-cancel btn btn-sm ' + (state.toggleBtn ? 'btn-light' : 'btn-dark')}
                 data-dismiss="modal"
                 onClick={() => {
-                  if (props.cancelFn) props.cancelFn()
-                  handleHide()
+                  runActionAndHide(props.cancelFn)
                 }}
               >
                 { props.cancelLabel ? props.cancelLabel : 'Cancel' }
-              </span>
+              </button>
             }
           </div>
         </div>

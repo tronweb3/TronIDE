@@ -74,6 +74,7 @@ if (builtinPrimary[1] !== builtinMirror[1]) {
 }
 const staleBuiltinLiterals = [
   [containerPath, container, /latest local version - \d/],
+  [containerPath, container, /Built-in compiler \(local\) - \d/],
   [containerPath, container, /built-in compiler \(\d/],
   [chatPath, chat, /bundled fallback \d/],
   [chatPath, chat, /current compiler is 0\\?\.8\\?\.6/]
@@ -98,6 +99,21 @@ if (!listUrlMirror) {
 }
 if (listUrlMirror[1].replace(/\/+$/, '') !== `${baseURLTron}/list.json`) {
   console.error(`TRON_SOLC_LIST_URL drift: toolsApi says ${listUrlMirror[1]}, provider list is ${baseURLTron}/list.json`)
+  process.exit(1)
+}
+
+// The browser must never statically require the full `solc` package. Doing so
+// duplicates soljson in the initial main.js even though compiler binaries are
+// already loaded on demand from assets/js/soljson.js or the selected version.
+const compilerImplementationPath = path.join(root, 'libs/remix-solidity/src/compiler/compiler.ts')
+const compilerImplementation = fs.readFileSync(compilerImplementationPath, 'utf8')
+if (/\brequire\(\s*['"]solc['"]\s*\)/.test(compilerImplementation)) {
+  console.error('Browser bundle regression: compiler.ts statically requires the full solc package')
+  process.exit(1)
+}
+if (!compilerImplementation.includes("import(/* webpackChunkName: \"solc-node\" */ 'solc')") ||
+    !compilerImplementation.includes("import(/* webpackChunkName: \"solc-wrapper\" */ 'solc/wrapper')")) {
+  console.error('Compiler loading must retain separate async solc-node and solc-wrapper boundaries')
   process.exit(1)
 }
 

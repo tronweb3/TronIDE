@@ -28,13 +28,17 @@ module.exports = {
 
   'Shows TRON Quick Start entries on the landing page': function (browser: NightwatchBrowser) {
     browser
+      // The workspace menu is intentionally hidden below the desktop breakpoint.
+      // Set the viewport explicitly because direct ChromeDriver runs do not always
+      // preserve the configured window-size capability.
+      .resizeWindow(1440, 900)
       .clickIfPresent('remix-tabs remix-tab#home')
       .waitForElementVisible('*[data-id="landingPageHomeContainer"]', 15000)
       .waitForElementContainsText('*[data-id="landingHeroTitle"]', 'TRON Native Smart Contract IDE', 10000)
       .waitForElementVisible('*[data-id="headerGithubConnect"]', 10000)
       .waitForElementVisible('*[data-id="headerWalletConnect"]', 10000)
-      .assert.containsText('*[data-id="headerGithubConnect"]', 'Connect GitHub')
-      .assert.containsText('*[data-id="headerWalletConnect"]', 'Connect Wallet')
+      .assert.attributeEquals('*[data-id="headerGithubConnect"]', 'title', 'Connect GitHub')
+      .assert.attributeEquals('*[data-id="headerWalletConnect"]', 'title', 'Connect Wallet')
       .waitForElementVisible('*[data-id="quickStartCreateContract"]', 10000)
       .waitForElementVisible('*[data-id="landingDappStarterCard"]', 10000)
       .waitForElementVisible('*[data-id="landingOpenGlobalSearchButton"]', 10000)

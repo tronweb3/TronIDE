@@ -1,0 +1,67 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://kit.fontawesome.com https://www.googletagmanager.com https://www.google-analytics.com https://tronprotocol.github.io https://binaries.soliditylang.org; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://use.fontawesome.com https://*.fontawesome.com; font-src 'self' data: https://use.fontawesome.com https://*.fontawesome.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss://localhost:* wss://127.0.0.1:*; frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*; worker-src 'self' blob:; form-action 'self'">
+    <script>(function () { try { if (window.top !== window.self) window.top.location = window.self.location.href } catch (e) { document.documentElement.style.display = 'none' } })()</script>
+    <title>Release Notes · TRON IDE</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" type="image/svg+xml" href="assets/img/tron-ide-icon.svg">
+    <link rel="alternate icon" type="image/x-icon" href="assets/img/favicon.ico">
+    <link rel="stylesheet" href="assets/css/themes/remix-dark_tvx1s2.css" id="theme-link">
+    <script>
+      (function () {
+        var themeUrls = {
+          Dark: 'assets/css/themes/remix-dark_tvx1s2.css',
+          Light: 'assets/css/themes/remix-light_powaqg.css',
+          Midcentury: 'assets/css/themes/remix-midcentury_hrzph3.css',
+          Black: 'assets/css/themes/remix-black_undtds.css',
+          Cerulean: 'assets/css/themes/bootstrap-cerulean.min.css',
+          Flatly: 'assets/css/themes/bootstrap-flatly.min.css',
+          Spacelab: 'assets/css/themes/bootstrap-spacelab.min.css',
+          Cyborg: 'assets/css/themes/bootstrap-cyborg.min.css'
+        }
+        var theme = null
+        try {
+          var params = new URLSearchParams(window.location.search)
+          if (themeUrls[params.get('theme')]) theme = params.get('theme')
+        } catch (e) {}
+        if (!theme) {
+          try {
+            var storedConfig = JSON.parse(window.localStorage.getItem('config-v0.8:.remix.config') || '{}')
+            if (themeUrls[storedConfig['settings/theme']]) theme = storedConfig['settings/theme']
+          } catch (e) {}
+        }
+        document.getElementById('theme-link').setAttribute('href', themeUrls[theme] || themeUrls.Dark)
+      })()
+    </script>
+    <style>
+      html, body, #release-notes-root { height: 100%; }
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: var(--ai-top-bg, #222336);
+        color: var(--ai-title, #f7f7fb);
+        font-family: var(--font-family-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+      }
+      #release-notes-loading {
+        display: flex;
+        height: 100%;
+        align-items: center;
+        justify-content: center;
+        color: var(--ai-text, #a2a3bd);
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="release-notes-root">
+      <div id="release-notes-loading" role="status" aria-live="polite">Loading Release Notes…</div>
+    </main>
+    <script src="runtime.js" type="module"></script>
+    <script src="vendor.js" type="module"></script>
+    <script src="main.js" type="module"></script>
+  </body>
+</html>

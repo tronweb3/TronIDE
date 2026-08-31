@@ -20,6 +20,7 @@
 'use strict'
 
 var test = require('tape')
+process.env.TRONIDE_GITHUB_BFF_ORIGIN = 'https://tronide-github-bff.test'
 var GistHandler = require('../src/lib/gist-handler')
 var githubAuth = require('../src/lib/github-auth')
 
@@ -191,33 +192,35 @@ test('GistHandler.loadFromGist strips .deps/ files baked into a gist', function 
   handler.loadFromGist({ gist: GID }, fileManager)
 })
 
-// Regression for "all raw gist files fail with a CORS error even with a token configured":
+// Regression for "all raw gist files fail with a CORS error even when connected":
 // gist.githubusercontent.com only allows CORS-simple GETs, so the raw_url backfill must NOT
-// send an Authorization header (that forces an unanswered preflight). The token still goes to
-// api.github.com to lift the rate limit. We stub a configured token via the registry and assert
-// the raw request is sent header-less while the API request carries the token.
+// send the BFF session header (that forces an unanswered preflight). Authenticated gist metadata
+// goes through the BFF, while the raw request remains header-less.
 test('GistHandler.loadFromGist does not send Authorization on raw_url fetches (CORS-simple)', function (t) {
   t.plan(3)
   var GID = 'b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7'
   var BIG = 'contract Big { uint256 b = 2; }'
 
-  githubAuth.setToken('ghp_testtoken1234567890')
+  githubAuth.setSession('opaque_test_session', 'tron-user')
 
-  var apiAuth = 'MISSING'
+  var apiSession = 'MISSING'
   var rawAuth = 'MISSING'
   global.window = {
     fetch: function (url, opts) {
       var u = String(url)
       var headers = (opts && opts.headers) || {}
-      if (u.indexOf('api.github.com/gists/') !== -1) {
-        apiAuth = headers.Authorization
+      var readHeader = function (name) {
+        return headers && typeof headers.get === 'function' ? headers.get(name) : headers[name]
+      }
+      if (u.indexOf('tronide-github-bff.test/api/gists/') !== -1) {
+        apiSession = readHeader('X-TronIDE-Session')
         var payload = JSON.stringify({
           id: GID,
           files: { 'Big.sol': { truncated: true, content: '', raw_url: 'https://gist.githubusercontent.com/raw/' + GID + '/Big.sol' } }
         })
         return Promise.resolve({ ok: true, status: 200, text: function () { return Promise.resolve(payload) } })
       }
-      rawAuth = headers.Authorization
+      rawAuth = readHeader('Authorization')
       return Promise.resolve({ ok: true, status: 200, text: function () { return Promise.resolve(BIG) } })
     }
   }
@@ -226,11 +229,11 @@ test('GistHandler.loadFromGist does not send Authorization on raw_url fetches (C
     captureWorkspaceMutationContext: function () { return { workspace: 'gist-sample', generation: 1 } },
     getProvider: function () { return { lastLoadedGistId: null } },
     setBatchFiles: function (_obj, _ws, _override, cb) {
-      t.equal(apiAuth, 'token ghp_testtoken1234567890', 'api.github.com request carries the token')
+      t.equal(apiSession, 'opaque_test_session', 'BFF gist request carries only the opaque session')
       t.equal(rawAuth, undefined, 'raw_url request sends NO Authorization header (stays CORS-simple)')
       t.equal(_obj && Object.keys(_obj).length, 1, 'truncated file still backfilled from raw_url')
       delete global.window
-      githubAuth.clearToken()
+      githubAuth.clearSession()
       if (cb) cb()
     }
   }

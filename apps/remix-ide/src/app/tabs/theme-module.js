@@ -20,6 +20,7 @@
 import { Plugin } from '@remixproject/engine'
 import { EventEmitter } from 'events'
 import QueryParams from '../../lib/query-params'
+import { decodeUrlParameter } from '../../lib/url-param-security'
 import * as packageJson from '../../../../../package.json'
 import yo from 'yo-yo'
 const _paq = window._paq = window._paq || []
@@ -55,7 +56,7 @@ export class ThemeModule extends Plugin {
       theme.url = window.location.origin + window.location.pathname + theme.url
       return { ...acc, [theme.name]: theme }
     }, {})
-    let queryTheme = (new QueryParams()).get().theme
+    let queryTheme = decodeUrlParameter((new QueryParams()).get().theme, 128)
     queryTheme = this.themes[queryTheme] ? queryTheme : null
     let currentTheme = this._deps.config.get('settings/theme')
     currentTheme = this.themes[currentTheme] ? currentTheme : null

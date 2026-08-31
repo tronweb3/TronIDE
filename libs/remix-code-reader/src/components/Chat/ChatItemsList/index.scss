@@ -8,6 +8,10 @@
                         border-block-end: none;
                         display: block;
                         padding: 0;
+                        // Let the browser skip layout/paint for far-away
+                        // history without dropping messages from the DOM.
+                        content-visibility: auto;
+                        contain-intrinsic-size: 80px;
                     }   
                 }
             }

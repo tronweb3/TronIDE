@@ -34,7 +34,9 @@ export const analysisReducer = (state, action) => {
         languageVersion: action.payload.languageVersion,
         data: action.payload.data
       }
-    default:
+    case 'reset':
       return initialState
+    default:
+      return state
   }
 }

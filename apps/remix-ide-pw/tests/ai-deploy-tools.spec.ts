@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
-import { dismissWelcomeModal } from './helpers'
+import { gotoHome, toolResultSummary, useBuiltinCompiler } from './helpers'
 
 // Phase-B AI workspace tools (v2.3.2): deploy / interact / verification.
 // Deploy + read are exercised end-to-end on the JavaScript VM (Tron) — free,
@@ -12,13 +12,11 @@ const VERIFY_ADDR = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
 const VERIFY_PATH = `.verification/Storage-${VERIFY_ADDR}.json`
 
 async function openHome (page: Page) {
-  await page.goto('/')
-  await dismissWelcomeModal(page)
-  await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+  await gotoHome(page)
 }
 async function setKeyAndGateway (page: Page) {
-  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
   await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
 }
 async function ask (page: Page, q: string) {
   await page.locator('.textarea-wrapper textarea').fill(q)
@@ -42,7 +40,7 @@ async function mockToolSequence (
       const sent = JSON.parse(req.postData() || '{}')
       const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
       const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
-      if (block) toolResult = String(block.content)
+      if (block) toolResult = toolResultSummary(block.content)
     } catch (e) { /* first turn */ }
     if (toolResult !== null) {
       cap.results.push(toolResult)
@@ -161,6 +159,7 @@ async function compileStorageOnVM (page: Page) {
   }
   await f.click()
   await page.locator('#icon-panel div[plugin="solidity"]').click()
+  await useBuiltinCompiler(page)
   await page.locator('[data-id="compilerContainerCompileBtn"]').click()
   await expect(page.locator('[data-id="compiledContracts"]')).toContainText('Storage', { timeout: 60_000 })
   // ensure the Deploy & Run env is the JavaScript VM (default), not injected
@@ -168,7 +167,7 @@ async function compileStorageOnVM (page: Page) {
   await page.locator('#selectExEnvOptions').waitFor({ timeout: 15_000 })
   const vmVal = await page.evaluate(() => {
     const sel = document.querySelector('#selectExEnvOptions') as HTMLSelectElement
-    const opt = [...sel.options].find((o) => /javascript vm/i.test(o.textContent || ''))
+    const opt = Array.from(sel.options).find((o) => /javascript vm/i.test(o.textContent || ''))
     return opt ? opt.value : null
   })
   if (vmVal) await page.selectOption('#selectExEnvOptions', vmVal)
@@ -211,7 +210,7 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
         if (block) {
-          const s = String(block.content)
+          const s = toolResultSummary(block.content)
           cap.results.push(s)
           const m = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/)
           if (m) deployedAddr = m[1]
@@ -287,7 +286,7 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
         if (block) {
-          const s = String(block.content)
+          const s = toolResultSummary(block.content)
           cap.results.push(s)
           const m = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/)
           if (m) deployedAddr = m[1]
@@ -364,7 +363,7 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
         if (block) {
-          const s = String(block.content)
+          const s = toolResultSummary(block.content)
           cap.results.push(s)
           const m = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/)
           if (m) deployedAddr = m[1]
@@ -464,7 +463,7 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
         if (block) {
-          const s = String(block.content)
+          const s = toolResultSummary(block.content)
           cap.results.push(s)
           const m = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/)
           if (m) deployedAddr = m[1]
@@ -555,7 +554,7 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
         if (block) {
-          const s = String(block.content)
+          const s = toolResultSummary(block.content)
           cap.results.push(s)
           const m = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/)
           if (m) deployedAddr = m[1]
@@ -646,7 +645,7 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
         if (block) {
-          const s = String(block.content)
+          const s = toolResultSummary(block.content)
           cap.results.push(s)
           const a = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/)
           if (a) deployedAddr = a[1]
@@ -726,7 +725,7 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
         if (block) {
-          const s = String(block.content)
+          const s = toolResultSummary(block.content)
           cap.results.push(s)
           const a = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/)
           if (a) deployedAddr = a[1]
@@ -783,10 +782,10 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
     await expect(deployModal).toBeVisible({ timeout: 30_000 })
     await deployModal.locator('.ant-btn-primary').click()
     // first poke: from account 1 — confirm modal shows the chosen sender
-    const pokeFrom = page.locator('.ant-modal-confirm').filter({ hasText: 'From:' })
+    const pokeFrom = page.locator('.ant-modal-confirm:visible').filter({ hasText: acct1 })
     await expect(pokeFrom).toBeVisible({ timeout: 30_000 })
     await pokeFrom.locator('.ant-btn-primary').click()
-    await expect(pokeFrom).toBeHidden({ timeout: 20_000 })
+    await expect(page.locator('.ant-modal-confirm:visible').filter({ hasText: acct1 })).toHaveCount(0, { timeout: 20_000 })
     // second poke: default account (no From line)
     const pokeDefault = page.locator('.ant-modal-confirm').filter({ hasText: /send Recorder\.poke/ })
     await expect(pokeDefault).toBeVisible({ timeout: 30_000 })
@@ -879,7 +878,7 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
     await modal.locator('.ant-btn').filter({ hasText: 'Reject' }).click()
 
     await expect(page.getByText('PREP-REJECT-DONE').first()).toBeVisible({ timeout: 25_000 })
-    expect(cap.results[0]).toMatch(/rejected saving the verification metadata/i)
+    expect(cap.results[0]).toMatch(/User rejected prepare_verification/i)
     expect(await readWorkspaceFile(page, VERIFY_PATH)).toBeNull()
   })
 
@@ -1031,7 +1030,7 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
     await createModal.locator('.ant-btn-primary').click()
 
     await expect(page.getByText('UNDO-WORKSPACE-GUARD-DONE').first()).toBeVisible({ timeout: 25_000 })
-    expect(cap.results[1]).toMatch(/current workspace could not be determined.*nothing was changed/i)
+    expect(cap.results[1]).toMatch(/current workspace could not be identified.*side effect was blocked/i)
     expect(await readWorkspaceFile(page, path)).toBe('AI-CREATED-IN-KNOWN-WORKSPACE')
   })
 
@@ -1092,6 +1091,7 @@ test.describe('AI workspace tools — phase B (deploy / interact / verify)', () 
     await setKeyAndGateway(page)
     await ask(page, 'hi')
     await expect(page.getByText('READY').first()).toBeVisible({ timeout: 20_000 })
+    await expect.poll(() => toolNames.length, { timeout: 20_000 }).toBeGreaterThan(0)
     for (const t of ['list_accounts', 'get_balance', 'list_deployable_contracts', 'deploy_contract', 'read_contract', 'write_contract', 'check_verification', 'prepare_verification']) {
       expect(toolNames, `tool ${t} must be advertised`).toContain(t)
     }

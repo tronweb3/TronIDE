@@ -35,6 +35,8 @@ class RightClickElement extends EventEmitter {
 function rightClick (browser: NightwatchBrowser, cssSelector: string, callback: VoidFunction) {
   browser.execute(function (cssSelector: string) {
     const element: any = document.querySelector(cssSelector)
+    if (!element) return false
+    element.scrollIntoView({ block: 'center', inline: 'nearest' })
     const evt = element.ownerDocument.createEvent('MouseEvents')
     const RIGHT_CLICK_BUTTON_CODE = 2
 
@@ -43,12 +45,14 @@ function rightClick (browser: NightwatchBrowser, cssSelector: string, callback: 
       false, false, false, RIGHT_CLICK_BUTTON_CODE, null)
     if (Object.prototype.hasOwnProperty.call(document, 'createEventObject')) {
       // dispatch for IE
-      return element.fireEvent('onclick', evt)
+      element.fireEvent('onclick', evt)
     } else {
       // dispatch for firefox + others
-      return !element.dispatchEvent(evt)
+      element.dispatchEvent(evt)
     }
-  }, [cssSelector], function () {
+    return true
+  }, [cssSelector], function (result) {
+    browser.assert.equal(result.value, true, `right-click target exists and received contextmenu: ${cssSelector}`)
     callback()
   })
 }

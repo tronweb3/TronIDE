@@ -6,23 +6,34 @@ export interface LocalPluginValidationResult {
 }
 
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1'])
-export const DEFAULT_REMOTE_PLUGIN_ALLOWLIST = ['plugins.tronide.io', 'plugins.tron.network']
+export const DEFAULT_REMOTE_PLUGIN_ALLOWLIST: string[] = []
 
-function normalizeAllowlist (allowlist: string[] = DEFAULT_REMOTE_PLUGIN_ALLOWLIST): string[] {
-  return allowlist.map((host) => host.trim().toLowerCase()).filter(Boolean)
+/**
+ * @deprecated Remote local-plugin hosts are disabled. This compatibility shim
+ * intentionally returns false so older consumers fail closed.
+ */
+export function isRemotePluginHostAllowed (_hostname: string, _allowlist: string[] = DEFAULT_REMOTE_PLUGIN_ALLOWLIST): boolean {
+  return false
 }
 
-export function isRemotePluginHostAllowed (hostname: string, allowlist: string[] = DEFAULT_REMOTE_PLUGIN_ALLOWLIST): boolean {
-  const normalizedHost = hostname.toLowerCase()
-  return normalizeAllowlist(allowlist).some((entry) => normalizedHost === entry || normalizedHost.endsWith(`.${entry}`))
-}
-
-export function validateLocalPluginUrl (rawUrl: string, remoteAllowlist: string[] = DEFAULT_REMOTE_PLUGIN_ALLOWLIST): LocalPluginValidationResult {
+export function validateLocalPluginUrl (
+  rawUrl: string,
+  remoteAllowlistOrTransport: string[] | string = DEFAULT_REMOTE_PLUGIN_ALLOWLIST,
+  explicitTransport: string = 'iframe'
+): LocalPluginValidationResult {
   const warnings: string[] = []
   const errors: string[] = []
+  // Keep the historical allowlist argument source-compatible, but ignore it:
+  // remote plugin URLs are disabled. New callers may pass the transport as the
+  // second argument; legacy callers can pass it as the third argument.
+  const transport = typeof remoteAllowlistOrTransport === 'string' ? remoteAllowlistOrTransport : explicitTransport
 
   if (!rawUrl || !rawUrl.trim()) {
     return { ok: false, warnings, errors: ['Local plugin URL is required.'] }
+  }
+
+  if (transport !== 'iframe' && transport !== 'ws') {
+    return { ok: false, warnings, errors: ['Local plugin connection type must be iframe or ws.'] }
   }
 
   let parsed: URL
@@ -37,22 +48,23 @@ export function validateLocalPluginUrl (rawUrl: string, remoteAllowlist: string[
   const isLocalhost = LOCAL_HOSTNAMES.has(hostname)
   const isHttps = parsed.protocol === 'https:'
   const isHttp = parsed.protocol === 'http:'
-  const isApprovedRemote = isHttps && isRemotePluginHostAllowed(parsed.hostname, remoteAllowlist)
+  const isWss = parsed.protocol === 'wss:'
+  const isWs = parsed.protocol === 'ws:'
 
-  if (!isHttps && !isHttp) {
+  if (transport === 'iframe' && !isHttps && !isHttp) {
     errors.push('Local plugin URL must use http(s).')
+  } else if (transport === 'ws' && !isWss && !isWs) {
+    errors.push('Local WebSocket plugin URL must use ws(s).')
   } else if (isHttp && !isLocalhost) {
     errors.push('HTTP local plugin URLs are only allowed for localhost.')
-  } else if (isHttps && !isLocalhost && !isApprovedRemote) {
-    errors.push(`Remote plugin URL must be approved before activation. Allowed hosts: ${normalizeAllowlist(remoteAllowlist).join(', ') || '(none)'}.`)
+  } else if (isHttps && !isLocalhost) {
+    errors.push('Remote plugin URLs are disabled. Use localhost, 127.0.0.1, or ::1.')
+  } else if ((isWs || isWss) && !isLocalhost) {
+    errors.push('Remote WebSocket plugin URLs are disabled. Use localhost, 127.0.0.1, or ::1.')
   }
 
   if (errors.length === 0 && isLocalhost) {
     warnings.push('Only connect local plugins you trust. They can interact with your workspace.')
-  }
-
-  if (errors.length === 0 && isApprovedRemote) {
-    warnings.push('Approved remote plugin URL — review permissions before enabling.')
   }
 
   return {

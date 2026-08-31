@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 const childProcess = require('child_process')
+const fs = require('fs')
 const https = require('https')
+const path = require('path')
 const selenium = require('selenium-standalone')
 
 const mode = process.argv[2] || 'start'
@@ -34,7 +36,25 @@ async function main () {
   console.log(`Using Chrome ${chromeVersion}; starting ChromeDriver ${chromeDriverVersion}`)
   await selenium.install({ drivers: { chrome: driver } })
   if (mode === 'install') return
+  if (process.env.DIRECT_CHROMEDRIVER === 'true') {
+    return startChromeDriver(chromeDriverVersion)
+  }
   await selenium.start({ drivers: { chrome: driver } })
+}
+
+function startChromeDriver (chromeDriverVersion) {
+  const seleniumRoot = path.join(path.dirname(require.resolve('selenium-standalone/package.json')), '.selenium', 'chromedriver')
+  const installDir = fs.readdirSync(seleniumRoot).find((entry) => entry.startsWith(`${chromeDriverVersion}-`))
+  if (!installDir) throw new Error(`Installed ChromeDriver ${chromeDriverVersion} was not found in ${seleniumRoot}`)
+
+  const executable = path.join(seleniumRoot, installDir, process.platform === 'win32' ? 'chromedriver.exe' : 'chromedriver')
+  const port = process.env.SELENIUM_PORT || '4444'
+  const child = childProcess.spawn(executable, [`--port=${port}`], { stdio: 'inherit' })
+
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => child.kill(signal))
+  }
+  child.on('exit', (code) => process.exit(code || 0))
 }
 
 async function resolveChromeDriverVersion (version) {
@@ -79,12 +99,12 @@ function fetchJSON (url) {
 
 function detectChromeVersion () {
   const candidates = process.platform === 'darwin'
-    ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']
+    ? [process.env.CHROME_BIN, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']
     : process.platform === 'win32'
-      ? ['chrome', 'chrome.exe']
-      : ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']
+      ? [process.env.CHROME_BIN, 'chrome', 'chrome.exe']
+      : [process.env.CHROME_BIN, 'google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']
 
-  for (const binary of candidates) {
+  for (const binary of candidates.filter(Boolean)) {
     try {
       const output = childProcess.execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim()
       const match = output.match(/(\d+\.\d+\.\d+\.\d+)/)
@@ -94,7 +114,7 @@ function detectChromeVersion () {
     }
   }
 
-  console.error('Unable to detect Chrome version; set CHROME_VERSION or CHROMEDRIVER_VERSION explicitly.')
+  console.error('Unable to detect Chrome version; set CHROME_BIN or CHROME_VERSION explicitly.')
   process.exit(1)
 }
 

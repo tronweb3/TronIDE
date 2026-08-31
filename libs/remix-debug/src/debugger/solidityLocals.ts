@@ -29,6 +29,8 @@ export class DebuggerSolidityLocals {
   traceManager
   tx
   _sourceLocation
+  _decodeTimeout
+  _decodeGeneration
 
   constructor (tx, _stepManager, _traceManager, _internalTreeCall) {
     this.event = new EventManager()
@@ -37,24 +39,29 @@ export class DebuggerSolidityLocals {
     this.storageResolver = null
     this.traceManager = _traceManager
     this.tx = tx
+    this._decodeTimeout = null
+    this._decodeGeneration = 0
   }
 
   init (sourceLocation) {
     this._sourceLocation = sourceLocation
-    var decodeTimeout = null
+    const generation = ++this._decodeGeneration
+    const stepIndex = this.stepManager.currentStepIndex
+    this._clearDecodeTimeout()
     if (!this.storageResolver) {
       return this.event.trigger('solidityLocalsMessage', ['storage not ready'])
     }
-    if (decodeTimeout) {
-      window.clearTimeout(decodeTimeout)
-    }
     this.event.trigger('solidityLocalsUpdating')
-    decodeTimeout = setTimeout(() => {
-      this.decode(sourceLocation)
+    const decodeTimeout = setTimeout(() => {
+      if (this._decodeTimeout === decodeTimeout) this._decodeTimeout = null
+      if (!this._isCurrentDecode(generation, stepIndex)) return
+      this.decode(sourceLocation, undefined, stepIndex, generation)
     }, 500)
+    this._decodeTimeout = decodeTimeout
   }
 
-  decode (sourceLocation, cursor?) {
+  decode (sourceLocation, cursor?, stepIndex = this.stepManager.currentStepIndex, generation = this._decodeGeneration) {
+    if (!this._isCurrentDecode(generation, stepIndex)) return
     const self = this
     this.event.trigger('solidityLocalsMessage', [''])
     this.traceManager.waterfall([
@@ -90,17 +97,17 @@ export class DebuggerSolidityLocals {
           next(error)
         }
       }],
-    this.stepManager.currentStepIndex,
+    stepIndex,
     (error, result) => {
-      if (error) {
-        return error
-      }
+      if (!this._isCurrentDecode(generation, stepIndex)) return
+      if (error) return this.event.trigger('solidityLocalsMessage', [error.message || error])
       var stack = result[0].value
       var memory = result[1].value
       var calldata = result[3].value
       try {
-        var storageViewer = new StorageViewer({ stepIndex: this.stepManager.currentStepIndex, tx: this.tx, address: result[2].value }, this.storageResolver, this.traceManager)
-        solidityLocals(this.stepManager.currentStepIndex, this.internalTreeCall, stack, memory, storageViewer, calldata, sourceLocation, cursor).then((locals) => {
+        var storageViewer = new StorageViewer({ stepIndex, tx: this.tx, address: result[2].value }, this.storageResolver, this.traceManager)
+        solidityLocals(stepIndex, this.internalTreeCall, stack, memory, storageViewer, calldata, sourceLocation, cursor).then((locals) => {
+          if (!this._isCurrentDecode(generation, stepIndex)) return
           if (!cursor) {
             if (!locals['error']) {
               this.event.trigger('solidityLocals', [locals])
@@ -113,19 +120,47 @@ export class DebuggerSolidityLocals {
               this.event.trigger('solidityLocalsLoadMoreCompleted', [locals])
             }
           }
+        }).catch((error) => {
+          if (this._isCurrentDecode(generation, stepIndex)) {
+            this.event.trigger('solidityLocalsMessage', [error.message || error])
+          }
         })
       } catch (e) {
-        this.event.trigger('solidityLocalsMessage', [e.message])
+        if (this._isCurrentDecode(generation, stepIndex)) {
+          this.event.trigger('solidityLocalsMessage', [e.message])
+        }
       }
     })
   }
 
   decodeMore (cursor) {
-    let decodeTimeout = null
+    const generation = ++this._decodeGeneration
+    const stepIndex = this.stepManager.currentStepIndex
+    const sourceLocation = this._sourceLocation
+    this._clearDecodeTimeout()
     if (!this.storageResolver) return this.event.trigger('solidityLocalsMessage', ['storage not ready'])
-    if (decodeTimeout) window.clearTimeout(decodeTimeout)
-    decodeTimeout = setTimeout(() => {
-      this.decode(this._sourceLocation, cursor)
+    const decodeTimeout = setTimeout(() => {
+      if (this._decodeTimeout === decodeTimeout) this._decodeTimeout = null
+      if (!this._isCurrentDecode(generation, stepIndex)) return
+      this.decode(sourceLocation, cursor, stepIndex, generation)
     }, 500)
+    this._decodeTimeout = decodeTimeout
+  }
+
+  _clearDecodeTimeout () {
+    if (this._decodeTimeout !== null) {
+      clearTimeout(this._decodeTimeout)
+      this._decodeTimeout = null
+    }
+  }
+
+  dispose () {
+    this._decodeGeneration++
+    this._clearDecodeTimeout()
+  }
+
+  _isCurrentDecode (generation, stepIndex) {
+    return generation === this._decodeGeneration &&
+      stepIndex === this.stepManager.currentStepIndex
   }
 }

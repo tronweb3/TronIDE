@@ -35,15 +35,18 @@ export class OffsetToColumnConverter {
 
   offsetToLineColumn (rawLocation, file, sources, asts) {
     if (!this.lineBreakPositionsByContent[file]) {
-      for (const filename in asts) {
+      for (const filename in (asts || {})) {
         const source = asts[filename]
         // source id was string before. in newer versions it has been changed to an integer so we need to check the type here
-        if (typeof source.id === 'string') source.id = parseInt(source.id, 10)
-        if (source.id === file) {
+        const sourceId = typeof source.id === 'string' ? parseInt(source.id, 10) : source.id
+        if (sourceId === file && sources && sources[filename] && typeof sources[filename].content === 'string') {
           this.lineBreakPositionsByContent[file] = getLinebreakPositions(sources[filename].content)
           break
         }
       }
+    }
+    if (!this.lineBreakPositionsByContent[file]) {
+      return { start: null, end: null }
     }
     return convertOffsetToLineColumn(rawLocation, this.lineBreakPositionsByContent[file])
   }

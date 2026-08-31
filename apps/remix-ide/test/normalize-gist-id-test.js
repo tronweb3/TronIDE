@@ -43,13 +43,15 @@ test('normalizeGistId returns null for a non-empty value with no id-shaped token
 })
 
 test('normalizeGistId accepts only a bare 20-40 hex id or canonical gist URL', function (t) {
-  t.plan(7)
+  t.plan(9)
   var id32 = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
   t.equal(normalizeGistId(id32), id32, 'plain 32-hex id passes through')
   t.equal(normalizeGistId('0123456789abcdef0123'), '0123456789abcdef0123', 'legacy 20-hex id passes through')
   t.equal(normalizeGistId('https://gist.github.com/tron/' + id32), id32, 'id extracted from a full gist URL')
+  t.equal(normalizeGistId(encodeURIComponent('https://gist.github.com/tron/' + id32)), id32, 'percent-encoded gist URLs are decoded once')
   t.equal(normalizeGistId('https://gist.github.com/' + id32 + '#file-token-sol'), id32, 'single-segment gist URL with a file fragment is accepted')
   t.equal(normalizeGistId('prefix-' + id32), null, 'an embedded id-shaped substring is rejected')
   t.equal(normalizeGistId('https://evil.example/' + id32), null, 'a non-GitHub host is rejected')
   t.equal(normalizeGistId('https://gist.github.com/tron/' + id32 + '?next=https://evil.example'), null, 'query-bearing gist URLs are rejected')
+  t.equal(normalizeGistId('%E0%A4%A'), null, 'malformed percent encoding is rejected')
 })

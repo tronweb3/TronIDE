@@ -22,7 +22,7 @@
 import React from "react";
 // import { injectIntl } from "react-intl";
 
-import { Modal } from 'antd';
+import Modal from 'antd/lib/modal';
 import IconComponent from "../IconComponent";
 
 import "./index.css";

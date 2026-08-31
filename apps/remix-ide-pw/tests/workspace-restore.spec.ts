@@ -7,7 +7,9 @@ import { gotoHome, dismissWelcomeModal } from './helpers'
 // remembered (workspaceFileProvider.setWorkspace -> lib/last-workspace) and
 // the file panel prefers it at boot when it still exists. The marker is
 // per-tab first (sessionStorage) with a cross-session localStorage fallback,
-// and transient link-landing workspaces never claim it.
+// and transient link-landing workspaces never claim it. Durable IndexedDB
+// storage now permits only one writable tab, so cross-tab coverage verifies an
+// explicit writer handoff rather than concurrent workspace switching.
 
 test.describe('Workspace restore across sessions', () => {
   test('TC-WS-RESTORE-1: the last-used workspace is restored after a reload', { tag: '@gate' }, async ({ page }) => {
@@ -71,16 +73,27 @@ test.describe('Workspace restore across sessions', () => {
     await expect(page.locator('select[data-id="workspacesSelect"]')).toHaveValue('default_workspace', { timeout: 30_000 })
   })
 
-  // Two tabs share one localStorage key, so the marker used to follow
-  // whichever tab switched LAST: reloading tab A could silently boot it into
-  // tab B's workspace and the user would edit/deploy the wrong contract set.
-  test('TC-WS-RESTORE-3: a reload restores THIS tab\'s workspace even after another tab switched', { tag: '@gate' }, async ({ context, page }) => {
-    await gotoHome(page) // tab A in default_workspace
+  // IndexedDB-backed workspaces are single-writer. A second tab must remain on
+  // the recovery splash until the active writer closes; after Retry it should
+  // restore the latest durable workspace instead of booting an arbitrary one.
+  test('TC-WS-RESTORE-3: writer handoff restores the latest workspace after another tab closes', { tag: '@gate' }, async ({ context, page }) => {
+    await gotoHome(page)
     await expect(page.locator('select[data-id="workspacesSelect"]')).toHaveValue('default_workspace', { timeout: 15_000 })
 
-    // tab B creates + switches to its own workspace (writes the shared fallback)
+    // A second tab is blocked while the first writer owns the workspace lock.
     const pageB = await context.newPage()
-    await gotoHome(pageB)
+    await pageB.goto('/', { waitUntil: 'domcontentloaded' })
+    await expect(pageB.locator('#tronide-initial-status')).toContainText('already open in another tab', { timeout: 15_000 })
+
+    // Closing A and retrying transfers the writer lock to B. The existing
+    // cross-session marker still restores the durable default workspace.
+    await page.close()
+    await pageB.locator('[data-id="workspaceStorageRetry"]').click()
+    await dismissWelcomeModal(pageB)
+    await pageB.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+    await expect(pageB.locator('select[data-id="workspacesSelect"]')).toHaveValue('default_workspace', { timeout: 15_000 })
+
+    // B creates and switches to its own workspace, updating the shared fallback.
     await pageB.locator('[data-id="workspaceCreate"]').click()
     const nameInput = pageB.locator('input[data-id="modalDialogCustomPromptTextCreate"]')
     await nameInput.waitFor({ state: 'visible', timeout: 5_000 })
@@ -88,21 +101,17 @@ test.describe('Workspace restore across sessions', () => {
     await pageB.locator('[data-id="workspacesModalDialog-modal-footer-ok-react"]').click()
     await expect(pageB.locator('select[data-id="workspacesSelect"]')).toHaveValue('tab-b-workspace', { timeout: 15_000 })
 
-    // a genuinely FRESH tab (no per-tab marker yet) follows the latest
-    // cross-tab value…
+    // C is blocked until B closes, then receives the same explicit handoff and
+    // restores B's latest durable workspace.
     const pageC = await context.newPage()
-    await gotoHome(pageC)
+    await pageC.goto('/', { waitUntil: 'domcontentloaded' })
+    await expect(pageC.locator('#tronide-initial-status')).toContainText('already open in another tab', { timeout: 15_000 })
+    await pageB.close()
+    await pageC.locator('[data-id="workspaceStorageRetry"]').click()
+    await dismissWelcomeModal(pageC)
+    await pageC.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
     await expect(pageC.locator('select[data-id="workspacesSelect"]')).toHaveValue('tab-b-workspace', { timeout: 30_000 })
 
-    // …but tab A reloading keeps ITS OWN workspace: the per-tab marker wins
-    // over whatever other tabs wrote to the shared fallback meanwhile. (Note
-    // the boot re-stamps the shared fallback with the restored workspace —
-    // "last workspace any tab landed in" — which is why this runs after C.)
-    await page.reload()
-    await dismissWelcomeModal(page)
-    await expect(page.locator('select[data-id="workspacesSelect"]')).toHaveValue('default_workspace', { timeout: 30_000 })
-
-    await pageB.close()
     await pageC.close()
   })
 })

@@ -33,7 +33,13 @@ class debugTransaction extends EventEmitter {
 }
 
 function checkStyle (browser: NightwatchBrowser, index: number, callback: VoidFunction) {
-  browser.pause(5000).execute(function (index: number) {
+  browser.waitUntil(function () {
+    return new Promise((resolve) => {
+      browser.execute(function (index: number) {
+        return document.querySelectorAll('*[data-shared="txLoggerDebugButton"]').length > index
+      }, [index], (result) => resolve(Boolean(result.value)))
+    })
+  }, 60000, 250).execute(function (index: number) {
     const debugBtn = document.querySelectorAll('*[data-shared="txLoggerDebugButton"]')[index] as HTMLInputElement
 
     debugBtn && debugBtn.click()

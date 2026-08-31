@@ -23,6 +23,7 @@ const csjs = require('csjs-inject')
 const modalDialogCustom = require('../ui/modal-dialog-custom')
 const { isStorageQuotaError } = require('../../lib/git-error-messages')
 const lastWorkspace = require('../../lib/last-workspace')
+const { normalizeGithubRemoteUrl, redactRemoteUrl } = require('../../lib/git-url-security')
 
 // Every dGitProvider call routes through isomorphic-git over BrowserFS. A wedged
 // op (a corrupt index, a stuck BrowserFS read) never settles, so the awaiting
@@ -57,9 +58,11 @@ const profile = {
   events: [],
   icon,
   description: 'Local Git version control for the current workspace.',
-  // Keep the implementation registered while temporarily suppressing its UI entry.
+  // 'fileexplorer' groups the icon with the workspace tools; vertical-icons
+  // only has a fixed set of kind buckets (no 'git' section) and would throw
+  // on appendChild for an unknown kind.
   kind: 'fileexplorer',
-  location: 'hiddenPanel',
+  location: 'sidePanel',
   documentation: 'https://developers.tron.network/docs/tron-ide',
   version: packageJson.version
 }
@@ -172,19 +175,18 @@ export class GitPanelTab extends ViewPlugin {
     }
   }
 
-  // True if the OAuth flow has a GitHub token in memory (lib/github-auth — never
-  // web storage). Push/Pull/private-clone need it; we only HINT the user toward
-  // the existing "Connect to GitHub" button rather than reimplementing auth here.
-  // After a full reload the token is gone, so this reads false until reconnect.
+  // True when this tab has an opaque BFF session. Push/Pull/private-clone need
+  // it; we only point users at the existing Connect GitHub flow rather than
+  // reimplementing authentication here.
   _hasGithubToken () {
-    try { return !!githubAuth.getToken() } catch (e) { return false }
+    try { return githubAuth.isConnected() } catch (e) { return false }
   }
 
   // The first remote's URL (origin if present), or '' if no remote configured.
   _remoteUrl () {
     if (!this.state.remotes.length) return ''
     const origin = this.state.remotes.find((r) => r.remote === 'origin')
-    return (origin || this.state.remotes[0]).url || ''
+    return redactRemoteUrl((origin || this.state.remotes[0]).url || '')
   }
 
   // Build a GitHub compare/PR URL for the current branch from an https/ssh
@@ -281,6 +283,10 @@ export class GitPanelTab extends ViewPlugin {
         staged: [],
         log: [],
         remotes: [],
+        // Operation feedback belongs to the workspace where it was produced.
+        // Keeping it while the panel already renders another repository makes
+        // a stale failure look like a problem in the newly selected workspace.
+        status: '',
         loading: true,
         commitMsg: ''
       })
@@ -416,11 +422,24 @@ export class GitPanelTab extends ViewPlugin {
       const current = await this._git('currentbranch', {})
       branch = (current && current.name) || (typeof current === 'string' ? current : '')
     } catch (e) { branch = '' }
-    return { workspace, branch }
+    let remotes = []
+    try { remotes = await this._git('listRemotes') || [] } catch (e) { remotes = [] }
+    const remote = remotes.find((entry) => entry && entry.remote === 'origin') || remotes[0]
+    return {
+      workspace,
+      branch,
+      remote: remote && remote.remote && remote.url
+        ? { name: remote.remote, url: redactRemoteUrl(remote.url) }
+        : null
+    }
   }
 
   _withGitContext (cmd, context) {
     return { ...cmd, expectedWorkspace: context.workspace, expectedBranch: context.branch }
+  }
+
+  _withGitRemoteContext (cmd, context) {
+    return { ...this._withGitContext(cmd, context), expectedRemote: context.remote }
   }
 
   _requireRenderedGitContext (context, action) {
@@ -610,14 +629,10 @@ export class GitPanelTab extends ViewPlugin {
   // Validate a clone URL (https only). Returns the trimmed url or throws with a
   // user-facing message — shared by the UI and the AI tool.
   _validateCloneUrl (raw) {
-    const url = String(raw || '').trim()
-    if (!url) throw new Error('Enter a repository URL to clone.')
-    let parsed
-    try { parsed = new URL(url) } catch (e) { parsed = null }
-    if (!parsed || parsed.protocol !== 'https:') {
-      throw new Error('Enter a full https:// repository URL (e.g. https://github.com/owner/repo.git).')
+    try { return normalizeGithubRemoteUrl(String(raw || '')) } catch (e) {
+      if (!String(raw || '').trim()) throw new Error('Enter a repository URL to clone.')
+      throw e
     }
-    return url
   }
 
   // Core clone: create a fresh empty workspace, clone into it, and roll back
@@ -639,9 +654,11 @@ export class GitPanelTab extends ViewPlugin {
     // failed clone can never make the half-created workspace the boot
     // target — regardless of whether the catch below ever runs.
     await lastWorkspace.suspendWhile(() => this.call('filePanel', 'createWorkspace', name, false))
+    let targetWorkspace = ''
     try {
       // Shallow objects, but keep every remote branch ref (dGitProvider.clone).
       const context = await this._gitMutationContext()
+      targetWorkspace = context.workspace
       await this._git('clone', this._withGitContext({ url }, context))
     } catch (e) {
       // Don't leave the user stranded in the workspace the failed clone
@@ -650,7 +667,12 @@ export class GitPanelTab extends ViewPlugin {
       // the user stuck while the status claimed "switched back". Verify the
       // switch actually took before claiming it in the message.
       let restored = false
-      if (previous && previous.name) {
+      let targetStillActive = false
+      try {
+        const current = await this.call('filePanel', 'getCurrentWorkspace')
+        targetStillActive = !!(current && current.name === name && (!targetWorkspace || current.absolutePath === targetWorkspace))
+      } catch (e0) { targetStillActive = false }
+      if (targetStillActive && previous && previous.name) {
         for (let attempt = 0; attempt < 3 && !restored; attempt++) {
           try { await this.call('filePanel', 'setWorkspace', previous.name, true, true) } catch (e2) { /* verify below, retry */ }
           await new Promise((resolve) => setTimeout(resolve, 700))
@@ -676,9 +698,20 @@ export class GitPanelTab extends ViewPlugin {
         : ` — could not switch back automatically: pick your workspace from the list and delete the empty "${name}".`))
     }
     // Only now may the clone workspace own the restore-on-boot marker (its
-    // creation-time stamp was muted while the clone outcome was unknown).
-    lastWorkspace.set(name)
-    this.setStatus(`Cloned ${url} into "${name}"`)
+    // creation-time stamp was muted while the clone outcome was unknown). A
+    // user can switch workspaces while the network request is in flight; never
+    // force that choice back to the clone when it completes in the background.
+    let targetStillActive = false
+    try {
+      const current = await this.call('filePanel', 'getCurrentWorkspace')
+      targetStillActive = !!(current && current.name === name)
+    } catch (e) { targetStillActive = false }
+    if (targetStillActive) {
+      lastWorkspace.set(name)
+      this.setStatus(`Cloned ${url} into "${name}"`)
+    } else {
+      this.setStatus(`Cloned ${url} into workspace "${name}"; your current workspace was left unchanged.`)
+    }
     await this.refresh()
     return name
   }
@@ -713,8 +746,8 @@ export class GitPanelTab extends ViewPlugin {
 
   async doAddRemote () {
     const input = this.el && this.el.querySelector('[data-id="gitAddRemoteUrl"]')
-    const url = input ? input.value.trim() : ''
-    if (!url) return this.setStatus('Enter a remote URL to add.')
+    let url
+    try { url = normalizeGithubRemoteUrl(input ? input.value : '') } catch (e) { return this.setStatus((e && e.message) || String(e)) }
     let context
     try { context = await this._gitMutationContext() } catch (e) { return this.setStatus('Could not identify the Git workspace. Add remote cancelled.') }
     if (!this._requireRenderedGitContext(context, 'adding a remote')) return
@@ -723,7 +756,8 @@ export class GitPanelTab extends ViewPlugin {
       this.setStatus('Remote "origin" added. Fetching branches…')
       let fetchError = null
       try {
-        await this._git('fetchRemote', this._withGitContext({ remote: 'origin' }, context))
+        const remoteContext = await this._gitMutationContext()
+        await this._git('fetchRemote', this._withGitRemoteContext({ remote: 'origin' }, remoteContext))
       } catch (e) {
         fetchError = e
       }
@@ -741,7 +775,7 @@ export class GitPanelTab extends ViewPlugin {
     try { context = await this._gitMutationContext() } catch (e) { return this.setStatus('Could not identify the Git workspace. Fetch cancelled.') }
     if (!this._requireRenderedGitContext(context, 'fetching')) return
     await this._runOp('Fetch', async () => {
-      await this._git('fetchRemote', this._withGitContext({ remote: 'origin' }, context))
+      await this._git('fetchRemote', this._withGitRemoteContext({ remote: 'origin' }, context))
       this.setStatus('Fetched all branches from remote.')
       await this.refresh()
     })
@@ -755,7 +789,7 @@ export class GitPanelTab extends ViewPlugin {
     if (!this._requireRenderedGitContext(context, 'pulling')) return
     if (!await this._requireCleanWorktree('Pull')) return
     await this._runOp('Pull', async () => {
-      await this._git('pullRemote', this._withGitContext({ branch: context.branch }, context))
+      await this._git('pullRemote', this._withGitRemoteContext({ branch: context.branch }, context))
       this.setStatus('Pulled from remote.')
       await this.refresh()
     })
@@ -771,7 +805,7 @@ export class GitPanelTab extends ViewPlugin {
     if (!this._requireRenderedGitContext(context, 'pushing')) return
     const targetBranch = branch || context.branch
     await this._runOp('Push', async () => {
-      await this._git('pushRemote', this._withGitContext({ branch: targetBranch, force: !!force }, context))
+      await this._git('pushRemote', this._withGitRemoteContext({ branch: targetBranch, force: !!force }, context))
       this.setStatus('Pushed ' + targetBranch + ' to remote.')
       await this.refresh()
     })

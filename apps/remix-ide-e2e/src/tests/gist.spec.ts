@@ -27,6 +27,16 @@ const testData = {
 }
 // 99266d6da54cc12f37f11586e8171546c7700d67
 
+function openLoadGistPrompt (browser: NightwatchBrowser): NightwatchBrowser {
+  // executeTerminalScript sends Enter twice; use the real single-Enter user
+  // path so the prompt remains open for validation.
+  return browser
+    .clearEditableContent('*[data-id="terminalCliInput"]')
+    .click('*[data-id="terminalCli"]')
+    .sendKeys('*[data-id="terminalCliInput"]', "remix.loadgist('')")
+    .sendKeys('*[data-id="terminalCliInput"]', browser.Keys.ENTER)
+}
+
 module.exports = {
   before: function (browser: NightwatchBrowser, done: VoidFunction) {
     init(browser, done)
@@ -40,6 +50,10 @@ module.exports = {
       */
     const gistid = '17ac9315bc065a3d95cf8dc1b28d71f8'
     browser
+      // A fresh default workspace no longer guarantees README.txt. Create an
+      // explicit root file so folder creation has a deterministic root anchor.
+      .addFile('README.txt', { content: '# Gist browser test root' })
+      .waitForElementVisible('li[data-id="treeViewLitreeViewItemREADME.txt"]')
       .refresh()
       .pause(10000)
       .waitForElementVisible('*[data-id="remixIdeIconPanel"]', 10000)
@@ -51,11 +65,17 @@ module.exports = {
       .sendKeys('*[data-id$="/blank"] .remixui_items', 'Browser_Tests')
       .sendKeys('*[data-id$="/blank"] .remixui_items', browser.Keys.ENTER)
       .waitForElementVisible('*[data-id="treeViewLitreeViewItemBrowser_Tests"]')
-      .addFile('File.sol', { content: '' })
+      // The new folder remains focused, so create the file directly inside it.
+      // Tree item data-id values use the full workspace-relative path.
+      .click('[data-id="fileExplorerNewFilecreateNewFile"]')
+      .waitForElementVisible('*[data-id$="/blank"]')
+      .sendKeys('*[data-id$="/blank"] .remixui_items', 'File.sol')
+      .sendKeys('*[data-id$="/blank"] .remixui_items', browser.Keys.ENTER)
+      .waitForElementVisible('*[data-id="treeViewLitreeViewItemBrowser_Tests/File.sol"]', 60000)
       .executeTerminalScript(`remix.loadgist('${gistid}')`)
       // .perform((done) => { if (runtimeBrowser === 'chrome') { browser.openFile('gists') } done() })
-      .waitForElementVisible(`[data-id="treeViewLitreeViewItemgist-${gistid}"]`)
-      .click(`[data-id="treeViewLitreeViewItemgist-${gistid}"]`)
+      .waitForElementVisible(`[data-id="treeViewLitreeViewItem/gist-${gistid}"]`, 60000)
+      .click(`[data-id="treeViewLitreeViewItem/gist-${gistid}"]`)
       .openFile(`gist-${gistid}/README.txt`)
       // Remix publish to gist
       /* .click('*[data-id="fileExplorerNewFilepublishToGist"]')
@@ -78,8 +98,8 @@ module.exports = {
             .click('[data-id="default_workspace-modal-footer-cancel-react"]')
             .executeTerminalScript(`remix.loadgist('${gistid}')`)
             // .perform((done) => { if (runtimeBrowser === 'chrome') { browser.openFile('gists') } done() })
-            .waitForElementVisible(`[data-id="treeViewLitreeViewItemgist-${gistid}"]`)
-            .click(`[data-id="treeViewLitreeViewItemgist-${gistid}"]`)
+            .waitForElementVisible(`[data-id="treeViewLitreeViewItem/gist-${gistid}"]`)
+            .click(`[data-id="treeViewLitreeViewItem/gist-${gistid}"]`)
             .openFile(`gist-${gistid}/README.txt`)
         }
       })
@@ -87,28 +107,26 @@ module.exports = {
   },
 
   'Load Gist Modal': function (browser: NightwatchBrowser) {
-    browser.clickLaunchIcon('home')
-      .waitForElementVisible('*[data-id="remixIdeIconPanel"]', 10000)
-      .clickLaunchIcon('filePanel')
-      .scrollAndClick('*[data-id="landingPageImportFromGistButton"]')
+    // Gist import remains supported through the Terminal API. Calling it
+    // with an empty ID opens the same GistHandler prompt used by the old Home UI.
+    openLoadGistPrompt(browser)
       .waitForElementVisible('*[data-id="modalDialogModalTitle"]')
-      .assert.containsText('*[data-id="modalDialogModalTitle"]', 'Load a Gist')
+      .assert.textContains('*[data-id="modalDialogModalTitle"]', 'Load a Gist')
       .waitForElementVisible('*[data-id="modalDialogModalBody"]')
-      .assert.containsText('*[data-id="modalDialogModalBody"]', 'Enter the ID of the Gist or URL you would like to load.')
+      .assert.textContains('*[data-id="modalDialogModalBody"]', 'Enter the ID of the Gist or URL you would like to load.')
       .waitForElementVisible('*[data-id="modalDialogCustomPromptText"]')
       .modalFooterCancelClick()
   },
 
   'Display Error Message For Invalid Gist ID': function (browser: NightwatchBrowser) {
-    browser
-      .waitForElementVisible('*[data-id="remixIdeIconPanel"]', 10000)
-      .clickLaunchIcon('filePanel')
-      .scrollAndClick('*[data-id="landingPageImportFromGistButton"]')
+    openLoadGistPrompt(browser)
       .waitForElementVisible('*[data-id="modalDialogCustomPromptText"]')
       .setValue('*[data-id="modalDialogCustomPromptText"]', testData.invalidGistId)
       .modalFooterOKClick()
+      .waitForElementVisible('*[data-id="modalDialogModalTitle"]')
+      .assert.textContains('*[data-id="modalDialogModalTitle"]', 'Gist load error')
       .waitForElementVisible('*[data-id="modalDialogModalBody"]')
-      .assert.containsText('*[data-id="modalDialogModalBody"]', 'Not Found')
+      .assert.textContains('*[data-id="modalDialogModalBody"]', 'Please provide a valid Gist ID or URL.')
       .modalFooterOKClick()
   },
 
@@ -131,17 +149,16 @@ module.exports = {
   },
 
   'Import From Gist For Valid Gist ID': function (browser: NightwatchBrowser) {
-    browser
-      .waitForElementVisible('*[data-id="remixIdeIconPanel"]', 10000)
-      // Public gists load anonymously — the Settings gist-token panel is retired.
-      .clickLaunchIcon('filePanel')
-      .scrollAndClick('*[data-id="landingPageImportFromGistButton"]')
+    // Public gists load anonymously — the Settings gist-token panel is retired.
+    openLoadGistPrompt(browser)
       .waitForElementVisible('*[data-id="modalDialogCustomPromptText"]')
       .setValue('*[data-id="modalDialogCustomPromptText"]', testData.validGistId)
       .modalFooterOKClick()
+      .waitForElementVisible(`[data-id="treeViewLitreeViewItem/gist-${testData.validGistId}"]`, 60000)
+      .click(`[data-id="treeViewLitreeViewItem/gist-${testData.validGistId}"]`)
       .openFile(`gist-${testData.validGistId}/README.txt`)
       .waitForElementVisible(`div[title='default_workspace/gist-${testData.validGistId}/README.txt']`)
-      .assert.containsText(`div[title='default_workspace/gist-${testData.validGistId}/README.txt'] > span`, 'README.txt')
+      .assert.textContains(`div[title='default_workspace/gist-${testData.validGistId}/README.txt'] > span`, 'README.txt')
       .end()
   }
 }

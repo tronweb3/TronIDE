@@ -42,6 +42,10 @@ export const tronCompilerSourceProvider = {
 export const baseURLTron = tronCompilerSourceProvider.baseURL
 
 export const pathToURL = {}
+// sha256 values from the trusted compiler manifest, keyed by the exact file
+// name. The compiler loader uses these values as SRI for script loads and as a
+// byte-for-byte verification step before a worker imports a compiler.
+export const pathToIntegrity = {}
 
 const compilerSourceMockParam = 'mockCompilerSource'
 const compilerSourceMockEnabledParam = 'tronideAllowCompilerSourceMock'
@@ -128,10 +132,49 @@ export function maybeMockCompilerSourceURL (url) {
  * @param version is the version of compiler with or without 'soljson-v' prefix and .js postfix
  */
 export function urlFromVersion (version) {
-  return tronCompilerSourceProvider.constructVersionURL(version)
-  // if (!version.startsWith('soljson_v')) version = 'soljson_v' + version
-  // if (!version.endsWith('.js')) version = version + '.js'
-  // return `${pathToURL[version]}/${version.replace(/\+commit.[0-9,a-z]+/g, '')}`
+  const selectedVersion = String(version || '').trim()
+  if (!selectedVersion) throw new Error('A compiler version is required')
+  if (/^https?:\/\//i.test(selectedVersion)) return assertAllowedCompilerURL(selectedVersion)
+  if (selectedVersion === 'builtin') {
+    if (typeof window === 'undefined' || !window.location) throw new Error('The built-in compiler is only available in the browser')
+    let path = window.location.pathname
+    if (!path.startsWith('/')) path = '/' + path
+    if (path.endsWith('index.html')) path = path.substring(0, path.length - 10)
+    if (!path.endsWith('/')) path += '/'
+    return assertAllowedCompilerURL(`${window.location.protocol}//${window.location.host}${path}assets/js/soljson.js`)
+  }
+  const candidates = [
+    selectedVersion,
+    `soljson-v${selectedVersion}.js`,
+    `soljson-${selectedVersion}.js`,
+    `soljson_v${selectedVersion}.js`
+  ]
+  const compilerPath = candidates.find((candidate) => pathToURL[candidate])
+  const baseURL = compilerPath && pathToURL[compilerPath]
+  if (!baseURL) throw new Error(`Compiler version is not present in the loaded manifest: ${selectedVersion}`)
+  return `${baseURL.replace(/\/$/, '')}/${compilerPath}`
+}
+
+/** Return the manifest hash for a compiler URL, when one is available. */
+export function integrityFromCompilerURL (url: string): string | undefined {
+  try {
+    const fileName = decodeURIComponent(new URL(url).pathname).split('/').pop()
+    return fileName ? pathToIntegrity[fileName] : undefined
+  } catch (_) {
+    return undefined
+  }
+}
+
+/** Convert a manifest sha256 hex digest to the browser's SRI format. */
+export function compilerIntegrityToSRI (hash?: string): string | undefined {
+  if (!hash) return undefined
+  if (/^sha256-[A-Za-z0-9+/]+=*$/.test(hash)) return hash
+  const hex = String(hash).replace(/^0x/i, '')
+  if (!/^[0-9a-f]{64}$/i.test(hex)) return undefined
+  let binary = ''
+  for (let i = 0; i < hex.length; i += 2) binary += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16))
+  if (typeof btoa !== 'function') return undefined
+  return `sha256-${btoa(binary)}`
 }
 
 /**
@@ -140,11 +183,11 @@ export function urlFromVersion (version) {
  */
 export function canUseWorker (selectedVersion) {
   const version = semver.coerce(selectedVersion)
-  return browserSupportWorker() && semver.gt(version, '0.5.13')
+  return !!version && browserSupportWorker() && semver.gt(version, '0.5.13')
 }
 
 function browserSupportWorker () {
-  return document.location.protocol !== 'file:' && Worker !== undefined
+  return typeof document !== 'undefined' && document.location.protocol !== 'file:' && typeof Worker !== 'undefined'
 }
 
 // returns a promise for minixhr

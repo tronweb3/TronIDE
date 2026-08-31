@@ -21,11 +21,10 @@ const yo = require('yo-yo')
 const csjs = require('csjs-inject')
 const modalDialog = require('../ui/modaldialog')
 const { sanitizePermissions } = require('../ui/persmission-handler')
+const { createPermissionMap, hasOwnPermission, isSafePermissionKey } = require('../ui/permission-security')
 
 const css = csjs` 
 .permissions {
-  position: sticky;
-  bottom: 0;
   display: flex;
   justify-content: flex-end;
   align-items: center;
@@ -64,13 +63,58 @@ const css = csjs`
 `
 
 export class PluginManagerSettings {
-  openDialog () {
+  _getFromLocal () {
     const fromLocal = window.localStorage.getItem('plugins/permissions')
     try {
-      this.permissions = sanitizePermissions(JSON.parse(fromLocal || '{}'))
+      return sanitizePermissions(JSON.parse(fromLocal || '{}'))
     } catch (e) {
-      this.permissions = {}
+      return createPermissionMap()
     }
+  }
+
+  _applyMutation (permissions, mutation) {
+    const { type, to, method, from } = mutation
+    if (!isSafePermissionKey(to)) return permissions
+
+    if (type === 'clearTarget') {
+      delete permissions[to]
+      return permissions
+    }
+
+    if (!isSafePermissionKey(method) || !isSafePermissionKey(from)) return permissions
+    if (type === 'set') {
+      if (!hasOwnPermission(permissions, to)) permissions[to] = createPermissionMap()
+      if (!hasOwnPermission(permissions[to], method)) permissions[to][method] = createPermissionMap()
+      permissions[to][method][from] = { allow: mutation.allow, hash: mutation.hash }
+      return permissions
+    }
+
+    if (type === 'clear' && hasOwnPermission(permissions, to) && hasOwnPermission(permissions[to], method)) {
+      delete permissions[to][method][from]
+      if (!Object.keys(permissions[to][method]).length) delete permissions[to][method]
+      if (!Object.keys(permissions[to]).length) delete permissions[to]
+    }
+    return permissions
+  }
+
+  _latestWithPendingMutations () {
+    const permissions = this._getFromLocal()
+    for (const mutation of (this.pendingPermissionMutations || [])) this._applyMutation(permissions, mutation)
+    return permissions
+  }
+
+  _queueMutation (mutation) {
+    // Rebase the modal's edits on the latest sanitized storage snapshot every
+    // time. This keeps unrelated grants created in another tab/modal alive.
+    if (!Array.isArray(this.pendingPermissionMutations)) this.pendingPermissionMutations = []
+    this.permissions = this._latestWithPendingMutations()
+    this.pendingPermissionMutations.push(mutation)
+    this._applyMutation(this.permissions, mutation)
+  }
+
+  openDialog () {
+    this.pendingPermissionMutations = []
+    this.permissions = this._getFromLocal()
     this.currentSetting = this.settings()
     modalDialog('Plugin Manager Permissions', this.currentSetting,
       { fn: () => this.onValidation() }
@@ -78,49 +122,51 @@ export class PluginManagerSettings {
   }
 
   onValidation () {
+    this.permissions = this._latestWithPendingMutations()
     const permissions = JSON.stringify(this.permissions)
     window.localStorage.setItem('plugins/permissions', permissions)
+    this.pendingPermissionMutations = []
+  }
+
+  /** Toggle one remembered decision without replacing unrelated grants. */
+  togglePermission (to, method, from) {
+    this.permissions = this._latestWithPendingMutations()
+    if (!hasOwnPermission(this.permissions, to) ||
+      !hasOwnPermission(this.permissions[to], method) ||
+      !hasOwnPermission(this.permissions[to][method], from)) return
+    const current = this.permissions[to][method][from]
+    this._queueMutation({ type: 'set', to, method, from, allow: !current.allow, hash: current.hash })
   }
 
   /** Clear one permission from a plugin */
   clearPersmission (from, to, method) {
-    if (this.permissions[to] && this.permissions[to][method]) {
-      delete this.permissions[to][method][from]
-      if (Object.keys(this.permissions[to][method]).length === 0) {
-        delete this.permissions[to][method]
-      }
-      if (Object.keys(this.permissions[to]).length === 0) {
-        delete this.permissions[to]
-      }
-      yo.update(this.currentSetting, this.settings())
-    }
+    this._queueMutation({ type: 'clear', to, method, from })
+    yo.update(this.currentSetting, this.settings())
   }
 
   /** Clear all persmissions from a plugin */
   clearAllPersmission (to) {
-    if (!this.permissions[to]) return
-    delete this.permissions[to]
+    this.permissions = this._latestWithPendingMutations()
+    if (!hasOwnPermission(this.permissions, to)) return
+    this._queueMutation({ type: 'clearTarget', to })
     yo.update(this.currentSetting, this.settings())
   }
 
   settings () {
     const permissionByToPlugin = (toPlugin, funcObj) => {
       const permissionByMethod = (methodName, fromPlugins) => {
-        const togglePermission = (fromPlugin) => {
-          this.permissions[toPlugin][methodName][fromPlugin].allow = !this.permissions[toPlugin][methodName][fromPlugin].allow
-        }
         return Object.keys(fromPlugins).map(fromName => {
           const fromPluginPermission = fromPlugins[fromName]
           const checkbox = fromPluginPermission.allow
-            ? yo`<input onchange=${() => togglePermission(fromName)} class="mr-2" type="checkbox" checked id="permission-checkbox-${toPlugin}-${methodName}-${toPlugin}" aria-describedby="module ${fromPluginPermission} asks permission for ${methodName}" />`
-            : yo`<input onchange=${() => togglePermission(fromName)} class="mr-2" type="checkbox" id="permission-checkbox-${toPlugin}-${methodName}-${toPlugin}" aria-describedby="module ${fromPluginPermission} asks permission for ${methodName}" />`
+            ? yo`<input onchange=${() => this.togglePermission(toPlugin, methodName, fromName)} class="mr-2" type="checkbox" checked id="permission-checkbox-${toPlugin}-${methodName}-${fromName}" aria-describedby="module ${fromName} asks permission for ${methodName}" />`
+            : yo`<input onchange=${() => this.togglePermission(toPlugin, methodName, fromName)} class="mr-2" type="checkbox" id="permission-checkbox-${toPlugin}-${methodName}-${fromName}" aria-describedby="module ${fromName} asks permission for ${methodName}" />`
           return yo`
             <div class="form-group ${css.permissionKey}">
               <div class="${css.checkbox}">
                 ${checkbox}
-                <label for="permission-checkbox-${toPlugin}-${methodName}-${toPlugin}" data-id="permission-label-${toPlugin}-${methodName}-${toPlugin}">Allow <u>${fromName}</u> to call <u>${methodName}</u></label>
+                <label for="permission-checkbox-${toPlugin}-${methodName}-${fromName}" data-id="permission-label-${toPlugin}-${methodName}-${fromName}">Allow <u>${fromName}</u> to call <u>${methodName}</u></label>
               </div>
-              <i onclick="${() => this.clearPersmission(fromName, toPlugin, methodName)}" class="fa fa-trash-alt" data-id="pluginManagerSettingsRemovePermission-${toPlugin}-${methodName}-${toPlugin}"></i>
+              <i onclick="${() => this.clearPersmission(fromName, toPlugin, methodName)}" class="fa fa-trash-alt" data-id="pluginManagerSettingsRemovePermission-${toPlugin}-${methodName}-${fromName}"></i>
             </div>
           `
         })

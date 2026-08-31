@@ -9,6 +9,8 @@
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
   overflow: auto;
+  color: var(--ai-title, #212529);
+  background-color: var(--light, #fff);
 }
 .remixui_contextContainer:focus {
     outline: none;
@@ -18,12 +20,15 @@
   padding: 2px;
   padding-left: 6px;
   cursor: pointer;
-  color: var(--text-dark);
-  background-color: var(--light);
+  color: inherit;
+  background-color: transparent;
 }
-.remixui_liitem:hover
+.remixui_liitem:hover,
+.remixui_liitem:focus
 {
-  background-color:  var(--secondary);
+  background-color: color-mix(in srgb, currentColor 8%, transparent);
+  outline: 2px solid color-mix(in srgb, currentColor 45%, transparent);
+  outline-offset: -2px;
 }
 #remixui_menuitems
 {

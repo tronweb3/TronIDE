@@ -30,12 +30,21 @@ import { IframePlugin } from '@remixproject/engine-web'
 const PLUGIN_SANDBOX = 'allow-popups allow-scripts allow-same-origin allow-forms'
 
 const ALLOWED_PROTOCOLS = ['http:', 'https:']
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])
 const PLUGIN_CONNECT_TIMEOUT_MS = 20000
 
-export function resolvePluginUrl (url) {
+function isLocalPluginProfile (profile) {
+  return Boolean(profile && typeof profile.hash === 'string' && profile.hash.startsWith('local:'))
+}
+
+export function resolvePluginUrl (url, localOnly = false) {
   const parsed = new URL(url, window.location.href)
   if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) {
     throw new Error(`Plugin URL must use http(s); got "${parsed.protocol}"`)
+  }
+  const hostname = parsed.hostname.replace(/^\[(.*)\]$/, '$1')
+  if (localOnly && !LOOPBACK_HOSTS.has(hostname)) {
+    throw new Error('Local plugin URL must use localhost, 127.0.0.1, or ::1.')
   }
   if (window.location.protocol === 'https:' && parsed.protocol === 'http:') {
     parsed.protocol = 'https:'
@@ -43,12 +52,12 @@ export function resolvePluginUrl (url) {
   return parsed.href
 }
 
-function assertSafeUrl (url) {
+function assertSafeUrl (url, profile) {
   let parsed
   try {
-    parsed = new URL(resolvePluginUrl(url))
+    parsed = new URL(resolvePluginUrl(url, isLocalPluginProfile(profile)))
   } catch (e) {
-    if (e && e.message && e.message.indexOf('Plugin URL must use http(s)') === 0) throw e
+    if (e && e.message && (e.message.indexOf('Plugin URL must use http(s)') === 0 || e.message.indexOf('Local plugin URL must use') === 0)) throw e
     throw new Error(`Plugin URL is not a valid URL: ${url}`)
   }
   if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) {
@@ -129,11 +138,11 @@ export class SecureIframePlugin extends IframePlugin {
     if (this.iframe.contentWindow) {
       throw new Error(`${this.name} plugin is already rendered`)
     }
-    assertSafeUrl(this.url)
+    assertSafeUrl(this.url, this.profile)
     this.iframe.setAttribute('sandbox', PLUGIN_SANDBOX)
     this.iframe.setAttribute('seamless', 'true')
     this.iframe.setAttribute('id', `plugin-${this.name}`)
-    this.iframe.src = resolvePluginUrl(this.url)
+    this.iframe.src = resolvePluginUrl(this.url, isLocalPluginProfile(this.profile))
     return this.iframe
   }
 }

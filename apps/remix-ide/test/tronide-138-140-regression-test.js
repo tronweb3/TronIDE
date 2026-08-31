@@ -16,8 +16,8 @@ function read (relativePath) {
 
 test('TRONIDE-138 bundled restore permissions use a content-bound profile hash', function (t) {
   var source = read('apps/remix-ide/src/remixAppManager.js')
-  var profileStart = source.indexOf("          name: 'restorebackupzip'")
-  var profileEnd = source.indexOf('\n        }\n      ]', profileStart)
+  var profileStart = source.indexOf("name: 'restorebackupzip'")
+  var profileEnd = source.indexOf('return plugins.map', profileStart)
   var profileSource = source.slice(profileStart, profileEnd)
   var pluginRoot = path.join(root, 'apps/remix-ide/src/assets/plugins/restorebackupzip')
   var hash = crypto.createHash('sha256')

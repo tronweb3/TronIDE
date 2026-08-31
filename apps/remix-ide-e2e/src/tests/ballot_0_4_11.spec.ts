@@ -57,7 +57,7 @@ module.exports = {
       .clickFunction('delegate - transact (not payable)', { types: 'address to', values: '"0x4b0897b0513fdc7c541b6d9d7e929c4e5364d2db"' })
       .testFunction('last',
         {
-          status: 'true Transaction mined and execution succeed',
+          status: 'true Transaction mined and execution succeeded',
           'decoded input': { 'address to': '0x4B0897b0513fdC7C541B6d9D7E929C4e5364D2dB' }
         })
   },
@@ -89,7 +89,7 @@ module.exports = {
       .clickFunction('delegate - transact (not payable)', { types: 'address to', values: '"0x4b0897b0513fdc7c541b6d9d7e929c4e5364d2db"' })
       .testFunction('last',
         {
-          status: 'true Transaction mined and execution succeed',
+          status: 'true Transaction mined and execution succeeded',
           'decoded input': { 'address to': '0x4B0897b0513fdC7C541B6d9D7E929C4e5364D2dB' }
         })
   },
@@ -103,7 +103,7 @@ module.exports = {
       .clickLaunchIcon('udapp')
       .setValue('input[placeholder="uint8 _numProposals"]', '2')
       .click('*[data-id="Deploy - transact (not payable)"]')
-      .clickInstance(0)
+      .clickInstance(1)
       .click('*[data-id="terminalClearConsole"]')
       .clickFunction('delegate - transact (not payable)', { types: 'address to', values: '0xCA35b7d915458EF540aDe6068dFe2F44E8fa733c' })
       .journalLastChildIncludes('Ballot.delegate(address)')

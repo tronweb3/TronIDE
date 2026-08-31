@@ -22,7 +22,6 @@ import React, { useEffect, useState, useRef, useReducer } from 'react'; // eslin
 import { TreeView, TreeViewItem } from '@remix-ui/tree-view'; // eslint-disable-line
 import { ModalDialog } from '@remix-ui/modal-dialog'; // eslint-disable-line
 import { Toaster } from '@remix-ui/toaster'; // eslint-disable-line
-import Gists from 'gists'
 import { FileExplorerMenu } from './file-explorer-menu'; // eslint-disable-line
 import { FileExplorerContextMenu } from './file-explorer-context-menu'; // eslint-disable-line
 import { FileExplorerProps, File, MenuItems } from './types'
@@ -40,12 +39,90 @@ import {
 import * as helper from '../../../../../apps/remix-ide/src/lib/helper'
 import QueryParams from '../../../../../apps/remix-ide/src/lib/query-params'
 import * as githubAuth from '../../../../../apps/remix-ide/src/lib/github-auth'
+import { githubRequest } from '../../../../../apps/remix-ide/src/lib/github-bff'
 import { customAction } from '@remixproject/plugin-api'
 
 import './css/file-explorer.css'
 
 // @ts-ignore
 const queryParams = new QueryParams()
+const TRONIDE_CANONICAL_URL = 'https://tronide.io/'
+const GIST_EMPTY_FILE_PLACEHOLDER =
+  '// this line is added to create a gist. Empty file is not allowed.'
+
+type GistPayload = {
+  description: string
+  public: true
+  files: Record<string, { content: string } | null>
+}
+
+function gistDescription () {
+  const settings = queryParams.get()
+  const encodeSetting = value => encodeURIComponent(String(value ?? ''))
+  const loaderUrl =
+    `${TRONIDE_CANONICAL_URL}#version=${encodeSetting(settings.version)}` +
+    `&optimize=${encodeSetting(settings.optimize)}` +
+    `&runs=${encodeSetting(settings.runs)}&gist=`
+
+  return (
+    'Created with TronIDE, the real-time TRON smart contract compiler and runtime.\n' +
+    `Load this gist in TronIDE at ${loaderUrl} (append this gist's URL or ID).`
+  )
+}
+
+function gistPayloadConfirmation (
+  payload: GistPayload,
+  requestBody: string,
+  target: string,
+  action: 'create' | 'update'
+) {
+  const serializedPayload = JSON.stringify(payload, null, 2)
+  const payloadBytes = new Blob([requestBody]).size
+  const placeholderFiles = Object.keys(payload.files).filter(
+    fileName => payload.files[fileName]?.content === GIST_EMPTY_FILE_PLACEHOLDER
+  )
+  const changedFiles = Object.values(payload.files).filter(Boolean).length
+  const deletedFiles = Object.values(payload.files).filter(value => value === null).length
+
+  return (
+    <div data-id="gistPayloadConfirmation">
+      <p>
+        {action === 'create' ? 'Create' : 'Update'} {target} using your connected GitHub account?
+      </p>
+      <dl className="row mb-2">
+        <dt className="col-4">Visibility</dt>
+        <dd className="col-8" data-id="gistPayloadVisibility">
+          <strong>Public</strong> — anyone can view it and it may be discoverable
+        </dd>
+        <dt className="col-4">Files</dt>
+        <dd className="col-8" data-id="gistPayloadFileCount">
+          {changedFiles} included{deletedFiles ? `, ${deletedFiles} deleted` : ''}
+        </dd>
+        <dt className="col-4">Request size</dt>
+        <dd className="col-8" data-id="gistPayloadSize">
+          {payloadBytes.toLocaleString()} bytes
+        </dd>
+      </dl>
+      {placeholderFiles.length > 0 && (
+        <div className="alert alert-warning py-2" data-id="gistPlaceholderDisclosure">
+          <strong>Empty-file substitution:</strong> {placeholderFiles.join(', ')} will be published with
+          this exact placeholder because GitHub Gist does not accept empty files:
+          <code className="d-block mt-1 text-break">{GIST_EMPTY_FILE_PLACEHOLDER}</code>
+        </div>
+      )}
+      <details open>
+        <summary>Review exact GitHub API payload</summary>
+        <pre
+          className="border rounded p-2 mt-2 text-left"
+          data-id="gistExactPayload"
+          style={{ maxHeight: '16rem', overflow: 'auto', whiteSpace: 'pre-wrap' }}
+        >
+          {serializedPayload}
+        </pre>
+      </details>
+    </div>
+  )
+}
 
 export const FileExplorer = (props: FileExplorerProps) => {
   const {
@@ -55,6 +132,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
     focusRoot,
     contextMenuItems,
     displayInput,
+    newFileName,
     externalUploads,
     removedContextMenuItems
   } = props
@@ -218,6 +296,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
     fileSystemInitialState
   )
   const editRef = useRef(null)
+  const contextMenuTriggerRef = useRef<HTMLElement | null>(null)
   // In-flight guard for the Format action: prettier's chunk is ~1.6 MB and the
   // format itself is synchronous, so a slow fetch or large file can take a
   // while. Without this a second click would queue another format (M2) — we
@@ -225,8 +304,8 @@ export const FileExplorer = (props: FileExplorerProps) => {
   const formatInFlight = useRef(false)
 
   useEffect(() => {
-    init(props.filesProvider, props.plugin, props.registry)(dispatch)
-  }, [])
+    return init(props.filesProvider, props.plugin, props.registry)(dispatch)
+  }, [props.filesProvider, props.plugin, props.registry])
 
   useEffect(() => {
     const provider = fileSystem.provider.provider
@@ -269,7 +348,20 @@ export const FileExplorer = (props: FileExplorerProps) => {
     if (state.focusEdit.element) {
       setTimeout(() => {
         if (editRef && editRef.current) {
-          editRef.current.focus()
+          if (state.focusEdit.isNew && state.newFileName && !editRef.current.innerText) {
+            const label = editRef.current.querySelector('.remixui_label')
+            if (label) label.textContent = state.newFileName
+            editRef.current.focus()
+            const selection = window.getSelection()
+            const range = document.createRange()
+            range.selectNodeContents(editRef.current)
+            if (selection) {
+              selection.removeAllRanges()
+              selection.addRange(range)
+            }
+          } else {
+            editRef.current.focus()
+          }
         }
       }, 150)
     }
@@ -304,11 +396,11 @@ export const FileExplorer = (props: FileExplorerProps) => {
     if (removedContextMenuItems) {
       removeMenuItems(removedContextMenuItems)
     }
-  }, [contextMenuItems])
+  }, [removedContextMenuItems])
 
   useEffect(() => {
     if (displayInput) {
-      handleNewFileInput()
+      handleNewFileInput(undefined, newFileName)
       plugin.resetNewFile()
     }
   }, [displayInput])
@@ -751,51 +843,15 @@ export const FileExplorer = (props: FileExplorerProps) => {
     }
   }
 
-  const publishToGist = (path?: string, type?: string) => {
-    modal(
-      'Create a public gist',
-      `Are you sure you want to anonymously publish all your files in the ${name} workspace as a public gist on github.com?`,
-      'OK',
-      () => toGist(path, type),
-      'Cancel',
-      () => {}
-    )
-  }
+  const publishToGist = (path?: string, type?: string) => toGist(path, type)
 
-  const pushChangesToGist = (path?: string, type?: string) => {
-    modal(
-      'Update gist',
-      'Are you sure you want to push your changes to the remote gist on github.com?',
-      'OK',
-      () => toGist(path, type),
-      'Cancel',
-      () => {}
-    )
-  }
+  const pushChangesToGist = (path?: string, type?: string) => toGist(path, type)
 
-  const publishFolderToGist = (path?: string, type?: string) => {
-    modal(
-      'Create a public gist',
-      `Are you sure you want to anonymously publish all your files in the ${path} folder as a public gist on github.com?`,
-      'OK',
-      () => toGist(path, type),
-      'Cancel',
-      () => {}
-    )
-  }
+  const publishFolderToGist = (path?: string, type?: string) => toGist(path, type)
 
-  const publishFileToGist = (path?: string, type?: string) => {
-    modal(
-      'Create a public gist',
-      `Are you sure you want to anonymously publish ${path} file as a public gist on github.com?`,
-      'OK',
-      () => toGist(path, type),
-      'Cancel',
-      () => {}
-    )
-  }
+  const publishFileToGist = (path?: string, type?: string) => toGist(path, type)
 
-  const toGist = (path?: string, type?: string) => {
+  const toGist = async (path?: string, type?: string) => {
     const filesProvider = fileSystem.provider.provider
     const proccedResult = function (error, data) {
       if (error) {
@@ -820,7 +876,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
             'The gist could not be found. It may have been deleted, or the configured access token does not have permission to read it.'
         } else if (status === 401 || status === 403 || /\b401\b|\b403\b|Bad credentials|rate limit/i.test(detail)) {
           message =
-            'GitHub rejected the request. Reconnect GitHub with gist permission ("Connect GitHub" on the Home page or the header button), then try again. ' +
+            'GitHub rejected the request. Reconnect GitHub and authorize the TronIDE GitHub App\'s Gists permission ("Connect GitHub" on the Home page or the header button), then try again. ' +
             detail
         } else if (
           error instanceof TypeError ||
@@ -865,16 +921,12 @@ export const FileExplorer = (props: FileExplorerProps) => {
      * This function is to get the original content of given gist
      * @params id is the gist id to fetch
      */
-    const getOriginalFiles = async (id, accessToken?) => {
+    const getOriginalFiles = async (id) => {
       if (!id) {
         return []
       }
 
-      const url = `https://api.github.com/gists/${id}`
-      // Authenticate with the configured gist token so this update-path read shares the higher
-      // GitHub rate limit (anonymous reads were hitting "API rate limit exceeded"). The caller
-      // only reaches here once a token is present, but stay safe if it is ever called without one.
-      const res = await fetch(url, accessToken ? { headers: { Authorization: `token ${accessToken}` } } : undefined)
+      const res = await githubRequest(`/gists/${id}`)
       // A 404 (gist does not exist) or 401/403 (no permission) still returns a JSON body, but it is a
       // GitHub *error* object with no `files` key. Parsing it and falling back to `data.files || []`
       // silently yields `[]`, which the update flow then treats as a successful empty read and the
@@ -890,101 +942,85 @@ export const FileExplorer = (props: FileExplorerProps) => {
     const folder = path || '/'
     const id = type === 'gist' ? extractNameFromKey(path).split('-')[1] : null
 
-    packageFiles(filesProvider, folder, async (error, packaged) => {
-      if (error) {
-        console.log(error)
-        modal(
-          'Publish to gist Failed',
-          'Failed to create gist: ' + error.message,
-          'Close',
-          async () => {}
-        )
-      } else {
-        // Publishing needs the in-memory GitHub connect token (lib/github-auth, set
-        // by the Home/Header "Connect GitHub" flow). The legacy Settings-tab PAT
-        // channel is retired — tokens are tab-scoped and never read from config.
-        const accessToken = (githubAuth.getToken() || '').trim()
+    // Publishing is authenticated by the opaque BFF session. GitHub's token is
+    // never available to this component or included in the previewed payload.
+    if (!githubAuth.isConnected()) {
+      modal(
+        'Connect GitHub',
+        'Publishing a gist needs a GitHub connection that can create gists. Use "Connect GitHub" on the Home page (or the header button) to sign in, then publish again.',
+        'Close',
+        () => {}
+      )
+      return
+    }
 
-        if (!accessToken) {
-          modal(
-            'Connect GitHub',
-            'Publishing a gist needs a GitHub connection that can create gists. Use "Connect GitHub" on the Home page (or the header button) to sign in, then publish again.',
-            'Close',
-            () => {}
-          )
-        } else {
-          const description =
-            'Created using tron-ide: Realtime Tron Contract Compiler and Runtime. \n Load this file by pasting this gists URL or ID at http://tronide.io/#version=' +
-            queryParams.get().version +
-            '&optimize=' +
-            queryParams.get().optimize +
-            '&runs=' +
-            queryParams.get().runs +
-            '&gist='
-          const gists = new Gists({ token: accessToken })
+    toast('Preparing exact gist preview ...')
+    try {
+      const packaged = await new Promise<Record<string, { content: string }>>((resolve, reject) => {
+        packageFiles(filesProvider, folder, (error, files) => {
+          if (error) reject(error)
+          else resolve(files)
+        })
+      })
+      const description = gistDescription()
 
-          if (id) {
-            try {
-              const originalFileList = await getOriginalFiles(id, accessToken)
-              // Telling the GIST API to remove files
-              const updatedFileList = Object.keys(packaged)
-              const allItems = Object.keys(originalFileList)
-                .filter(fileName => updatedFileList.indexOf(fileName) === -1)
-                .reduce(
-                  (acc, deleteFileName) => ({
-                    ...acc,
-                    [deleteFileName]: null
-                  }),
-                  originalFileList
-                )
-              // adding new files
-              updatedFileList.forEach(file => {
-                const _items = file.split('/')
-                const _fileName = _items[_items.length - 1]
-                allItems[_fileName] = packaged[file]
-              })
-
-              toast('Saving gist (' + id + ') ...')
-              await gists.edit(id,
-                {
-                  description: description,
-                  public: true,
-                  files: allItems
-                }
-              ).then((result) => {
-                proccedResult(null, result.body)
-                for (const key in allItems) {
-                  if (allItems[key] === null) delete allItems[key]
-                }
-              })
-            } catch (error) {
-              // Clear the "Saving gist..." toast so it does not linger next to the error modal,
-              // then surface a clear failure (e.g. the gist id does not exist or token lacks access)
-              // instead of leaving the user stuck on the loading message forever.
-              toast('')
-              proccedResult(error, {})
-            }
-          } else {
-            // id is not existing, need to create a new gist
-            toast('Creating a new gist ...')
-            gists.create(
-              {
-                description: description,
-                public: true,
-                files: packaged
-              }
-            ).then(result => {
-              proccedResult(null, result.body)
-            }).catch(error => {
-              // Clear the "Creating a new gist..." toast first so it does not linger
-              // behind the error modal (avoids a stacked toast + modal).
-              toast('')
-              proccedResult(error, {})
-            })
-          }
-        }
+      let files: GistPayload['files'] = packaged
+      if (id) {
+        const originalFileList = await getOriginalFiles(id)
+        const updatedFileList = Object.keys(packaged)
+        files = Object.keys(originalFileList)
+          .filter(fileName => updatedFileList.indexOf(fileName) === -1)
+          .reduce((acc, deleteFileName) => ({ ...acc, [deleteFileName]: null }), {})
+        updatedFileList.forEach(file => {
+          const items = file.split('/')
+          files[items[items.length - 1]] = packaged[file]
+        })
       }
-    })
+
+      const payload: GistPayload = { description, public: true, files }
+      const requestBody = JSON.stringify(payload)
+      const target = id
+        ? `public gist ${id}`
+        : type === 'file'
+          ? `${path} as a public gist`
+          : type === 'folder'
+            ? `${path} as a public gist`
+            : `all files in the ${name} workspace as a public gist`
+
+      toast('')
+      modal(
+        id ? 'Update public gist' : 'Create a public gist',
+        gistPayloadConfirmation(payload, requestBody, target, id ? 'update' : 'create'),
+        id ? 'Update public gist' : 'Create public gist',
+        async () => {
+          try {
+            toast(id ? `Saving gist (${id}) ...` : 'Creating a new gist ...')
+            const response = await githubRequest(id ? `/gists/${id}` : '/gists', {
+              method: id ? 'PATCH' : 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: requestBody
+            })
+            const result = await response.json()
+            if (!response.ok) {
+              throw Object.assign(
+                new Error(result.message || `GitHub gist ${id ? 'update' : 'creation'} failed (${response.status})`),
+                { status: response.status, body: result }
+              )
+            }
+            proccedResult(null, result)
+          } catch (error) {
+            toast('')
+            proccedResult(error, {})
+          }
+        },
+        'Cancel',
+        () => {}
+      )
+    } catch (error) {
+      toast('')
+      console.log(error)
+      proccedResult(error, {})
+    }
   }
 
   const runScript = async (path: string) => {
@@ -1015,12 +1051,22 @@ export const FileExplorer = (props: FileExplorerProps) => {
       // fileManager.readFile returns the LIVE editor content when the file is
       // open — reading the provider directly would format the stale on-disk
       // copy and wipe any unsaved edits on write-back (DEF-R2-1)
+      // Bind the complete read/format/write sequence to the active workspace;
+      // a checkout or workspace switch while Prettier is loading must not
+      // write the old file into the newly selected workspace.
+      const mutationContext = typeof state.fileManager?.captureWorkspaceMutationContext === 'function'
+        ? await state.fileManager.captureWorkspaceMutationContext(path)
+        : undefined
       const content: string = await plugin.call('fileManager', 'readFile', path)
       const { formatSource } = await import('./code-formatter')
       const formatted = await formatSource(path, content)
       if (formatted === content) return toast(`${extractNameFromKey(path)} is already formatted.`)
       // fileManager.writeFile syncs the editor when the file is open
-      await plugin.call('fileManager', 'writeFile', path, formatted)
+      if (mutationContext === undefined) {
+        await plugin.call('fileManager', 'writeFile', path, formatted)
+      } else {
+        await plugin.call('fileManager', 'writeFile', path, formatted, mutationContext)
+      }
       toast(`Formatted ${extractNameFromKey(path)}.`)
     } catch (e) {
       // syntax errors abort the format and leave the file untouched
@@ -1192,7 +1238,8 @@ export const FileExplorer = (props: FileExplorerProps) => {
     })
   }
 
-  const hideContextMenu = () => {
+  const hideContextMenu = (restoreFocus = false) => {
+    const trigger = contextMenuTriggerRef.current
     setState(prevState => {
       return {
         ...prevState,
@@ -1200,13 +1247,17 @@ export const FileExplorer = (props: FileExplorerProps) => {
         showContextMenu: false
       }
     })
+    if (restoreFocus && trigger && trigger.isConnected) {
+      window.requestAnimationFrame(() => trigger.focus({ preventScroll: true }))
+    }
   }
 
-  const editModeOn = (path: string, type: string, isNew: boolean = false) => {
+  const editModeOn = (path: string, type: string, isNew: boolean = false, suggestedName: string = '') => {
     if (fileSystem.provider.provider.isReadOnly(path)) return
     setState(prevState => {
       return {
         ...prevState,
+        newFileName: suggestedName,
         focusEdit: { ...prevState.focusEdit, element: path, isNew, type }
       }
     })
@@ -1222,6 +1273,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
         setState(prevState => {
           return {
             ...prevState,
+            newFileName: '',
             focusEdit: { element: null, isNew: false, type: '', lastEdit: '' }
           }
         })
@@ -1230,6 +1282,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
         setState(prevState => {
           return {
             ...prevState,
+            newFileName: '',
             focusEdit: { element: null, isNew: false, type: '', lastEdit: '' }
           }
         })
@@ -1240,6 +1293,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
         return setState(prevState => {
           return {
             ...prevState,
+            newFileName: '',
             focusEdit: { element: null, isNew: false, type: '', lastEdit: '' }
           }
         })
@@ -1288,6 +1342,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
         setState(prevState => {
           return {
             ...prevState,
+            newFileName: '',
             focusEdit: { element: null, isNew: false, type: '', lastEdit: '' }
           }
         })
@@ -1295,7 +1350,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
     }
   }
 
-  const handleNewFileInput = async (parentFolder?: string) => {
+  const handleNewFileInput = async (parentFolder?: string, suggestedName: string = '') => {
     if (!parentFolder) parentFolder = getFocusedFolder()
     const expandPath = [...new Set([...state.expandPath, parentFolder])]
 
@@ -1307,7 +1362,7 @@ export const FileExplorer = (props: FileExplorerProps) => {
     setState(prevState => {
       return { ...prevState, expandPath }
     })
-    editModeOn(parentFolder + '/blank', 'file', true)
+    editModeOn(parentFolder + '/blank', 'file', true, suggestedName)
   }
 
   const handleNewFolderInput = async (parentFolder?: string) => {
@@ -1330,7 +1385,11 @@ export const FileExplorer = (props: FileExplorerProps) => {
   }
 
   const handleEditInput = event => {
-    if (event.which === 13) {
+    if (event.key === 'Escape' || event.which === 27) {
+      event.preventDefault()
+      event.stopPropagation()
+      editModeOff('')
+    } else if (event.key === 'Enter' || event.which === 13) {
       event.preventDefault()
       editModeOff(editRef.current.innerText)
     }
@@ -1379,12 +1438,14 @@ export const FileExplorer = (props: FileExplorerProps) => {
   }
 
   const label = (file: File) => {
+    const isEditing = state.focusEdit.element === file.path
     return (
       <div
+        key={`${file.path}:${isEditing ? 'editing' : 'display'}`}
         className="remixui_items d-inline-block w-100"
-        ref={state.focusEdit.element === file.path ? editRef : null}
+        ref={isEditing ? editRef : null}
         suppressContentEditableWarning={true}
-        contentEditable={state.focusEdit.element === file.path}
+        contentEditable={isEditing}
         onKeyDown={handleEditInput}
         onBlur={e => {
           e.stopPropagation()
@@ -1458,6 +1519,9 @@ export const FileExplorer = (props: FileExplorerProps) => {
           onContextMenu={e => {
             e.preventDefault()
             e.stopPropagation()
+            contextMenuTriggerRef.current = e.currentTarget as HTMLElement
+            contextMenuTriggerRef.current.tabIndex = -1
+            contextMenuTriggerRef.current.focus({ preventScroll: true })
             const position = contextMenuPosition(e)
             handleContextMenuFolder(
               position.x,
@@ -1511,6 +1575,9 @@ export const FileExplorer = (props: FileExplorerProps) => {
           onContextMenu={e => {
             e.preventDefault()
             e.stopPropagation()
+            contextMenuTriggerRef.current = e.currentTarget as HTMLElement
+            contextMenuTriggerRef.current.tabIndex = -1
+            contextMenuTriggerRef.current.focus({ preventScroll: true })
             const position = contextMenuPosition(e)
             handleContextMenuFile(
               position.x,
@@ -1662,20 +1729,29 @@ async function packageFiles (filesProvider, directory, callback) {
 
   if (isFile) {
     try {
-      filesProvider.get(directory, (error, content) => {
-        if (error) {
-          throw new Error(
-            'An error ocurred while getting file content. ' + directory
-          )
+      const content = await new Promise<string>((resolve, reject) => {
+        try {
+          filesProvider.get(directory, (error, value) => {
+            if (error) {
+              return reject(new Error(
+                'An error ocurred while getting file content. ' + directory
+              ))
+            }
+            if (value === null || value === undefined) {
+              return reject(new Error('File content is unavailable. ' + directory))
+            }
+            resolve(value)
+          })
+        } catch (error) {
+          reject(error)
         }
-        if (/^\s+$/.test(content) || !content.length) {
-          content =
-            '// this line is added to create a gist. Empty file is not allowed.'
-        }
-        directory = directory.replace(/\//g, '...')
-        ret[directory] = { content }
-        callback(null, ret)
       })
+      const normalizedContent = /^\s+$/.test(content) || !content.length
+        ? GIST_EMPTY_FILE_PLACEHOLDER
+        : content
+      const gistPath = directory.replace(/\//g, '...')
+      ret[gistPath] = { content: normalizedContent }
+      callback(null, ret)
     } catch (e) {
       return callback(e)
     }
@@ -1695,8 +1771,7 @@ async function packageFiles (filesProvider, directory, callback) {
         // always re-resolved on compile, so they don't belong in the gist.
         if (path === '.deps' || path.indexOf('.deps/') === 0 || path.indexOf('/.deps/') !== -1) return
         if (/^\s+$/.test(content) || !content.length) {
-          content =
-            '// this line is added to create a gist. Empty file is not allowed.'
+          content = GIST_EMPTY_FILE_PLACEHOLDER
         }
         path = path.replace(/\//g, '...')
         ret[path] = { content }

@@ -29,4 +29,4 @@ const MeDialogueItemRender = ({ text, error, chatKey }) => {
   );
 };
 
-export default MeDialogueItemRender;
+export default React.memo(MeDialogueItemRender);

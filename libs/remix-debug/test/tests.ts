@@ -29,6 +29,10 @@
 require('./codeManager')
 require('./disassembler')
 require('./sourceMappingDecoder')
+require('./solidityLocals')
+require('./traceAnalyser-performance')
+require('./storageResolver-performance')
+require('./traceCache')
 // require('./decoder/storageLocation') // This might also fail, skip temporary
 // require('./decoder/storageDecoder')
 // require('./decoder/localDecoder')

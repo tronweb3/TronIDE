@@ -14,49 +14,48 @@
  * limitations under the License.
  */
 
-import React, { useState } from "react";
-import "./index.css";
-import { Select } from "antd";
-import classNames from "classnames";
-import CIcon from "../c-icon";
+import React, { useState } from 'react'
+import './index.css'
+import Select from 'antd/lib/select'
+import classNames from 'classnames'
+import CIcon from '../c-icon'
 
-const { Option } = Select;
+const { Option } = Select
 
-
-//antd 3.x
-const CSelect = ({ options=[],defaultValue,handleChange ,dropdownClass,selectClassName,...props}) => {
-  const [dropdownVisible,setDropdownVisible]=useState(false);
-  const onOpenChange=(e)=>{
+// antd 3.x
+const CSelect = ({ options = [], defaultValue, handleChange, dropdownClass, selectClassName, ...props }) => {
+  const [dropdownVisible, setDropdownVisible] = useState(false)
+  const onOpenChange = (e) => {
     setDropdownVisible(e)
   }
-  const _dropdownClassName=classNames('c-select-dropdown-class',{
-    [dropdownClass]:!!dropdownClass,
+  const _dropdownClassName = classNames('c-select-dropdown-class', {
+    [dropdownClass]: !!dropdownClass
   })
 
-  const _selectClassName=classNames('c-select-class',{
-    [selectClassName]:!!selectClassName,
+  const _selectClassName = classNames('c-select-class', {
+    [selectClassName]: !!selectClassName
   })
 
   return (
-    <Select 
+    <Select
       defaultValue={defaultValue}
-      suffixIcon={<CIcon 
-        className={`dropdownIcon ${dropdownVisible?'rotate180':''}`} 
-        icon={'#icon-down-arrow'} 
-      />} 
-      onOpenChange={onOpenChange} 
+      suffixIcon={<CIcon
+        className={`dropdownIcon ${dropdownVisible ? 'rotate180' : ''}`}
+        icon={'#icon-down-arrow'}
+      />}
+      onOpenChange={onOpenChange}
       onChange={handleChange}
       classNames={{ popup: { root: _dropdownClassName } }}
       className={_selectClassName}
       {...props}
     >
       {
-        options?.map((item)=>{
+        options?.map((item) => {
           return <Option key={item?.value} value={item?.value}>{item?.text}</Option>
         })
       }
     </Select>
-  );
-};
+  )
+}
 
-export default CSelect;
+export default CSelect

@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
-import { dismissWelcomeModal } from './helpers'
+import { dismissWelcomeModal, useBuiltinCompiler } from './helpers'
 
 // TC-TPL-001..003 (v2.3.1 R1): the create-workspace modal offers the TRON
 // template catalogue, the default seed stays the default, and the landing
@@ -12,6 +12,24 @@ async function openHome (page: Page) {
 }
 
 test.describe('Workspace templates', () => {
+  test('TC-TPL-HEADER: the header workspace action opens the template picker and seeds the selection', { tag: '@gate' }, async ({ page }) => {
+    await openHome(page)
+    await page.locator('[data-id="headerWorkspaceDropdown"]').click()
+    await page.locator('[data-id="headerCreateWorkspace"]').click()
+
+    const nameInput = page.locator('input[data-id="modalDialogCustomPromptTextCreate"]')
+    const templateSelect = page.locator('select[data-id="modalDialogCustomSelectTemplate"]')
+    await expect(nameInput).toBeVisible({ timeout: 10_000 })
+    await expect(templateSelect).toBeVisible()
+    await nameInput.fill('header-tpl-trc721')
+    await templateSelect.selectOption('trc721-minimal')
+    await page.locator('[data-id="workspacesModalDialog-modal-footer-ok-react"]').click()
+
+    await expect(page.locator('select[data-id="workspacesSelect"]')).toHaveValue('header-tpl-trc721', { timeout: 15_000 })
+    await expect(page.locator('[data-id="treeViewLitreeViewItemcontracts/TRC721Minimal.sol"]')).toBeVisible({ timeout: 15_000 })
+    await expect(page.locator('remix-tab[id$="TRC721Minimal.sol"]')).toBeVisible({ timeout: 15_000 })
+  })
+
   test('TC-TPL-001: create a workspace from a TRON template — template file lands, opens and compiles', async ({ page }) => {
     await openHome(page)
     await page.locator('[data-id="workspaceCreate"]').click()
@@ -28,6 +46,7 @@ test.describe('Workspace templates', () => {
     await expect(page.locator('[data-id="treeViewLitreeViewItemcontracts/1_Storage.sol"]')).toHaveCount(0)
 
     await page.locator('#icon-panel div[plugin="solidity"]').click()
+    await useBuiltinCompiler(page)
     await page.locator('*[data-id="compilerContainerCompileBtn"]').click()
     await expect(page.locator('*[data-id="compiledContracts"]')).toContainText('TRC20Token', { timeout: 30_000 })
   })
@@ -46,6 +65,23 @@ test.describe('Workspace templates', () => {
     await expect(contractsFolder).toBeVisible({ timeout: 15_000 })
     await contractsFolder.click()
     await expect(page.locator('[data-id="treeViewLitreeViewItemcontracts/1_Storage.sol"]')).toBeVisible({ timeout: 10_000 })
+  })
+
+  test('TC-TPL-EMPTY: selecting Empty workspace creates no sample files', async ({ page }) => {
+    await openHome(page)
+    await page.locator('[data-id="workspaceCreate"]').click()
+    const nameInput = page.locator('input[data-id="modalDialogCustomPromptTextCreate"]')
+    await nameInput.waitFor({ state: 'visible', timeout: 5_000 })
+    await nameInput.fill('tpl-empty')
+    await page.locator('select[data-id="modalDialogCustomSelectTemplate"]').selectOption('empty')
+    await page.locator('[data-id="workspacesModalDialog-modal-footer-ok-react"]').click()
+
+    await expect(page.locator('select[data-id="workspacesSelect"]')).toHaveValue('tpl-empty', { timeout: 15_000 })
+    const files = await page.evaluate(() => {
+      const fs = (window as any).remixFileSystem
+      return fs.readdirSync('.workspaces/tpl-empty')
+    })
+    expect(files).toEqual([])
   })
 
   test('TC-TPL-003: the landing template card opens a chooser and seeds the picked template', async ({ page }) => {

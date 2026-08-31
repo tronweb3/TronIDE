@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "release": "2.3.3",
+  "sourceCommit": "ac42c5bc9d40c7c294789140ee98d8aa6ee999b0",
+  "source": "one local production build",
+  "buildArtifactSha256": "77424c152872944cce4ba69526f93d3a2bbe5d3c1e0c7b0fde78076c116b4fd7",
+  "captureSpec": "apps/remix-ide-pw/tests/release-notes-v233-capture.spec.ts",
+  "generatedAt": "2026-07-29T12:08:58.264Z",
+  "images": [
+    {
+      "id": "home-ai-task-cards",
+      "png": "home-ai-task-cards.png",
+      "webp": "home-ai-task-cards.webp"
+    },
+    {
+      "id": "bank-of-ai-provider",
+      "png": "bank-of-ai-provider.png",
+      "webp": "bank-of-ai-provider.webp"
+    },
+    {
+      "id": "task-timeline-history",
+      "png": "task-timeline-history.png",
+      "webp": "task-timeline-history.webp"
+    },
+    {
+      "id": "tron-skill-result",
+      "png": "tron-skill-result.png",
+      "webp": "tron-skill-result.webp"
+    },
+    {
+      "id": "approval-write-lock",
+      "png": "approval-write-lock.png",
+      "webp": "approval-write-lock.webp"
+    },
+    {
+      "id": "deploy-next-steps",
+      "png": "deploy-next-steps.png",
+      "webp": "deploy-next-steps.webp"
+    }
+  ]
+}

@@ -25,8 +25,9 @@ const crypto = require('crypto');
 const packageJson = require('../../package.json');
 
 // Single source of truth for the Content-Security-Policy. This must stay in
-// sync with the <meta http-equiv="Content-Security-Policy"> in src/index.html /
-// src/webpack.index.html, the nginx `add_header Content-Security-Policy`
+// sync with the <meta http-equiv="Content-Security-Policy"> in src/index.html,
+// src/webpack.index.html, and src/release-notes.html, the nginx
+// `add_header Content-Security-Policy`
 // (apps/remix-ide/nginx.conf), and the generated `_headers` file (build.sh).
 //
 // Sending the CSP as a *response header* (here for the dev-server, via _headers
@@ -41,8 +42,8 @@ const CONTENT_SECURITY_POLICY = [
   "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://use.fontawesome.com https://*.fontawesome.com",
   "font-src 'self' data: https://use.fontawesome.com https://*.fontawesome.com https://cdnjs.cloudflare.com",
   "img-src 'self' data: blob: https:",
-  "connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss:",
-  "frame-src 'self' http://localhost:* https:",
+  "connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss://localhost:* wss://127.0.0.1:*",
+  "frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*",
   "worker-src 'self' blob:",
   "form-action 'self'",
   // Header-only directive — ignored when delivered via <meta>.
@@ -91,10 +92,15 @@ class VersionedEntrypointAssetsPlugin {
         tokenCache[assetName] = token
         return token
       }
-      ;['index.html', 'webpack.index.html'].forEach((fileName) => {
+      ;['index.html', 'webpack.index.html', 'release-notes.html'].forEach((fileName) => {
         const filePath = path.join(outputPath, fileName)
         if (!fs.existsSync(filePath)) return
-        const html = fs.readFileSync(filePath, 'utf8')
+        let html = fs.readFileSync(filePath, 'utf8')
+        // Nx emits a separate vendor entry in development but merges it into
+        // main.js for production. The standalone document declares the superset
+        // so it works in dev; remove only entries this concrete build omitted.
+        html = html.replace(/\s*<script\s+src="((?:runtime|vendor|main)\.js)"[^>]*><\/script>/g,
+          (match, asset) => fs.existsSync(path.join(outputPath, asset)) ? match : '')
         const versionedHtml = html.replace(/(src=")((?:runtime|vendor|main)\.js)(?:\?v=[^"]*)?(")/g,
           (match, pre, asset, post) => `${pre}${asset}?v=${tokenFor(asset)}${post}`)
         if (versionedHtml !== html) fs.writeFileSync(filePath, versionedHtml)
@@ -104,18 +110,36 @@ class VersionedEntrypointAssetsPlugin {
       // The header badge reads this file first (header-panel.getLatestVersion),
       // so a hand-maintained copy silently rots — it showed 2.3.0 long after
       // package.json moved to 2.3.2. Generating it here makes the deployed
-      // version honest and refreshes the timestamp so a long-lived tab can
-      // detect a new deploy.
+      // version honest. A stable build id keeps the metadata reproducible while
+      // still exposing the CI commit when one is available.
       try {
         const versionDir = path.join(outputPath, 'assets')
         fs.mkdirSync(versionDir, { recursive: true })
+        const buildId = process.env.TRONIDE_BUILD_ID || process.env.CI_COMMIT_SHA || process.env.GITHUB_SHA || packageJson.version
         fs.writeFileSync(path.join(versionDir, 'version.json'), JSON.stringify({
           version: packageJson.version,
-          timestamp: Date.now(),
+          buildId,
           mode: stats.compilation.compiler.options.mode || process.env.NODE_ENV || 'development'
         }))
       } catch (e) { /* non-fatal: badge falls back to packageJson.version */ }
     })
+  }
+}
+
+// Nx 15 adds a DefinePlugin that serializes every NX_* task variable into the
+// browser bundle. That includes NX_WORKSPACE_ROOT and NX_TERMINAL_OUTPUT_PATH,
+// leaking the build machine's absolute paths and task hash even in production.
+// The application does not consume NX_* values at runtime; retain any
+// non-Nx definitions while removing the task-runner metadata.
+function stripNxClientEnvironment (plugins = []) {
+  for (const plugin of plugins) {
+    const definitions = plugin && plugin.definitions
+    const clientEnvironment = definitions && definitions['process.env']
+    if (!clientEnvironment || typeof clientEnvironment !== 'object' || Array.isArray(clientEnvironment)) continue
+    definitions['process.env'] = Object.keys(clientEnvironment).reduce((safeEnvironment, key) => {
+      if (!/^NX_/i.test(key)) safeEnvironment[key] = clientEnvironment[key]
+      return safeEnvironment
+    }, {})
   }
 }
 
@@ -169,6 +193,16 @@ module.exports = config => {
     // unless a global `BROWSER` is defined, in which case it uses the bundled
     // tokens. Define it so the parser works in the browser (in-editor linter).
     BROWSER: JSON.stringify(true),
+    // Bank of AI is the v2.3.3 default provider. Set the build variable to
+    // "false" as an operational kill switch if the integration must be hidden.
+    'process.env.TRON_BANK_OF_AI_ENABLED': JSON.stringify(process.env.TRON_BANK_OF_AI_ENABLED || 'true'),
+    // IndexedDB-backed workspaces are enabled by default. "false" remains a
+    // pre-activation kill switch; runtime code refuses unsafe downgrades after
+    // a browser has stored newer work in IndexedDB.
+    'process.env.TRONIDE_INDEXEDDB_WORKSPACES': JSON.stringify(process.env.TRONIDE_INDEXEDDB_WORKSPACES || 'true'),
+    // Public team-owned BFF base URL. It may include a reverse-proxy path;
+    // keep it overridable so test and production can cut over independently.
+    'process.env.TRONIDE_GITHUB_BFF_ORIGIN': JSON.stringify(process.env.TRONIDE_GITHUB_BFF_ORIGIN || ''),
     'process.env.TRON_PUBLIC_TRONGRID_API_KEY': JSON.stringify(process.env.TRON_PUBLIC_TRONGRID_API_KEY || ''),
     'process.env.TRONSCAN_MAINNET_CONTRACT_API_URLS': JSON.stringify(process.env.TRONSCAN_MAINNET_CONTRACT_API_URLS || ''),
     'process.env.TRONSCAN_NILE_CONTRACT_API_URLS': JSON.stringify(process.env.TRONSCAN_NILE_CONTRACT_API_URLS || ''),
@@ -176,6 +210,7 @@ module.exports = config => {
   }));
 
   const nxWebpackConfig = nxWebpack(config, {});
+  stripNxClientEnvironment(nxWebpackConfig.plugins);
 
   const finalConfig = {
     ...nxWebpackConfig,
@@ -185,6 +220,14 @@ module.exports = config => {
     output: {
       ...nxWebpackConfig.output,
       scriptType: 'text/javascript',
+      // Entry bundles keep fixed names and receive content-derived query tokens
+      // in VersionedEntrypointAssetsPlugin. Async chunks (including the solc
+      // worker) have no HTML query token, so their filename itself must change
+      // with the bytes. Otherwise a deploy can keep serving an older worker
+      // from the CDN under a stable numeric name such as 4726.js.
+      chunkFilename: config.mode === 'production'
+        ? '[name].[contenthash:12].js'
+        : nxWebpackConfig.output.chunkFilename,
       devtoolModuleFilenameTemplate: 'file:///[absolute-resource-path]'
     }
   };
@@ -213,3 +256,5 @@ module.exports = config => {
 
   return finalConfig;
 };
+
+module.exports.stripNxClientEnvironment = stripNxClientEnvironment;

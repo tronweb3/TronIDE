@@ -39,11 +39,21 @@ const getTronTemplate = (id) => {
     return null
   }
 }
+const getTronTemplateFiles = (template) => {
+  try {
+    return remixLibWorkspace.tronTemplates.getTronTemplateFiles(template)
+  } catch (e) {
+    return [{ path: template.path, content: template.content }]
+  }
+}
 const GistHandler = require('../../lib/gist-handler')
 const QueryParams = require('../../lib/query-params')
 const { normalizeUrlImport } = require('../../lib/url-param-security')
+const { DEEP_LINK_LIMITS, decodeUrlBase64 } = require('../../lib/url-base64')
+const { STORAGE_MARKER_PATH } = require('../../lib/workspace-storage/migration')
 const lastWorkspace = require('../../lib/last-workspace')
 const modalDialogCustom = require('../ui/modal-dialog-custom')
+const { requireUserPermission } = require('../ui/permission-security')
 /*
   Overview of APIs:
    * fileManager: @args fileProviders (browser, shared-folder, swarm, github, etc ...) & config & editor
@@ -64,10 +74,11 @@ const modalDialogCustom = require('../ui/modal-dialog-custom')
 const profile = {
   name: 'filePanel',
   displayName: 'File explorers',
-  methods: ['createNewFile', 'uploadFile', 'getCurrentWorkspace', 'getWorkspaces', 'createWorkspace', 'setWorkspace', 'registerContextMenuItem', 'getWorkspaceTemplates', 'aiSearchWorkspace'],
+  methods: ['createNewFile', 'uploadFile', 'getCurrentWorkspace', 'getWorkspaces', 'createWorkspace', 'openCreateWorkspaceDialog', 'setWorkspace', 'registerContextMenuItem', 'getWorkspaceTemplates', 'aiSearchWorkspace'],
   events: ['setWorkspace', 'renameWorkspace', 'deleteWorkspace', 'createWorkspace'],
   icon: 'assets/img/fileManager.webp',
   description: ' - ',
+  permission: true,
   kind: 'fileexplorer',
   location: 'sidePanel',
   documentation: 'https://developers.tron.network/docs/tron-ide',
@@ -95,6 +106,11 @@ module.exports = class Filepanel extends ViewPlugin {
     this.workspaces = []
     this.initialWorkspace = null
     this.appManager = appManager
+  }
+
+  _withUserPermission (method, message, action) {
+    if (!this.currentRequest) return action()
+    return requireUserPermission(this, method, message).then(action)
   }
 
   render () {
@@ -131,9 +147,34 @@ module.exports = class Filepanel extends ViewPlugin {
    * @param callback (...args) => void
    */
   registerContextMenuItem (item) {
+    const caller = this.currentRequest && this.currentRequest.from
+    return this._withUserPermission('registerContextMenuItem', 'register a workspace context-menu action', () => {
+      // The action is later dispatched to item.id. Never let an external
+      // connector route the click to another plugin or create an undeletable
+      // sticky action under a victim's identity.
+      const boundItem = caller ? { ...item, id: caller, sticky: false } : item
+      return this._registerContextMenuItem(boundItem)
+    })
+  }
+
+  _registerContextMenuItem (item) {
     if (!item) throw new Error('Invalid register context menu argument')
     if (!item.name || !item.id) throw new Error('Item name and id is mandatory')
     if (!item.type && !item.path && !item.extension && !item.pattern) throw new Error('Invalid file matching criteria provided')
+    for (const field of ['type', 'path', 'extension', 'pattern']) {
+      if (item[field] !== undefined && (!Array.isArray(item[field]) || item[field].some(value => typeof value !== 'string'))) {
+        throw new Error(`Invalid ${field} matching criteria provided`)
+      }
+    }
+    for (const pattern of item.pattern || []) {
+      try {
+        // Compile at registration time so malformed plugin input cannot crash
+        // the FileExplorer render path when the context menu is opened.
+        RegExp(pattern)
+      } catch (error) {
+        throw new Error(`Invalid pattern matching criteria provided: ${pattern}`)
+      }
+    }
     if (this.registeredMenuItems.filter((o) => {
       return o.id === item.id && o.name === item.name
     }).length) throw new Error(`Action ${item.name} already exists on ${item.id}`)
@@ -154,6 +195,7 @@ module.exports = class Filepanel extends ViewPlugin {
   }
 
   async getCurrentWorkspace () {
+    await requireUserPermission(this, 'getCurrentWorkspace', 'read the current workspace name')
     return await this.request.getCurrentWorkspace()
   }
 
@@ -163,6 +205,7 @@ module.exports = class Filepanel extends ViewPlugin {
   // Defaults are AI-friendly: include '*' (every searchable text file, not just
   // the panel's '*.sol, *.js') and the standard dot-dir exclude.
   async aiSearchWorkspace (options = {}) {
+    await requireUserPermission(this, 'aiSearchWorkspace', 'search workspace file contents')
     const fileManager = this._deps.fileManager
     const { files, skippedFiles, warnings } = await collectSearchableFiles(fileManager, SEARCH_LIMITS)
     const result = searchWorkspaceFiles(files, {
@@ -182,15 +225,18 @@ module.exports = class Filepanel extends ViewPlugin {
   // The TRON starter templates a new workspace can be seeded from (id/name/
   // description). Exposed so the AI assistant can offer them for create_workspace.
   getWorkspaceTemplates () {
-    try {
-      const list = remixLibWorkspace && remixLibWorkspace.tronTemplates && remixLibWorkspace.tronTemplates.TRON_TEMPLATES
-      return (list || []).map((t) => ({ id: t.id, name: t.name, description: t.description }))
-    } catch (e) {
-      return []
-    }
+    return this._withUserPermission('getWorkspaceTemplates', 'read available workspace templates', () => {
+      try {
+        const list = remixLibWorkspace && remixLibWorkspace.tronTemplates && remixLibWorkspace.tronTemplates.TRON_TEMPLATES
+        return (list || []).map((t) => ({ id: t.id, name: t.name, description: t.description }))
+      } catch (e) {
+        return []
+      }
+    })
   }
 
   async getWorkspaces () {
+    await requireUserPermission(this, 'getWorkspaces', 'list workspace names')
     const result = new Promise((resolve, reject) => {
       const workspacesPath = this._deps.fileProviders.workspace.workspacesPath
       this._deps.fileProviders.browser.resolveDirectory('/' + workspacesPath, (error, items) => {
@@ -238,6 +284,11 @@ module.exports = class Filepanel extends ViewPlugin {
           )
           return
         }
+        // Validate and decode before creating/switching workspaces. A malformed
+        // deep link must not strand the user in an empty `code-sample`
+        // workspace, and UTF-8 bytes must not be interpreted as Latin-1.
+        const decodedCode = params.code ? decodeUrlBase64(params.code, DEEP_LINK_LIMITS.code) : null
+        const decodedRemappings = params.remaps ? decodeUrlBase64(params.remaps, DEEP_LINK_LIMITS.remaps) : null
         await this.processCreateWorkspace('code-sample')
         const workspaceProvider = this._deps.fileProviders.workspace
         workspaceProvider.setWorkspace('code-sample')
@@ -254,8 +305,11 @@ module.exports = class Filepanel extends ViewPlugin {
         if (params.code) {
           var hash = bufferToHex(keccakFromString(params.code))
           path = 'contract-' + hash.replace('0x', '').substring(0, 10) + '.sol'
-          content = atob(params.code)
+          content = decodedCode
           await writeDeepLinkFile(path, content)
+        }
+        if (decodedRemappings !== null) {
+          await writeDeepLinkFile('remappings.txt', decodedRemappings)
         }
         if (safeImportUrl) {
           const data = await this.call('contentImport', 'resolve', safeImportUrl)
@@ -267,6 +321,7 @@ module.exports = class Filepanel extends ViewPlugin {
         await this._deps.fileManager.openFile(path)
       } catch (e) {
         console.error(e)
+        modalDialogCustom.alert('Unable to import source', e && e.message ? e.message : 'The source link could not be decoded.')
       }
       return
     }
@@ -277,7 +332,12 @@ module.exports = class Filepanel extends ViewPlugin {
     return new Promise((resolve, reject) => {
       this._deps.fileProviders.browser.resolveDirectory('/', async (error, filesList) => {
         if (error) return reject(error)
-        if (Object.keys(filesList).length === 0) {
+        // The IndexedDB backend keeps one verified root marker. It is storage
+        // metadata, not user content; a fresh browser must still receive the
+        // default workspace instead of being mistaken for a legacy root that
+        // needs manual migration.
+        const userRootEntries = Object.keys(filesList).filter((entry) => `/${entry.replace(/^\/+/, '')}` !== STORAGE_MARKER_PATH)
+        if (userRootEntries.length === 0) {
           await this.createWorkspace('default_workspace')
           resolve('default_workspace')
         } else {
@@ -308,11 +368,13 @@ module.exports = class Filepanel extends ViewPlugin {
     })
   }
 
-  async createNewFile () {
-    return await this.request.createNewFile()
+  async createNewFile (suggestedName) {
+    await requireUserPermission(this, 'createNewFile', 'create a workspace file')
+    return await this.request.createNewFile(suggestedName)
   }
 
   async uploadFile (event) {
+    await requireUserPermission(this, 'uploadFile', 'upload a workspace file')
     return await this.request.uploadFile(event)
   }
 
@@ -338,8 +400,8 @@ module.exports = class Filepanel extends ViewPlugin {
       // browser-provider mutations. The surrounding workspace lease also keeps
       // Git checkout from starting until the whole create/switch flow completes.
       this._deps.fileManager.assertWorkspaceMutationToken(mutation.token)
-      if (!workspaceRootPathExists) browserProvider.createDir(workspaceRootPath)
-      if (!workspacePathExists) browserProvider.createDir(workspacePath)
+      if (!workspaceRootPathExists) await browserProvider.createDir(workspaceRootPath)
+      if (!workspacePathExists) await browserProvider.createDir(workspacePath)
     } finally {
       if (mutation.owned) this._deps.fileManager.endWorkspaceMutation(mutation.token)
     }
@@ -353,6 +415,7 @@ module.exports = class Filepanel extends ViewPlugin {
   }
 
   async createWorkspace (workspaceName, setDefaultsOrTemplateId = true, suppliedMutationToken) {
+    await requireUserPermission(this, 'createWorkspace', 'create and select a workspace')
     const mutation = this._workspaceMutation('create workspaces', suppliedMutationToken)
     try {
       if (!workspaceName) throw new Error('name cannot be empty')
@@ -368,7 +431,9 @@ module.exports = class Filepanel extends ViewPlugin {
       if (template) {
         // seeding only — the caller opens the file after the UI has switched
         // workspaces, or the switch would close the tab again
-        await workspaceProvider.set(template.path, template.content)
+        for (const file of getTronTemplateFiles(template)) {
+          await workspaceProvider.set(file.path, file.content)
+        }
       } else if (setDefaultsOrTemplateId === true || typeof setDefaultsOrTemplateId === 'string') {
         // unknown template id falls back to the default seed rather than an empty workspace
         for (const file in examples) {
@@ -384,6 +449,14 @@ module.exports = class Filepanel extends ViewPlugin {
     }
   }
 
+  async openCreateWorkspaceDialog () {
+    await requireUserPermission(this, 'openCreateWorkspaceDialog', 'open the workspace creation dialog')
+    if (!this.request || typeof this.request.createWorkspace !== 'function') {
+      throw new Error('The workspace creator is not ready. Try again.')
+    }
+    return this.request.createWorkspace()
+  }
+
   async renameWorkspace (oldName, workspaceName, suppliedMutationToken) {
     const mutation = this._workspaceMutation('rename workspaces', suppliedMutationToken)
     try {
@@ -393,7 +466,7 @@ module.exports = class Filepanel extends ViewPlugin {
       this._deps.fileManager.assertWorkspaceMutationToken(mutation.token)
       const browserProvider = this._deps.fileProviders.browser
       const workspacesPath = this._deps.fileProviders.workspace.workspacesPath
-      browserProvider.rename('browser/' + workspacesPath + '/' + oldName, 'browser/' + workspacesPath + '/' + workspaceName, true)
+      await browserProvider.rename('browser/' + workspacesPath + '/' + oldName, 'browser/' + workspacesPath + '/' + workspaceName, true)
     } finally {
       if (mutation.owned) this._deps.fileManager.endWorkspaceMutation(mutation.token)
     }
@@ -401,12 +474,35 @@ module.exports = class Filepanel extends ViewPlugin {
 
   /** these are called by the react component, action is already finished whent it's called */
   async setWorkspace (workspace, setEvent = true, syncComponent = false, suppliedMutationToken) {
+    await requireUserPermission(this, 'setWorkspace', 'change the current workspace')
     const mutation = this._workspaceMutation('switch workspaces', suppliedMutationToken)
     try {
       if (typeof workspace === 'string') workspace = { name: workspace, isLocalhost: false }
       if (syncComponent && this.request.setWorkspace) return await this.request.setWorkspace(workspace.name, mutation.token)
       if (workspace.isLocalhost) {
-        await this.call('manager', 'activatePlugin', 'remixd')
+        // remixd's provider can finish its handshake while the plugin manager
+        // is still inside toggleActive(). Its init callback calls back into
+        // this method before the manager has added remixd to actives. Asking
+        // the manager to activate remixd again from that callback recursively
+        // toggles the same plugin and leaves it deactivated. A call originating
+        // from remixd is already part of that activation; let it publish the
+        // localhost workspace without re-entering the manager.
+        const caller = this.currentRequest && this.currentRequest.from
+        // The daemon emits `connected` before the workspace component's
+        // listener publishes localhost. In that callback the provider is
+        // already live; trying to activate remixd again (and awaiting the
+        // handle's own initialisation promise) deadlocks the workspace lease.
+        // Let the existing connection proceed and only activate when this is
+        // a genuinely disconnected workspace request.
+        if (caller !== 'remixd' && !this._deps.fileProviders.localhost.isConnected()) {
+          this.remixdHandle.requestWorkspaceActivation()
+          try {
+            await this.call('manager', 'activatePlugin', 'remixd')
+            await this.remixdHandle.whenReady()
+          } finally {
+            this.remixdHandle.clearWorkspaceActivationRequest()
+          }
+        }
       } else if (this._deps.fileProviders.localhost.isConnected() && await this.call('manager', 'isActive', 'remixd')) {
       // Wait for the disconnect event to settle before publishing the browser
       // workspace. The Workspace component has already recorded the user's

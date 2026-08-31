@@ -65,7 +65,7 @@ export class BreakpointManager {
     if (!this.locationToRowConverter) {
       return console.log('row converter not provided')
     }
-    this.jump(fromStep || 0, 1, defaultToLimit, this.traceManager.trace)
+    return this.jump(fromStep || 0, 1, defaultToLimit, this.traceManager.trace)
   }
 
   /**
@@ -77,17 +77,22 @@ export class BreakpointManager {
     if (!this.locationToRowConverter) {
       return console.log('row converter not provided')
     }
-    this.jump(fromStep || 0, -1, defaultToLimit, this.traceManager.trace)
+    return this.jump(fromStep || 0, -1, defaultToLimit, this.traceManager.trace)
   }
 
   depthChange (step, trace) {
-    return trace[step].depth !== trace[step - 1].depth
+    return step > 0 && step < trace.length && trace[step].depth !== trace[step - 1].depth
   }
 
   hitLine (currentStep, sourceLocation, previousSourceLocation, trace) {
     // isJumpDestInstruction -> returning from a internal function call
     // depthChange -> returning from an external call
     // sourceLocation.start <= previousSourceLocation.start && ... -> previous src is contained in the current one
+    if (!sourceLocation || !previousSourceLocation) {
+      this.event.trigger('breakpointStep', [currentStep])
+      this.event.trigger('breakpointHit', [sourceLocation, currentStep])
+      return true
+    }
     if ((isJumpDestInstruction(trace[currentStep]) && previousSourceLocation.jump === 'o') ||
       this.depthChange(currentStep, trace) ||
       (sourceLocation.start <= previousSourceLocation.start &&
@@ -121,6 +126,10 @@ export class BreakpointManager {
         continue
       }
       const lineColumn = await this.locationToRowConverter(sourceLocation)
+      if (!lineColumn || !lineColumn.start) {
+        currentStep += direction
+        continue
+      }
       if (!initialLine) initialLine = lineColumn
 
       if (initialLine.start.line !== lineColumn.start.line) {

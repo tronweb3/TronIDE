@@ -19,18 +19,37 @@
 
 import * as WS from 'ws'
 import * as http from 'http'
+import * as crypto from 'crypto'
 import { WebsocketOpt, ServiceClient } from './types' // eslint-disable-line
 import { getDomain } from './utils'
 import { createClient } from '@remixproject/plugin-ws'
 export default class WebSocket {
   server: http.Server
   wsServer: WS.Server
+  private readonly sessionToken: string
 
-  constructor (public port: number, public opt: WebsocketOpt, public getclient: () => ServiceClient) {} //eslint-disable-line
+  constructor (public port: number, public opt: WebsocketOpt, public getclient: () => ServiceClient) { //eslint-disable-line
+    this.sessionToken = crypto.randomBytes(16).toString('hex')
+  }
 
   start (callback?: (ws: WS, client: ServiceClient, error?: Error) => void): void {
     this.server = http.createServer((request, response) => {
-      console.log((new Date()) + ' Received request for ' + request.url)
+      if (request.url === '/remixd-token' && request.method === 'GET') {
+        const origin = typeof request.headers.origin === 'string' ? request.headers.origin : ''
+        if (!originIsAllowed(origin, this)) {
+          response.writeHead(403)
+          response.end()
+          return
+        }
+        response.setHeader('Access-Control-Allow-Origin', origin)
+        response.setHeader('Vary', 'Origin')
+        response.setHeader('Cache-Control', 'no-store')
+        response.setHeader('Content-Type', 'application/json')
+        response.writeHead(200)
+        response.end(JSON.stringify({ token: this.sessionToken }))
+        return
+      }
+      // Do not log request.url: WebSocket upgrade URLs contain the session token.
       response.writeHead(404)
       response.end()
     })
@@ -58,6 +77,12 @@ export default class WebSocket {
           console.log(`${new Date()} connection from origin  ${info.origin}`)
           return
         }
+        const token = sessionTokenFromUrl(info.req.url)
+        if (!token || !safeTokenEqual(token, this.sessionToken)) {
+          done(false)
+          console.log(`${new Date()} rejected remixd connection with invalid session token`)
+          return
+        }
         done(true)
       }
     })
@@ -76,6 +101,23 @@ export default class WebSocket {
       })
     }
   }
+}
+
+function sessionTokenFromUrl (rawUrl: string | undefined): string | null {
+  if (typeof rawUrl !== 'string') return null
+  try {
+    const parsed = new URL(rawUrl, 'http://127.0.0.1')
+    const token = parsed.searchParams.get('remixdToken')
+    return token && /^[0-9a-f]{32}$/i.test(token) ? token : null
+  } catch (e) {
+    return null
+  }
+}
+
+function safeTokenEqual (provided: string, expected: string): boolean {
+  const left = Buffer.from(provided, 'hex')
+  const right = Buffer.from(expected, 'hex')
+  return left.length === right.length && crypto.timingSafeEqual(left, right)
 }
 
 function originIsAllowed (origin: string, self: WebSocket): boolean {

@@ -65,7 +65,8 @@ export interface ResultCbInterface {
 
 export interface Options {
   accounts?: string[] | null,
-  web3?: any
+  web3?: any,
+  signal?: AbortSignal
 }
 
 export interface CompilerConfiguration {

@@ -29,7 +29,18 @@ class GoToVmTraceStep extends EventEmitter {
 }
 
 function goToVMtraceStep (browser: NightwatchBrowser, step: number, incr: number, done: VoidFunction) {
-  browser.execute(function (step) { (document.getElementById('slider') as HTMLInputElement).value = (step - 1).toString() }, [step])
+  browser.execute(function (step) {
+    const slider = document.getElementById('slider') as HTMLInputElement
+    const min = Number(slider.min || 0)
+    const max = Number(slider.max)
+    // The debugger exits when navigation reaches the terminal trace item. Old
+    // fixtures used absolute indexes that can now be equal to/beyond `max`
+    // after compiler trace changes, so keep the requested step in the live
+    // range before applying the ArrowRight change event.
+    const lastLiveStep = max > min ? max - 1 : max
+    const target = Math.max(min, Math.min(step, lastLiveStep))
+    slider.value = Math.max(min, target - 1).toString()
+  }, [step])
     .setValue('*[data-id="slider"]', new Array(1).fill(browser.Keys.RIGHT_ARROW))
     .perform(() => {
       done()

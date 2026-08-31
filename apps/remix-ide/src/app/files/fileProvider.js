@@ -34,6 +34,39 @@ class FileProvider {
     this.externalFolders = [this.type + '/swarm', this.type + '/ipfs', this.type + '/github', this.type + '/gists', this.type + '/https']
   }
 
+  _workspaceStorage () {
+    if (typeof window === 'undefined') return null
+    const storage = window.tronideWorkspaceStorage
+    return storage && storage.mode === 'indexeddb-mirror' ? storage : null
+  }
+
+  _assertStorageWritable () {
+    const storage = this._workspaceStorage()
+    if (storage) storage.assertWritable()
+  }
+
+  _completeStorageMutation (callback, result = true) {
+    const storage = this._workspaceStorage()
+    if (!storage) {
+      callback()
+      return result
+    }
+    const checkpoint = storage.checkpoint()
+    const persistence = storage.whenDurable(checkpoint).then(() => {
+      callback()
+      return result
+    }, (error) => {
+      callback(error)
+      throw error
+    })
+    // Many legacy provider callers intentionally ignore the return value. Keep
+    // their eventual failure observable through the storage status service,
+    // without also producing an unhandled rejection. Awaiting callers still
+    // receive the original rejected Promise.
+    persistence.catch(() => {})
+    return persistence
+  }
+
   addNormalizedName (path, url) {
     this.providerExternalsStorage.set(this.type + '/' + path, url)
     this.providerExternalsStorage.set('reverse-' + url, this.type + '/' + path)
@@ -113,11 +146,17 @@ class FileProvider {
 
   set (path, content, cb) {
     cb = cb || function () {}
+    try { this._assertStorageWritable() } catch (error) {
+      cb(error)
+      return false
+    }
     var unprefixedpath = this.removePrefix(path)
     var exists = window.remixFileSystem.existsSync(unprefixedpath)
     if (exists && window.remixFileSystem.readFileSync(unprefixedpath, 'utf8') === content) {
-      cb()
-      return true
+      // A preceding save may already have placed these bytes in the
+      // synchronous mirror while its IndexedDB write is still pending. Join
+      // that checkpoint instead of reporting a misleading early success.
+      return this._completeStorageMutation(cb)
     }
     if (!exists && unprefixedpath.indexOf('/') !== -1) {
       // the last element is the filename and we should remove it
@@ -134,23 +173,33 @@ class FileProvider {
     } else {
       this.event.emit('fileChanged', this._normalizePath(unprefixedpath))
     }
-    cb()
-    return true
+    return this._completeStorageMutation(cb)
   }
 
   createDir (path, cb) {
+    cb = cb || function () {}
+    try { this._assertStorageWritable() } catch (error) {
+      cb(error)
+      return false
+    }
     const unprefixedpath = this.removePrefix(path)
     const paths = unprefixedpath.split('/')
     if (paths.length && paths[0] === '') paths.shift()
     let currentCheck = ''
+    let changed = false
     paths.forEach((value) => {
       currentCheck = currentCheck + '/' + value
       if (!window.remixFileSystem.existsSync(currentCheck)) {
         window.remixFileSystem.mkdirSync(currentCheck)
+        changed = true
         this.event.emit('folderAdded', this._normalizePath(currentCheck))
       }
     })
-    if (cb) cb()
+    if (!changed) {
+      cb()
+      return true
+    }
+    return this._completeStorageMutation(cb)
   }
 
   // this will not add a folder as readonly but keep the original url to be able to restore it later
@@ -163,6 +212,14 @@ class FileProvider {
     // Do not leave a URL mapping behind when a stale workspace context rejects
     // the write, otherwise a later lookup can point at a file that was never
     // materialised in the active workspace.
+    if (accepted && typeof accepted.then === 'function') {
+      const persisted = accepted.then((result) => {
+        if (result !== false && url) this.addNormalizedName(path, url)
+        return result
+      })
+      persisted.catch(() => {})
+      return persisted
+    }
     if (accepted !== false && url) this.addNormalizedName(path, url)
     return accepted
   }
@@ -187,39 +244,40 @@ class FileProvider {
    * Removes the folder recursively
    * @param {*} path is the folder to be removed
    */
-  remove (path) {
-    return new Promise((resolve, reject) => {
-      path = this.removePrefix(path)
-      if (window.remixFileSystem.existsSync(path)) {
-        const stat = window.remixFileSystem.statSync(path)
-        try {
-          if (!stat.isDirectory()) {
-            resolve(this.removeFile(path))
-          } else {
-            const items = window.remixFileSystem.readdirSync(path)
-            if (items.length !== 0) {
-              items.forEach((item, index) => {
-                const curPath = `${path}${path.endsWith('/') ? '' : '/'}${item}`
-                if (window.remixFileSystem.statSync(curPath).isDirectory()) { // delete folder
-                  this.remove(curPath)
-                } else { // delete file
-                  this.removeFile(curPath)
-                }
-              })
-              if (window.remixFileSystem.readdirSync(path).length === 0) window.remixFileSystem.rmdirSync(path, console.log)
-            } else {
-              // folder is empty
-              window.remixFileSystem.rmdirSync(path, console.log)
-            }
-            this.event.emit('fileRemoved', this._normalizePath(path))
-          }
-        } catch (e) {
-          console.log(e)
-          return resolve(false)
+  async remove (path) {
+    this._assertStorageWritable()
+    path = this.removePrefix(path)
+    try {
+      if (!window.remixFileSystem.existsSync(path)) return true
+      const stat = window.remixFileSystem.statSync(path)
+      if (!stat.isDirectory()) {
+        const removed = this.removeFile(path)
+        const storage = this._workspaceStorage()
+        if (removed && storage) await storage.whenDurable(storage.checkpoint())
+        return removed
+      }
+
+      const items = window.remixFileSystem.readdirSync(path)
+      for (const item of items) {
+        const curPath = `${path}${path.endsWith('/') ? '' : '/'}${item}`
+        if (window.remixFileSystem.statSync(curPath).isDirectory()) {
+          if (await this.remove(curPath) === false) return false
+        } else if (!this.removeFile(curPath)) {
+          return false
         }
       }
-      return resolve(true)
-    })
+      if (window.remixFileSystem.readdirSync(path).length !== 0) {
+        throw new Error(`Could not remove directory ${path}`)
+      }
+      window.remixFileSystem.rmdirSync(path, console.log)
+      this.event.emit('fileRemoved', this._normalizePath(path))
+      const storage = this._workspaceStorage()
+      if (storage) await storage.whenDurable(storage.checkpoint())
+      return true
+    } catch (e) {
+      console.log(e)
+      return false
+    }
   }
 
   /**
@@ -228,36 +286,27 @@ class FileProvider {
    * @param {Function} visitFile is a function called for each visited files
    * @param {Function} visitFolder is a function called for each visited folders
    */
-  _copyFolderToJsonInternal (path, visitFile, visitFolder) {
+  async _copyFolderToJsonInternal (path, visitFile, visitFolder) {
     visitFile = visitFile || (() => {})
     visitFolder = visitFolder || (() => {})
-    return new Promise((resolve, reject) => {
-      const json = {}
-      path = this.removePrefix(path)
-      if (window.remixFileSystem.existsSync(path)) {
-        try {
-          const items = window.remixFileSystem.readdirSync(path)
-          visitFolder({ path })
-          if (items.length !== 0) {
-            items.forEach(async (item, index) => {
-              const file = {}
-              const curPath = `${path}${path.endsWith('/') ? '' : '/'}${item}`
-              if (window.remixFileSystem.statSync(curPath).isDirectory()) {
-                file.children = await this._copyFolderToJsonInternal(curPath, visitFile, visitFolder)
-              } else {
-                file.content = window.remixFileSystem.readFileSync(curPath, 'utf8')
-                visitFile({ path: curPath, content: file.content })
-              }
-              json[curPath] = file
-            })
-          }
-        } catch (e) {
-          console.log(e)
-          return reject(e)
-        }
+    const json = {}
+    path = this.removePrefix(path)
+    if (!window.remixFileSystem.existsSync(path)) return json
+
+    const items = window.remixFileSystem.readdirSync(path)
+    visitFolder({ path })
+    for (const item of items) {
+      const file = {}
+      const curPath = `${path}${path.endsWith('/') ? '' : '/'}${item}`
+      if (window.remixFileSystem.statSync(curPath).isDirectory()) {
+        file.children = await this._copyFolderToJsonInternal(curPath, visitFile, visitFolder)
+      } else {
+        file.content = window.remixFileSystem.readFileSync(curPath, 'utf8')
+        visitFile({ path: curPath, content: file.content })
       }
-      return resolve(json)
-    })
+      json[curPath] = file
+    }
+    return json
   }
 
   /**
@@ -273,6 +322,7 @@ class FileProvider {
   }
 
   removeFile (path) {
+    this._assertStorageWritable()
     path = this.removePrefix(path)
     if (window.remixFileSystem.existsSync(path) && !window.remixFileSystem.statSync(path).isDirectory()) {
       window.remixFileSystem.unlinkSync(path, console.log)
@@ -282,6 +332,7 @@ class FileProvider {
   }
 
   rename (oldPath, newPath, isFolder) {
+    try { this._assertStorageWritable() } catch (error) { return Promise.reject(error) }
     var unprefixedoldPath = this.removePrefix(oldPath)
     var unprefixednewPath = this.removePrefix(newPath)
     if (this._exists(unprefixedoldPath)) {
@@ -291,7 +342,7 @@ class FileProvider {
         this._normalizePath(unprefixednewPath),
         isFolder
       )
-      return true
+      return this._completeStorageMutation(function () {})
     }
     return false
   }

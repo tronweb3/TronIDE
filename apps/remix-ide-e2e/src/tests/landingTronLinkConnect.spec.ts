@@ -222,7 +222,7 @@ module.exports = {
         const check = () => {
           const bodyText = document.body.textContent || ''
           const requests = window.__tronLinkRequestCalls || []
-          if (bodyText.includes('Connection request was rejected.') || bodyText.includes('Wallet connection was rejected')) return done({ rejected: true, requests })
+          if (bodyText.includes('TronLink did not connect') || bodyText.includes('Connection request was rejected.') || bodyText.includes('Wallet connection was rejected')) return done({ rejected: true, requests })
           if (Date.now() - startedAt > 10000) return done({ rejected: false, requests, bodyText })
           setTimeout(check, 200)
         }

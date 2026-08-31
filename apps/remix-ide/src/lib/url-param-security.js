@@ -50,10 +50,19 @@ const URL_IMPORT_HOSTS = new Set([
   'gist.githubusercontent.com'
 ])
 
+// QueryParams intentionally preserves raw fragment values so encoded `&` and
+// `=` characters survive parsing. Decode exactly once at each validated
+// consumer instead of weakening that parser-wide round trip guarantee.
+function decodeUrlParameter (raw, maxLength = 4096) {
+  if (typeof raw !== 'string' || raw.length > maxLength) return null
+  try { return decodeURIComponent(raw) } catch (e) { return null }
+}
+
 function filterUrlPluginNames (raw) {
-  if (typeof raw !== 'string' || raw.length > 1024) return []
+  const value = decodeUrlParameter(raw, 1024)
+  if (value === null) return []
   const seen = new Set()
-  return raw.split(',')
+  return value.split(',')
     .map((name) => name.trim())
     .filter((name) => {
       if (!URL_PLUGIN_ALLOWLIST.has(name) || seen.has(name)) return false
@@ -70,8 +79,9 @@ function isSafeWorkspacePath (raw) {
 }
 
 function parseUrlPluginCall (raw) {
-  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return null
-  const details = raw.split('//')
+  const value = decodeUrlParameter(raw, 2048)
+  if (!value) return null
+  const details = value.split('//')
   if (details.length !== 3) return null
   const plugin = details[0]
   const method = details[1]
@@ -81,10 +91,11 @@ function parseUrlPluginCall (raw) {
 }
 
 function normalizeUrlImport (raw) {
-  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 4096) return null
+  const value = decodeUrlParameter(raw, 4096)
+  if (!value) return null
   let parsed
   try {
-    parsed = new URL(raw)
+    parsed = new URL(value)
   } catch (e) {
     return null
   }
@@ -95,6 +106,7 @@ function normalizeUrlImport (raw) {
 }
 
 module.exports = {
+  decodeUrlParameter,
   filterUrlPluginNames,
   isSafeWorkspacePath,
   normalizeUrlImport,

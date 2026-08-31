@@ -67,6 +67,9 @@ test.describe('TRONIDE-129 child regressions', () => {
     // Minimal remixd protocol double: open the socket, answer the connector
     // handshake and the provider readiness call, then let the real UI exercise
     // the localhost -> browser workspace transition.
+    await page.route('**/remixd-token', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ token: '0123456789abcdef0123456789abcdef' }) })
+    })
     await page.evaluate(() => {
       class FakeRemixdWebSocket extends EventTarget {
         static CONNECTING = 0
@@ -95,7 +98,8 @@ test.describe('TRONIDE-129 child regressions', () => {
           if (request.key === 'handshake') {
             payload = ['folderIsReadOnly', 'resolveDirectory', 'get', 'exists', 'isFile', 'set', 'rename', 'remove', 'isDirectory', 'list', 'createDir']
           } else if (request.key === 'folderIsReadOnly') payload = false
-          else if (request.key === 'resolveDirectory' || request.key === 'list') payload = {}
+          else if (request.key === 'resolveDirectory') payload = { folder1: { isDirectory: true } }
+          else if (request.key === 'list') payload = {}
           else if (request.key === 'exists' || request.key === 'isFile') payload = false
 
           window.setTimeout(() => {
@@ -116,13 +120,33 @@ test.describe('TRONIDE-129 child regressions', () => {
     const select = page.locator('[data-id="workspacesSelect"]')
     await select.selectOption(' - connect to localhost - ')
     const connectModal = page.locator('.modal-content:has-text("Connect to localhost")')
+    await expect(connectModal).toContainText('Local Network Access')
+    await expect(connectModal).toContainText(`remixd -s <path-to-the-shared-folder> -u ${new URL(page.url()).origin}`)
+    await expect(connectModal).not.toContainText('<remix-ide-instance-URL>')
     await connectModal.locator('#modal-footer-ok').click()
     await expect(select).toHaveValue(' - connect to localhost - ', { timeout: 10_000 })
+    await expect(page.locator('[data-path="folder1"]')).toBeVisible({ timeout: 10_000 })
 
     await select.selectOption('default_workspace')
     await expect(select).toHaveValue('default_workspace', { timeout: 10_000 })
     await expect(page.locator('[data-id="treeViewLitreeViewItemcontracts"]')).toBeVisible({ timeout: 10_000 })
+    await expect(page.locator('[data-path="folder1"]')).toHaveCount(0)
     await expect(page.locator('.modal-content:has-text("Create Default Workspace")')).toHaveCount(0)
     await expect(page.locator('body')).not.toContainText('workspace already exists')
+
+    // Reconnect and deactivate RemixD directly from Plugin Manager. The
+    // fallback workspace must not retain the daemon's last rendered tree.
+    await select.selectOption(' - connect to localhost - ')
+    await connectModal.locator('#modal-footer-ok').click()
+    await expect(select).toHaveValue(' - connect to localhost - ', { timeout: 10_000 })
+    await expect(page.locator('[data-path="folder1"]')).toBeVisible({ timeout: 10_000 })
+
+    await page.locator('#icon-panel div[plugin="pluginManager"]').click()
+    const remixdButton = page.locator('#pluginManager article[id="remixPluginManagerListItem_remixd"] button')
+    await expect(remixdButton).toHaveText('Deactivate')
+    await remixdButton.click()
+
+    await expect(select).toHaveValue('default_workspace', { timeout: 10_000 })
+    await expect(page.locator('[data-path="folder1"]')).toHaveCount(0)
   })
 })

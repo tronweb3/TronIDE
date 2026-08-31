@@ -36,7 +36,13 @@ const createWeb3Provider = async function () {
   const provider: any = new Provider()
   await provider.init()
   web3.setProvider(provider)
-  return web3
+  return { web3, provider }
+}
+
+function createCancellationError (): Error {
+  const error: any = new Error('Solidity test run was cancelled.')
+  error.code = 'AI_TEST_ABORTED'
+  return error
 }
 
 /**
@@ -52,30 +58,74 @@ const createWeb3Provider = async function () {
 export async function runTestSources (contractSources: SrcIfc, compilerConfig: CompilerConfiguration, testCallback, resultCallback, finalCallback: any, importFileCb, opts: Options) {
   opts = opts || {}
   const sourceASTs: any = {}
-  const web3 = opts.web3 || await createWeb3Provider()
+  const signal = opts.signal
+  let web3: Web3
+  let ownedProvider: any = null
+  if (opts.web3) {
+    web3 = opts.web3
+  } else {
+    const created = await createWeb3Provider()
+    web3 = created.web3
+    ownedProvider = created.provider
+  }
+
+  let finished = false
+  let cancelled = Boolean(signal && signal.aborted)
+  let abortHandler: (() => void) | null = null
+  const cleanup = () => {
+    if (signal && abortHandler) signal.removeEventListener('abort', abortHandler)
+    abortHandler = null
+    if (ownedProvider && typeof ownedProvider.disconnect === 'function') ownedProvider.disconnect()
+  }
+  const finish = (error?: Error, result?: FinalResult) => {
+    if (finished) return
+    finished = true
+    cleanup()
+    if (typeof finalCallback === 'function') finalCallback(error, result)
+  }
+  const isCancelled = () => cancelled || Boolean(signal && signal.aborted)
+  const cancellationError = () => createCancellationError()
+
+  if (signal) {
+    abortHandler = () => {
+      cancelled = true
+      if (ownedProvider && typeof ownedProvider.disconnect === 'function') ownedProvider.disconnect()
+      finish(cancellationError())
+    }
+    signal.addEventListener('abort', abortHandler, { once: true })
+  }
+  if (isCancelled()) return finish(cancellationError())
+
   let accounts: string[] | null = opts.accounts || null
   async.waterfall([
     function getAccountList (next) {
+      if (isCancelled()) return next(cancellationError())
       if (accounts) return next()
-      web3.eth.getAccounts((_err, _accounts) => {
+      web3.eth.getAccounts((err, _accounts) => {
+        if (isCancelled()) return next(cancellationError())
+        if (err) return next(err)
         accounts = _accounts
         next()
       })
     },
     function compile (next) {
-      compileContractSources(contractSources, compilerConfig, importFileCb, { accounts }, next)
+      if (isCancelled()) return next(cancellationError())
+      compileContractSources(contractSources, compilerConfig, importFileCb, { accounts, signal }, next)
     },
     function deployAllContracts (compilationResult: compilationInterface, asts: ASTInterface, next) {
+      if (isCancelled()) return next(cancellationError())
       for (const filename in asts) {
         if (filename.endsWith('_test.sol')) { sourceASTs[filename] = asts[filename].ast }
       }
       deployAll(compilationResult, web3, false, (err, contracts) => {
+        if (isCancelled()) return next(cancellationError())
         if (err) {
           // If contract deployment fails because of 'Out of Gas' error, try again with double gas
           // This is temporary, should be removed when remix-tests will have a dedicated UI to
           // accept deployment params from UI
           if (err.message.includes('The contract code couldn\'t be stored, please check your gas limit')) {
             deployAll(compilationResult, web3, true, (error, contracts) => {
+              if (isCancelled()) return next(cancellationError())
               if (error) next([{ message: 'contract deployment failed after trying twice: ' + error.message, severity: 'error' }]) // IDE expects errors in array
               else next(null, compilationResult, contracts)
             })
@@ -84,6 +134,7 @@ export async function runTestSources (contractSources: SrcIfc, compilerConfig: C
       })
     },
     function determineTestContractsToRun (compilationResult: compilationInterface, contracts: any, next) {
+      if (isCancelled()) return next(cancellationError())
       const contractsToTest: string[] = []
       const contractsToTestDetails: any[] = []
 
@@ -99,6 +150,7 @@ export async function runTestSources (contractSources: SrcIfc, compilerConfig: C
       next(null, contractsToTest, contractsToTestDetails, contracts)
     },
     function runTests (contractsToTest: string[], contractsToTestDetails: any[], contracts: any, next) {
+      if (isCancelled()) return next(cancellationError())
       let totalPassing = 0
       let totalFailing = 0
       let totalTime = 0
@@ -120,8 +172,10 @@ export async function runTestSources (contractSources: SrcIfc, compilerConfig: C
       }
 
       async.eachOfLimit(contractsToTest, 1, (contractName: string, index: string | number, cb: ErrorCallback) => {
+        if (isCancelled()) return cb(cancellationError())
         const fileAST: AstNode = sourceASTs[contracts[contractName]['filename']]
         runTest(contractName, contracts[contractName], contractsToTestDetails[index], fileAST, { accounts }, _testCallback, (err, result) => {
+          if (isCancelled()) return cb(cancellationError())
           if (err) {
             return cb(err)
           }
@@ -151,5 +205,8 @@ export async function runTestSources (contractSources: SrcIfc, compilerConfig: C
         next(null, finalResults)
       })
     }
-  ], finalCallback)
+  ], function (err, result) {
+    if (err) return finish(err)
+    finish(null, result as FinalResult)
+  })
 }

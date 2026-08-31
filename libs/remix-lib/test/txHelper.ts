@@ -42,6 +42,14 @@ tape('getFunction', function (st) {
   st.equal(fn.type, 'receive')
 })
 
+tape('getFunction can resolve tuple inputs when called as an unbound function', function (st) {
+  const getFunction = txHelper.getFunction
+  const fn = getFunction(JSON.parse(abi), 'o1(string,(address,uint256),int256,int256[][3],(address,uint256)[3][])')
+
+  st.equal(fn.name, 'o1')
+  st.end()
+})
+
 tape('txHelper.encodeParams surfaces a missing required parameter by name and type', function (st) {
   st.plan(4)
   // Regression for f81047316: an under-supplied non-bool arg used to fail with a

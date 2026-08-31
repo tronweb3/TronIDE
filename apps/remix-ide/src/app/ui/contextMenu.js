@@ -29,18 +29,24 @@ var css = csjs`
       border-radius: 2px;
       z-index: 1000;
       box-shadow: 0 0 4px var(--dark);
+      color: var(--ai-title, #212529);
+      background-color: var(--light, #fff);
     }
     .liitem
     {
       padding: 2px;
       padding-left: 6px;
       cursor: pointer;
-      color: var(--text-dark);
-      background-color: var(--light);
+      color: inherit;
+      background-color: transparent;
     }
     .liitem:hover
     {
-      background-color:  var(--secondary);
+      background-color: color-mix(in srgb, currentColor 8%, transparent);
+    }
+    .liitem a
+    {
+      color: inherit;
     }
     #menuitems
     {

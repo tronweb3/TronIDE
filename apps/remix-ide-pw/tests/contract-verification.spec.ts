@@ -98,7 +98,7 @@ test.describe('Contract Verification MVP plugin tests', () => {
     await expect(page.locator('[data-id="contractVerificationStatusResult"]')).toContainText('only interfaces or abstract contracts', { timeout: 30_000 })
     await expect(contractSelect).toBeDisabled()
     await expect(contractSelect).toContainText('No deployable contract found')
-    await expect(page.locator('[data-id="contractVerificationCompileHint"]')).toContainText('only interfaces or abstract contracts')
+    await expect(page.locator('[data-id="contractVerificationCompileHint"]')).toContainText(/only interfaces or abstract contracts/i)
     await expect(page.locator('button[data-id="contractVerificationDownloadFlatten"]')).toBeDisabled()
     await expect(page.locator('button[data-id="contractVerificationGeneratePackage"]')).toBeDisabled()
   })
@@ -944,5 +944,42 @@ test.describe('Contract Verification MVP plugin tests', () => {
     })
     expect(afterScroll).not.toBeNull()
     expect(afterScroll).toEqual({ overlap: false, networkReceivesPointer: true })
+  })
+
+  test('TRONIDE-141 groups verification into three readable steps without side-panel overflow', async ({ page }) => {
+    await page.goto('/')
+    await dismissWelcomeModal(page)
+    await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+    await activateAndOpen(page, 'contractVerification', 'contractVerification')
+
+    const stepIds = [
+      'contractVerificationStepCompile',
+      'contractVerificationStepStatus',
+      'contractVerificationStepFiles'
+    ]
+    for (const id of stepIds) await expect(page.locator(`[data-id="${id}"]`)).toBeVisible()
+
+    const layout = await page.evaluate((ids) => {
+      const root = document.querySelector('[data-id="contractVerificationPlugin"]') as HTMLElement | null
+      const steps = ids.map((id) => document.querySelector(`[data-id="${id}"]`) as HTMLElement | null)
+      if (!root || steps.some((step) => !step)) return null
+      const rects = steps.map((step) => step!.getBoundingClientRect())
+      const buttons = Array.from(root.querySelectorAll('button, a[data-id="contractVerificationOpenTronScan"]')) as HTMLElement[]
+      return {
+        noHorizontalOverflow: root.scrollWidth <= root.clientWidth + 1,
+        ordered: rects.every((rect, index) => index === 0 || rect.top > rects[index - 1].bottom),
+        controlsStayInside: buttons.every((button) => {
+          const rect = button.getBoundingClientRect()
+          const rootRect = root.getBoundingClientRect()
+          return rect.left >= rootRect.left && rect.right <= rootRect.right + 1
+        })
+      }
+    }, stepIds)
+    expect(layout).toEqual({ noHorizontalOverflow: true, ordered: true, controlsStayInside: true })
+
+    const checklist = page.locator('details').filter({ hasText: 'Manual submission checklist' })
+    await expect(checklist).not.toHaveAttribute('open', '')
+    await checklist.locator('summary').click()
+    await expect(page.locator('[data-id="contractVerificationPackageChecklist"]')).toBeVisible()
   })
 })

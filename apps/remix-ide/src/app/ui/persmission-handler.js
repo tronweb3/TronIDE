@@ -23,6 +23,13 @@ const csjs = require('csjs-inject')
 const addTooltip = require('./tooltip')
 const modalDialog = require('./modaldialog')
 const globalRegistry = require('../../global/registry')
+const {
+  createPermissionMap,
+  hasOwnPermission,
+  isSafePermissionKey,
+  rememberedPermissionDecision,
+  SerialTaskQueue
+} = require('./permission-security')
 
 const css = csjs`
 .permission h4 {
@@ -57,23 +64,26 @@ function isPlainObject (value) {
 }
 
 export function sanitizePermissions (permissions) {
-  if (!isPlainObject(permissions)) return {}
+  if (!isPlainObject(permissions)) return createPermissionMap()
 
-  const sanitizedPermissions = {}
+  const sanitizedPermissions = createPermissionMap()
 
   Object.keys(permissions).forEach((toName) => {
+    if (!isSafePermissionKey(toName)) return
     const methods = permissions[toName]
     if (!isPlainObject(methods)) return
 
-    const sanitizedMethods = {}
+    const sanitizedMethods = createPermissionMap()
 
     Object.keys(methods).forEach((methodName) => {
+      if (!isSafePermissionKey(methodName)) return
       const fromPlugins = methods[methodName]
       if (!isPlainObject(fromPlugins)) return
 
-      const sanitizedFromPlugins = {}
+      const sanitizedFromPlugins = createPermissionMap()
 
       Object.keys(fromPlugins).forEach((fromName) => {
+        if (!isSafePermissionKey(fromName)) return
         const permission = fromPlugins[fromName]
         if (!isPlainObject(permission)) return
         if (typeof permission.allow !== 'boolean') return
@@ -104,7 +114,6 @@ function notAllowWarning (from, to, method) {
 
 export class PermissionHandler {
   constructor () {
-    this.permissions = this._getFromLocal()
     this.currentVersion = 1
     // here we remove the old permissions saved before adding 'permissionVersion'
     // since with v1 the structure has been changed because of new engine ^0.2.0-alpha.6 changes
@@ -112,16 +121,18 @@ export class PermissionHandler {
       localStorage.setItem('plugins/permissions', '')
       localStorage.setItem('permissionVersion', this.currentVersion)
     }
+    this.permissions = this._getFromLocal()
+    this.permissionRequests = new SerialTaskQueue()
   }
 
   _getFromLocal () {
     const permission = localStorage.getItem('plugins/permissions')
-    if (!permission) return {}
+    if (!permission) return createPermissionMap()
 
     try {
       return sanitizePermissions(JSON.parse(permission))
     } catch (e) {
-      return {}
+      return createPermissionMap()
     }
   }
 
@@ -130,9 +141,33 @@ export class PermissionHandler {
     localStorage.setItem('plugins/permissions', permissions)
   }
 
-  clear () {
+  clear (rememberSwitch) {
+    this.permissions = createPermissionMap()
     localStorage.removeItem('plugins/permissions')
+    if (rememberSwitch) rememberSwitch.checked = false
     addTooltip('All Permissions have been reset')
+  }
+
+  updatePermission (from, to, method, allow, remember) {
+    if (!from || !to || !isSafePermissionKey(from.name) || !isSafePermissionKey(to.name) || !isSafePermissionKey(method)) {
+      throw new Error('Invalid permission key.')
+    }
+
+    // A permission modal may have waited behind another modal, and another tab
+    // may have changed grants while it was open. Merge only this decision into
+    // the latest persisted map so an old snapshot cannot resurrect or erase
+    // unrelated grants.
+    this.permissions = this._getFromLocal()
+    if (remember) {
+      if (!hasOwnPermission(this.permissions, to.name)) this.permissions[to.name] = createPermissionMap()
+      if (!hasOwnPermission(this.permissions[to.name], method)) this.permissions[to.name][method] = createPermissionMap()
+      this.permissions[to.name][method][from.name] = { allow, hash: from.hash }
+    } else if (hasOwnPermission(this.permissions, to.name) && hasOwnPermission(this.permissions[to.name], method)) {
+      delete this.permissions[to.name][method][from.name]
+      if (!Object.keys(this.permissions[to.name][method]).length) delete this.permissions[to.name][method]
+      if (!Object.keys(this.permissions[to.name]).length) delete this.permissions[to.name]
+    }
+    this.persistPermissions()
   }
 
   /**
@@ -145,32 +180,22 @@ export class PermissionHandler {
    */
   async openPermission (from, to, method, message) {
     return new Promise((resolve, reject) => {
+      const form = this.form(from, to, method, message)
+      const rememberSwitch = form.querySelector('#remember')
       modalDialog(
         `Permission needed for ${to.displayName || to.name}`,
-        this.form(from, to, method, message),
+        form,
         {
           label: 'Accept',
           fn: () => {
-            if (this.permissions[to.name][method][from.name]) {
-              this.permissions[to.name][method][from.name] = {
-                allow: true,
-                hash: from.hash
-              }
-              this.persistPermissions()
-            }
+            this.updatePermission(from, to, method, true, Boolean(rememberSwitch && rememberSwitch.checked))
             resolve(true)
           }
         },
         {
           label: 'Decline',
           fn: () => {
-            if (this.permissions[to.name][method][from.name]) {
-              this.permissions[to.name][method][from.name] = {
-                allow: false,
-                hash: from.hash
-              }
-              this.persistPermissions()
-            }
+            this.updatePermission(from, to, method, false, Boolean(rememberSwitch && rememberSwitch.checked))
             reject(notAllowWarning(from, to, method))
           }
         }
@@ -186,22 +211,28 @@ export class PermissionHandler {
    * @param {string} message from the caller plugin to add more details if needed
    * @returns {Promise<boolean>}
    */
-  async askPermission (from, to, method, message) {
-    try {
-      this.permissions = this._getFromLocal()
-      if (!this.permissions[to.name]) this.permissions[to.name] = {}
-      if (!this.permissions[to.name][method]) this.permissions[to.name][method] = {}
-      if (!this.permissions[to.name][method][from.name]) return this.openPermission(from, to, method, message)
+  askPermission (from, to, method, message) {
+    return this.permissionRequests.enqueue(() => this._askPermission(from, to, method, message))
+  }
 
-      const { allow, hash } = this.permissions[to.name][method][from.name]
-      if (!allow) {
+  async _askPermission (from, to, method, message) {
+    try {
+      if (!from || !to || !isSafePermissionKey(from.name) || !isSafePermissionKey(to.name) || !isSafePermissionKey(method)) {
+        return false
+      }
+      this.permissions = this._getFromLocal()
+      if (!hasOwnPermission(this.permissions, to.name)) this.permissions[to.name] = createPermissionMap()
+      if (!hasOwnPermission(this.permissions[to.name], method)) this.permissions[to.name][method] = createPermissionMap()
+      if (!hasOwnPermission(this.permissions[to.name][method], from.name)) return this.openPermission(from, to, method, message)
+
+      const decision = rememberedPermissionDecision(this.permissions[to.name][method][from.name], from.hash)
+      if (decision === null) return this.openPermission(from, to, method, message)
+      if (!decision) {
         const warning = notAllowWarning(from, to, method)
         addTooltip(warning)
         return false
       }
-      return hash === from.hash
-        ? true // Allow
-        : this.openPermission(from, to, method, message) // New version of a plugin
+      return true
     } catch (err) {
       throw new Error(err)
     }
@@ -218,15 +249,9 @@ export class PermissionHandler {
     const fromName = from.displayName || from.name
     const toName = to.displayName || to.name
     const remember = this.permissions[to.name][method][from.name]
-
-    const switchMode = (e) => {
-      e.target.checked
-        ? this.permissions[to.name][method][from.name] = {}
-        : delete this.permissions[to.name][method][from.name]
-    }
     const rememberSwitch = remember
-      ? yo`<input type="checkbox" onchange="${switchMode}" checkbox class="form-check-input" id="remember" data-id="permissionHandlerRememberChecked">`
-      : yo`<input type="checkbox" onchange="${switchMode}" class="form-check-input" id="remember" data-id="permissionHandlerRememberUnchecked">`
+      ? yo`<input type="checkbox" checked class="form-check-input" id="remember" data-id="permissionHandlerRememberChecked">`
+      : yo`<input type="checkbox" class="form-check-input" id="remember" data-id="permissionHandlerRememberUnchecked">`
     const text = `"${fromName}" ${(remember ? 'has changed and' : '')} would like to access to "${method}" of "${toName}"`
     const imgFrom = yo`<img id="permissionModalImagesFrom" src="${from.icon}" />`
     const imgTo = yo`<img id="permissionModalImagesTo" src="${to.icon}" />`
@@ -264,7 +289,7 @@ export class PermissionHandler {
             ${rememberSwitch}
             <label class="form-check-label" for="remember" data-id="permissionHandlerRememberChoice">Remember this choice</label>
           </div>
-          <button class="btn btn-sm" onclick="${_ => this.clear()}">Reset all Permissions</button>
+          <button class="btn btn-sm" onclick="${_ => this.clear(rememberSwitch)}">Reset all Permissions</button>
         </article>
       </section>
     `

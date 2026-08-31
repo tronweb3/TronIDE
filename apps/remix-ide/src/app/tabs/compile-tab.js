@@ -31,6 +31,7 @@ const yo = require('yo-yo')
 var QueryParams = require('../../lib/query-params')
 const addTooltip = require('../ui/tooltip')
 const globalRegistry = require('../../global/registry')
+const { requireUserPermission } = require('../ui/permission-security')
 
 const profile = {
   name: 'solidity',
@@ -42,7 +43,8 @@ const profile = {
   location: 'sidePanel',
   documentation: 'https://developers.tron.network/docs/tron-ide',
   version: packageJson.version,
-  methods: ['getCompilationResult', 'compile', 'compileWithParameters', 'setCompilerConfig', 'compileFile', 'getCompilerVersion']
+  methods: ['getCompilationResult', 'compile', 'compileWithParameters', 'setCompilerConfig', 'compileFile', 'getCompilerVersion'],
+  events: ['compilationFinished']
 }
 
 // EditorApi:
@@ -94,6 +96,11 @@ class CompileTab extends ViewPlugin {
     this.el.remixEnsureRendered = () => this.ensureRendered()
   }
 
+  _withUserPermission (method, message, action) {
+    if (!this.currentRequest) return action()
+    return requireUserPermission(this, method, message).then(action)
+  }
+
   resetResults () {
     this.currentFile = ''
     this.contractsDetails = {}
@@ -108,6 +115,15 @@ class CompileTab extends ViewPlugin {
   setCompileErrors (data) {
     this.compileErrors = data
     this.renderComponent()
+  }
+
+  isBuiltinCompilerUrl (url) {
+    try {
+      const parsed = new URL(url, window.location.href)
+      return parsed.origin === window.location.origin && /\/assets\/js\/soljson\.js$/.test(parsed.pathname)
+    } catch (e) {
+      return false
+    }
   }
 
   /************
@@ -142,11 +158,18 @@ class CompileTab extends ViewPlugin {
     }
     this.compiler.event.register('loadedFromWorker', this.data.eventHandlers.onCompilerLoadedFromWorker)
 
-    this.data.eventHandlers.onCompilerLoadFailed = (message) => {
+    this.data.eventHandlers.onCompilerLoadFailed = (message, url) => {
       this.data.loading = false
       this.setCompileErrors({ error: { formattedMessage: message, severity: 'error' } })
       this.ensureRendered()
-      this.emit('statusChanged', { key: 'failed', title: message, type: 'error' })
+      if (url && !this.isBuiltinCompilerUrl(url)) {
+        // The compiler panel automatically recovers a failed remote load with
+        // the bundled compiler. Keep the toolbar in a loading state during that
+        // handoff instead of flashing a red error that disappears moments later.
+        this.emit('statusChanged', { key: 'loading', title: 'loading built-in compiler fallback...', type: 'info' })
+      } else {
+        this.emit('statusChanged', { key: 'failed', title: message, type: 'error' })
+      }
     }
     this.compiler.event.register('compilerLoadFailed', this.data.eventHandlers.onCompilerLoadFailed)
 
@@ -160,14 +183,15 @@ class CompileTab extends ViewPlugin {
       this.call('editor', 'clearAnnotations')
     }
 
-    this.on('filePanel', 'setWorkspace', (workspace) => {
+    this.data.eventHandlers.onWorkspaceChanged = (workspace) => {
       this.compileTabLogic.isHardhatProject().then((result) => {
         if (result && workspace.isLocalhost) this.isHardHatProject = true
         else this.isHardHatProject = false
         this.renderComponent()
       })
       this.resetResults()
-    })
+    }
+    this.on('filePanel', 'setWorkspace', this.data.eventHandlers.onWorkspaceChanged)
 
     this.compileTabLogic.event.on('startingCompilation', this.data.eventHandlers.onStartingCompilation)
     this.compileTabLogic.event.on('removeAnnotations', this.data.eventHandlers.onRemoveAnnotations)
@@ -183,9 +207,10 @@ class CompileTab extends ViewPlugin {
     }
     this.fileManager.events.on('noFileSelected', this.data.eventHandlers.onNoFileSelected)
 
-    this.data.eventHandlers.onCompilationFinished = (success, data, source) => {
+    this.data.eventHandlers.onCompilationFinished = (success, data, source, context) => {
       this.data.loading = false
       this.setCompileErrors(data)
+      const isCompilerLoadFailure = !success && context && context.compilerLoadFailure
       if (success) {
         // forwarding the event to the appManager infra. The 4th arg is the
         // language version: pass the real solc version the binary reported
@@ -221,8 +246,14 @@ class CompileTab extends ViewPlugin {
           )
         })
       } else {
-        const count = (data.errors ? data.errors.filter(error => error.severity === 'error').length : 0 + data.error ? 1 : 0)
-        this.emit('statusChanged', { key: count, title: `compilation failed with ${count} error${count.length > 1 ? 's' : ''}`, type: 'error' })
+        const count = (data.errors ? data.errors.filter(error => error.severity === 'error').length : 0) + (data.error ? 1 : 0)
+        // compilerLoadFailed runs immediately after this synthetic result. Let
+        // that handler distinguish a recoverable remote load from a failed
+        // builtin load; otherwise the toolbar briefly renders a red badge even
+        // though recovery is already in progress.
+        if (!isCompilerLoadFailure) {
+          this.emit('statusChanged', { key: count, title: `compilation failed with ${count} error${count > 1 ? 's' : ''}`, type: 'error' })
+        }
         // The bus 'compilationFinished' above is success-only, so consumers that
         // need to know a compile FAILED (e.g. the AI panel's compile tool, which
         // would otherwise wait out its timeout) get a dedicated event carrying
@@ -247,13 +278,14 @@ class CompileTab extends ViewPlugin {
     globalRegistry.get('themeModule').api.events.on('themeChanged', this.data.eventHandlers.onThemeChanged)
 
     // Run the compiler instead of trying to save the website
-    $(window).keydown((e) => {
+    this.data.eventHandlers.onSaveShortcut = (e) => {
       // ctrl+s or command+s
       if ((e.metaKey || e.ctrlKey) && e.keyCode === 83) {
         e.preventDefault()
         this.compileTabLogic.runCompiler(this.hhCompilation)
       }
-    })
+    }
+    $(window).on('keydown', this.data.eventHandlers.onSaveShortcut)
   }
 
   setHardHatCompilation (value) {
@@ -265,7 +297,9 @@ class CompileTab extends ViewPlugin {
   }
 
   getCompilationResult () {
-    return this.compileTabLogic.compiler.state.lastCompilationResult
+    return this._withUserPermission('getCompilationResult', 'read the latest compilation result', () => {
+      return this.compileTabLogic.compiler.state.lastCompilationResult
+    })
   }
 
   /**
@@ -275,8 +309,12 @@ class CompileTab extends ViewPlugin {
    * @param {string} fileName to compile
    */
   compile (fileName) {
-    addTooltip(yo`<div><b>${this.currentRequest.from}</b> is requiring to compile <b>${fileName}</b></div>`)
-    return this.compileTabLogic.compileFile(fileName)
+    return this._withUserPermission('compile', 'compile a workspace file', () => {
+      if (this.currentRequest) {
+        addTooltip(yo`<div><b>${this.currentRequest.from}</b> is requiring to compile <b>${fileName}</b></div>`)
+      }
+      return this.compileTabLogic.compileFile(fileName)
+    })
   }
 
   /**
@@ -287,8 +325,13 @@ class CompileTab extends ViewPlugin {
    * @param {object} settings {evmVersion, optimize, runs, version, language}
    */
   async compileWithParameters (compilationTargets, settings) {
+    await requireUserPermission(this, 'compileWithParameters', 'compile supplied source code')
+    settings = { ...(settings || {}) }
     settings.version = settings.version || this.selectedVersion
-    const res = await compile(compilationTargets, settings)
+    const contentResolver = (url, cb) => this.call('contentImport', 'resolveAndSave', url)
+      .then((result) => cb(null, result))
+      .catch((error) => cb(error && error.message ? error.message : String(error)))
+    const res = await compile(compilationTargets, settings, contentResolver)
     return res
   }
 
@@ -308,8 +351,10 @@ class CompileTab extends ViewPlugin {
   // rather than guess. Distinct from getCurrentCompilerConfig().currentVersion,
   // which reflects the SELECTION, not what has actually loaded.
   getCompilerVersion () {
-    const c = this.compileTabLogic && this.compileTabLogic.compiler
-    return (c && c.state && c.state.currentVersion) || ''
+    return this._withUserPermission('getCompilerVersion', 'read the loaded compiler version', () => {
+      const c = this.compileTabLogic && this.compileTabLogic.compiler
+      return (c && c.state && c.state.currentVersion) || ''
+    })
   }
 
   /**
@@ -318,10 +363,14 @@ class CompileTab extends ViewPlugin {
    * @param {object} settings {evmVersion, optimize, runs, version, language}
    */
   setCompilerConfig (settings) {
-    this.configurationSettings = settings
-    this.renderComponent()
-    // @todo(#2875) should use loading compiler return value to check whether the compiler is loaded instead of "setInterval"
-    addTooltip(yo`<div><b>${this.currentRequest.from}</b> is updating the <b>Solidity compiler configuration</b>.<pre class="text-left">${JSON.stringify(settings, null, '\t')}</pre></div>`)
+    return this._withUserPermission('setCompilerConfig', 'change the compiler configuration', () => {
+      this.configurationSettings = settings
+      this.renderComponent()
+      // @todo(#2875) should use loading compiler return value to check whether the compiler is loaded instead of "setInterval"
+      if (this.currentRequest) {
+        addTooltip(yo`<div><b>${this.currentRequest.from}</b> is updating the <b>Solidity compiler configuration</b>.<pre class="text-left">${JSON.stringify(settings, null, '\t')}</pre></div>`)
+      }
+    })
   }
 
   // TODO : Add success alert when compilation succeed
@@ -373,9 +422,11 @@ class CompileTab extends ViewPlugin {
   }
 
   compileFile (event) {
-    if (event.path.length > 0) {
-      this.compileTabLogic.compileFile(event.path[0])
-    }
+    return this._withUserPermission('compileFile', 'compile a selected workspace file', () => {
+      if (event.path.length > 0) {
+        return this.compileTabLogic.compileFile(event.path[0])
+      }
+    })
   }
 
   onDeactivation () {
@@ -384,12 +435,16 @@ class CompileTab extends ViewPlugin {
     this.editor.event.unregister('contentChanged', this.data.eventHandlers.onContentChanged)
     this.compiler.event.unregister('loadingCompiler', this.data.eventHandlers.onLoadingCompiler)
     this.compiler.event.unregister('compilerLoaded', this.data.eventHandlers.onCompilerLoaded)
+    this.compiler.event.unregister('loadedFromWorker', this.data.eventHandlers.onCompilerLoadedFromWorker)
     this.compiler.event.unregister('compilerLoadFailed', this.data.eventHandlers.onCompilerLoadFailed)
     this.compileTabLogic.event.removeListener('startingCompilation', this.data.eventHandlers.onStartingCompilation)
+    this.compileTabLogic.event.removeListener('removeAnnotations', this.data.eventHandlers.onRemoveAnnotations)
     this.fileManager.events.removeListener('currentFileChanged', this.data.eventHandlers.onCurrentFileChanged)
     this.fileManager.events.removeListener('noFileSelected', this.data.eventHandlers.onNoFileSelected)
     this.compiler.event.unregister('compilationFinished', this.data.eventHandlers.onCompilationFinished)
     globalRegistry.get('themeModule').api.events.removeListener('themeChanged', this.data.eventHandlers.onThemeChanged)
+    this.off('filePanel', 'setWorkspace')
+    $(window).off('keydown', this.data.eventHandlers.onSaveShortcut)
     this.call('manager', 'deactivatePlugin', 'solidity-logic')
   }
 }

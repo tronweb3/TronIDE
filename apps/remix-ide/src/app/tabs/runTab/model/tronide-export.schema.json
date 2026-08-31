@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tronide:schema:tronide-export:v1",
+  "title": "TronIDE TronBox Export Metadata",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "kind",
+    "generator",
+    "solc",
+    "network",
+    "scenarioSource",
+    "compatibility"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "tronide-tronbox-export" },
+    "generator": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "TronIDE" },
+        "version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "solc": {
+      "type": "object",
+      "required": ["version", "source"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "source": { "enum": ["last-compilation", "scenario", "fallback-default"] }
+      },
+      "additionalProperties": true
+    },
+    "network": {
+      "type": "object",
+      "required": ["source", "provider", "name", "id"],
+      "properties": {
+        "source": { "enum": ["scenario", "current-environment", "unknown"] },
+        "provider": { "type": "string", "minLength": 1 },
+        "name": { "type": ["string", "null"] },
+        "id": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "scenarioSource": {
+      "type": "object",
+      "required": ["type", "path", "schemaVersion", "transactionCount"],
+      "properties": {
+        "type": { "enum": ["current-recording", "workspace-file"] },
+        "path": { "type": ["string", "null"] },
+        "schemaVersion": { "type": ["integer", "null"], "minimum": 1 },
+        "transactionCount": { "type": "integer", "minimum": 0 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "workspace-file" } } },
+          "then": { "properties": { "path": { "type": "string", "minLength": 1 } } },
+          "else": { "properties": { "path": { "type": "null" } } }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "compatibility": {
+      "type": "object",
+      "required": ["testedTronbox", "apiBoundary"],
+      "properties": {
+        "testedTronbox": {
+          "type": "object",
+          "required": ["package", "version"],
+          "properties": {
+            "package": { "const": "tronbox" },
+            "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+          },
+          "additionalProperties": true
+        },
+        "apiBoundary": { "const": "generated-project-files" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -87,7 +87,7 @@ test.describe('Security remediation regression tests (2026-05-20 / 2026-06-02 / 
     await expect(dangerousLink).not.toHaveAttribute('href')
   })
 
-  test('plugin manager local plugin URL blocks unsafe protocols and remote non-localhost HTTP', async ({ page }) => {
+  test('plugin manager local plugin URL blocks unsafe protocols and remote URLs', async ({ page }) => {
     await page.goto('/')
     await dismissWelcomeModal(page)
 
@@ -101,57 +101,47 @@ test.describe('Security remediation regression tests (2026-05-20 / 2026-06-02 / 
     // Click "Connect to a Local Plugin"
     const localPluginBtn = page.locator('[data-id="pluginManagerComponentPluginSearchButton"]')
     await localPluginBtn.waitFor({ state: 'visible', timeout: 5000 })
-    await localPluginBtn.click({ force: true })
+    const localPluginModal = page.locator('[data-id="modalDialogContainer"]').filter({ hasText: 'Local Plugin' })
+    const localPluginName = localPluginModal.locator('[data-id="localPluginName"]')
+    const localPluginDisplayName = localPluginModal.locator('[data-id="localPluginDisplayName"]')
+    const localPluginUrl = localPluginModal.locator('[data-id="localPluginUrl"]')
 
-    // Wait for local plugin form modal
-    const localPluginName = page.locator('[data-id="localPluginName"]')
-    await localPluginName.waitFor({ state: 'visible', timeout: 5000 })
-    const localPluginDisplayName = page.locator('[data-id="localPluginDisplayName"]')
-    const localPluginUrl = page.locator('[data-id="localPluginUrl"]')
-    const modalOkBtn = page.locator('#modal-footer-ok')
-    const cancelBtn = page.locator('#modal-footer-cancel')
+    const submitInvalidPlugin = async (name: string, displayName: string, url: string, message: string) => {
+      await expect(localPluginModal).toBeVisible({ timeout: 5000 })
+      await localPluginName.fill(name)
+      await localPluginDisplayName.fill(displayName)
+      await localPluginUrl.fill(url)
+      await expect(localPluginUrl).toHaveValue(url)
 
-    // Match the validation tooltip by its message text rather than DOM order, so stacked or
-    // animating tooltips can't make the assertion pick the wrong one (the source of the flake).
-    const expectValidationTooltip = async (message: string) => {
-      await expect(
-        page.locator('[data-shared="tooltipPopup"]').filter({ hasText: message }).first()
-      ).toBeVisible({ timeout: 7000 })
-    }
-    // Close any open tooltips so the next case starts from a clean slate.
-    const clearTooltips = async () => {
-      for (const btn of await page.locator('button[data-id="tooltipCloseButton"]').all()) {
-        await btn.click({ force: true }).catch(() => {})
-      }
-      await page.waitForTimeout(300)
+      // Use an actionable user click and wait for the modal to settle. A forced
+      // click could run while the legacy queued modal was still activating,
+      // intermittently skipping its click listener and testing no validation.
+      await localPluginModal.locator('#modal-footer-ok').click()
+      await expect(localPluginModal).toHaveCount(0)
+
+      const tooltip = page.locator('[data-shared="tooltipPopup"]').filter({ hasText: message }).first()
+      await expect(tooltip).toBeVisible({ timeout: 7000 })
+      await tooltip.locator('button[data-id="tooltipCloseButton"]').click()
+      // Legacy tooltips animate for two seconds before leaving the DOM. Wait
+      // for that lifecycle so they cannot cover the next real click.
+      await expect(tooltip).toHaveCount(0, { timeout: 3000 })
     }
 
     // Test Case 1: Unsafe file:// protocol → must require http(s)
-    await localPluginName.fill('testUnsafePlugin')
-    await localPluginDisplayName.fill('Test Unsafe')
-    await localPluginUrl.fill('file:///etc/passwd')
-    await modalOkBtn.click({ force: true })
-    await expectValidationTooltip('Local plugin URL must use http(s).')
-    await clearTooltips()
+    await localPluginBtn.click()
+    await submitInvalidPlugin('testUnsafePlugin', 'Test Unsafe', 'file:///etc/passwd', 'Local plugin URL must use http(s).')
 
     // Test Case 2: Unsafe data: protocol → must require http(s)
-    await localPluginBtn.click({ force: true })
-    await localPluginName.waitFor({ state: 'visible', timeout: 5000 })
-    await localPluginName.fill('testUnsafePlugin2')
-    await localPluginDisplayName.fill('Test Unsafe 2')
-    await localPluginUrl.fill('data:text/html,<h1>Hack</h1>')
-    await modalOkBtn.click({ force: true })
-    await expectValidationTooltip('Local plugin URL must use http(s).')
-    await clearTooltips()
+    await localPluginBtn.click()
+    await submitInvalidPlugin('testUnsafePlugin2', 'Test Unsafe 2', 'data:text/html,<h1>Hack</h1>', 'Local plugin URL must use http(s).')
 
     // Test Case 3: Remote non-localhost HTTP → only localhost allowed
-    await localPluginBtn.click({ force: true })
-    await localPluginName.waitFor({ state: 'visible', timeout: 5000 })
-    await localPluginName.fill('testUnsafePlugin3')
-    await localPluginDisplayName.fill('Test Unsafe 3')
-    await localPluginUrl.fill('http://example.com/plugin')
-    await modalOkBtn.click({ force: true })
-    await expectValidationTooltip('HTTP local plugin URLs are only allowed for localhost.')
+    await localPluginBtn.click()
+    await submitInvalidPlugin('testUnsafePlugin3', 'Test Unsafe 3', 'http://example.com/plugin', 'HTTP local plugin URLs are only allowed for localhost.')
+
+    // Test Case 4: Remote HTTPS → remote plugins are disabled.
+    await localPluginBtn.click()
+    await submitInvalidPlugin('testUnsafePlugin4', 'Test Unsafe 4', 'https://example.com/plugin', 'Remote plugin URLs are disabled. Use localhost, 127.0.0.1, or ::1.')
   })
 
   test('remixd connection setup includes unpredictable remixdToken in query parameters', async ({ page }) => {
@@ -160,6 +150,13 @@ test.describe('Security remediation regression tests (2026-05-20 / 2026-06-02 / 
 
     // Wait for workspace load
     await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+
+    // The connector obtains a daemon-issued token before opening the socket.
+    // Keep this test focused on the URL binding by stubbing that local
+    // endpoint as well as the WebSocket below.
+    await page.route('**/remixd-token', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ token: '0123456789abcdef0123456789abcdef' }) })
+    })
 
     // Setup mock WebSocket handler to capture the token
     await page.evaluate(() => {

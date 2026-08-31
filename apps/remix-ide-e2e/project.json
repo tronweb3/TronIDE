@@ -6,10 +6,12 @@
   "targets": {
     "lint": {
       "executor": "@nrwl/linter:eslint",
+      "outputs": ["{options.outputFile}"],
       "options": {
-        "linter": "eslint",
-        "tsConfig": ["apps/remix-ide-e2e/tsconfig.e2e.json"],
-        "exclude": ["**/node_modules/**", "!apps/remix-ide-e2e/**/*"]
+        "lintFilePatterns": [
+          "apps/remix-ide-e2e/src/**/*.ts"
+        ],
+        "eslintConfig": "apps/remix-ide-e2e/.eslintrc"
       }
     }
   }

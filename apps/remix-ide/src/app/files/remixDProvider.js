@@ -30,9 +30,12 @@ module.exports = class RemixDProvider extends FileProvider {
     this._readOnlyMode = false
     this.filesContent = {}
     this.files = {}
+    this._eventsRegistered = false
   }
 
   _registerEvent () {
+    if (this._eventsRegistered) return
+    this._eventsRegistered = true
     var remixdEvents = ['connecting', 'connected', 'errored', 'closed']
     remixdEvents.forEach((value) => {
       this._appManager.on('remixd', value, (event) => {
@@ -156,11 +159,12 @@ module.exports = class RemixDProvider extends FileProvider {
   remove (path) {
     return new Promise((resolve, reject) => {
       if (!this._isReady) return reject(new Error('provider not ready'))
+      const cacheKey = path
       const unprefixedpath = this.removePrefix(path)
       this._appManager.call('remixd', 'remove', { path: unprefixedpath })
         .then(result => {
-          const path = unprefixedpath
-          delete this.filesContent[path]
+          delete this.filesContent[cacheKey]
+          delete this._readOnlyFiles[cacheKey]
           resolve(true)
           this.init()
         }).catch(error => {
@@ -171,18 +175,19 @@ module.exports = class RemixDProvider extends FileProvider {
   }
 
   rename (oldPath, newPath, isFolder) {
+    const oldCacheKey = oldPath
+    const newCacheKey = newPath
     const unprefixedoldPath = this.removePrefix(oldPath)
     const unprefixednewPath = this.removePrefix(newPath)
     if (!this._isReady) return new Promise((resolve, reject) => reject(new Error('provider not ready')))
     return this._appManager.call('remixd', 'rename', { oldPath: unprefixedoldPath, newPath: unprefixednewPath })
       .then(result => {
-        const newPath = unprefixednewPath
-        const oldPath = unprefixedoldPath
-
-        this.filesContent[newPath] = this.filesContent[oldPath]
-        delete this.filesContent[oldPath]
+        this.filesContent[newCacheKey] = this.filesContent[oldCacheKey]
+        this._readOnlyFiles[newCacheKey] = this._readOnlyFiles[oldCacheKey]
+        delete this.filesContent[oldCacheKey]
+        delete this._readOnlyFiles[oldCacheKey]
         this.init(() => {
-          this.event.emit('fileRenamed', oldPath, newPath, isFolder)
+          this.event.emit('fileRenamed', unprefixedoldPath, unprefixednewPath, isFolder)
         })
         return result
       }).catch(error => {

@@ -73,6 +73,7 @@ export interface AnalysisReportObj {
 export type AnalysisReport = {
   name: string
   report: AnalysisReportObj[]
+  error?: string
 }
 
 export interface CompilationResult {

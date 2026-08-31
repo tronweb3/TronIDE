@@ -79,6 +79,8 @@ test.describe('Wallet header provider events', () => {
     test.setTimeout(45_000)
     await bootWithMutableTronLink(page)
     const walletButton = page.locator('[data-id="headerWalletConnect"]')
+    const homeWalletStatus = page.locator('[data-id="landingWalletStatus"]')
+    await expect(homeWalletStatus).toHaveText('Wallet: TronLink connected')
 
     // TronLink's event is authoritative. Deliberately leave defaultAddress at
     // ACCOUNT_A to reproduce the extension's briefly/stale cached injection.
@@ -86,6 +88,7 @@ test.describe('Wallet header provider events', () => {
       window.postMessage({ message: { action: 'accountsChanged', data: { accounts: [] } } }, '*')
     })
     await expect(walletButton).toHaveText(/Connect Wallet/, { timeout: 1_500 })
+    await expect(homeWalletStatus).toHaveText('Wallet: Not connected', { timeout: 1_500 })
 
     // Cross the 3s status poll: it must not resurrect ACCOUNT_A from the stale
     // injected object after the provider explicitly revoked account access.
@@ -99,6 +102,7 @@ test.describe('Wallet header provider events', () => {
       window.postMessage({ message: { action: 'accountsChanged', data: { address: account } } }, '*')
     }, ACCOUNT_B)
     await expect(walletButton).toContainText('TCrDi8…ahWvoN · Nile', { timeout: 1_500 })
+    await expect(homeWalletStatus).toHaveText('Wallet: TronLink connected', { timeout: 1_500 })
   })
 
   test('TC-WAL-HDR-EVT-004: provider disconnect returns Deploy & Run to VM', { tag: '@gate' }, async ({ page }) => {

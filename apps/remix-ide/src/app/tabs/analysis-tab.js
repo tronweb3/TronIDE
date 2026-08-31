@@ -30,7 +30,11 @@ var EventManager = require('../../lib/events')
 
 // Mirrors the panel's library heuristic (remix-ui-static-analyser isLibraryFile):
 // findings in imported dependencies are noise the user didn't write.
-const isLibraryFile = (fileName) => !!fileName && (fileName.startsWith('@') || /(^|\/)(\.deps|node_modules)\//.test(fileName))
+const isLibraryFile = (fileName) => !!fileName && (
+  fileName.startsWith('@') ||
+  /(^|\/)(\.deps|node_modules|installed_contracts)\//.test(fileName) ||
+  /^(https?|github|ipfs|swarm|bzz-raw):/i.test(String(fileName))
+)
 
 const profile = {
   name: 'solidityStaticAnalysis',
@@ -94,9 +98,23 @@ class AnalysisTab extends ViewPlugin {
     const toRun = Array.from({ length: moduleCount }, (_, i) => i)
     const sourceKeys = Object.keys(compilationResult.sources)
 
-    const reports = await new Promise((resolve) => {
-      try { runner.run(compilationResult, toRun, resolve) } catch (e) { resolve([]) }
-    })
+    let reports
+    try {
+      reports = await new Promise((resolve, reject) => {
+        try { runner.run(compilationResult, toRun, resolve) } catch (e) { reject(e) }
+      })
+    } catch (e) {
+      return { ok: false, message: `Static analysis failed: ${e instanceof Error ? e.message : String(e)}` }
+    }
+
+    const moduleErrors = reports.filter((result) => result && result.error)
+    if (moduleErrors.length) {
+      return {
+        ok: false,
+        message: `Static analysis failed in ${moduleErrors.length} module${moduleErrors.length === 1 ? '' : 's'}.`,
+        errors: moduleErrors.map((result) => ({ module: result.name, message: result.error }))
+      }
+    }
 
     const findings = []
     let hidden = 0

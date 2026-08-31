@@ -1143,18 +1143,28 @@ function getTypeStringFromComponents (components: ABIParameter[]) {
  * @param contractFiles compiled contract object
  */
 function getCompilerVersion (contractFiles: CompiledContractObj): string {
-  let version = 'latest'
+  if (!contractFiles || typeof contractFiles !== 'object') return 'latest'
   const fileNames: string[] = Object.keys(contractFiles)
-  const contracts = contractFiles[fileNames[0]]
-  const contractNames: string[] = Object.keys(contracts)
-  const contract: CompiledContract = contracts[contractNames[0]]
-  // For some compiler/contract,  metadata is ""
-  if (contract && contract.metadata) {
-    const metadata = JSON.parse(contract.metadata)
-    const compilerVersion: string = metadata.compiler.version
-    if (!compilerVersion.includes('nightly')) { version = 'v' + compilerVersion.split('+commit')[0] }
+  for (const fileName of fileNames) {
+    const contracts = contractFiles[fileName]
+    if (!contracts || typeof contracts !== 'object') continue
+    const contractNames: string[] = Object.keys(contracts)
+    for (const contractName of contractNames) {
+      const contract: CompiledContract = contracts[contractName]
+      // Some compiler outputs omit metadata or provide malformed metadata.
+      // A missing documentation version must not abort the complete analysis.
+      if (!contract || typeof contract.metadata !== 'string' || !contract.metadata) continue
+      try {
+        const metadata = JSON.parse(contract.metadata)
+        const compilerVersion = metadata && metadata.compiler && metadata.compiler.version
+        if (typeof compilerVersion === 'string' && !compilerVersion.includes('nightly')) return 'v' + compilerVersion.split('+commit')[0]
+      } catch (e) {
+        // Keep the safe "latest" fallback and continue looking at other
+        // contracts, rather than turning the module into an empty report.
+      }
+    }
   }
-  return version
+  return 'latest'
 }
 
 const helpers = {

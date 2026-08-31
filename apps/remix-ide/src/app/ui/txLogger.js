@@ -31,6 +31,7 @@ var helper = require('../../lib/helper')
 var modalDialog = require('./modal-dialog-custom')
 var typeConversion = remixLib.execution.typeConversion
 var globlalRegistry = require('../../global/registry')
+var transactionStatus = require('./transaction-status')
 
 const tronExplorerLinks = {
   main: { tx: 'https://tronscan.org/#/transaction/', address: 'https://tronscan.org/#/address/' },
@@ -334,12 +335,12 @@ function renderEmptyBlock (self, data) {
 }
 
 function checkTxStatus (tx, type) {
-  if (tx.status === '0x1' || tx.status === true) {
+  if (transactionStatus.isSuccessfulReceipt(tx)) {
     return yo`<i class="${css.txStatus} ${css.succeeded} fas fa-check-circle"></i>`
   }
   if (type === 'call' || type === 'unknownCall') {
     return yo`<i class="${css.txStatus} ${css.call}">call</i>`
-  } else if (tx.status === '0x0' || tx.status === false) {
+  } else if (transactionStatus.isFailedReceipt(tx)) {
     return yo`<i class="${css.txStatus} ${css.failed} fas fa-times-circle"></i>`
   } else {
     return yo`<i class="${css.txStatus} ${css.notavailable} fas fa-circle-thin" title='Status not available' ></i>`
@@ -454,7 +455,7 @@ function txDetails (e, tx, data, obj, self) {
     table = createTable({
       blockchain: self.blockchain,
       hash: data.tx.hash,
-      status: data.receipt ? data.receipt.status : null,
+      status: data.receipt ? transactionStatus.receiptStatus(data.receipt) : null,
       isCall: data.tx.isCall,
       contractAddress: data.tx.contractAddress,
       data: data.tx,
@@ -481,10 +482,10 @@ function createTable (opts) {
   if (!opts.isCall) {
     var msg = ''
     if (opts.status !== undefined && opts.status !== null) {
-      if (opts.status === '0x0' || opts.status === false) {
+      if (transactionStatus.isFailedReceipt(opts.status)) {
         msg = ' Transaction mined but execution failed'
-      } else if (opts.status === '0x1' || opts.status === true) {
-        msg = ' Transaction mined and execution succeed'
+      } else if (transactionStatus.isSuccessfulReceipt(opts.status)) {
+        msg = ' Transaction mined and execution succeeded'
       }
     } else {
       msg = ' Status not available at the moment'

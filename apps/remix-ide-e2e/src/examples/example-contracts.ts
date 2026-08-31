@@ -330,6 +330,8 @@ export default {
   storage: { name: '1_Storage.sol', content: storage },
   owner: { name: '2_Owner.sol', content: owner },
   ballot: { name: '3_Ballot.sol', content: ballot },
+  // Keep the historical fixture key aligned with its Solidity filename.
+  // eslint-disable-next-line camelcase
   ballot_0_4_11: { name: 'ballot_0_4_11.sol', content: ballot_0_4_11 },
   ballot_test: { name: 'tests/4_Ballot_test.sol', content: ballotTest }
 }

@@ -17,12 +17,28 @@
 import React, { Component } from "react";
 import "./index.css";
 import IconComponent from "../common/IconComponent";
-import { Input,Collapse,Tooltip,Modal} from "antd";
+import Input from 'antd/lib/input';
+import Collapse from 'antd/lib/collapse';
+import Tooltip from 'antd/lib/tooltip';
+import Modal from 'antd/lib/modal';
 import ChatGreetItemRender from "./ChatGreetItemRender";
 import sha256 from "crypto-js/sha256";
 import Base64 from "crypto-js/enc-base64";
 import useStream from './useStream';
-import { complete, anthropicChatWithTools, BUILTIN_SOLC_VERSION, TRON_SOLC_LIST_URL } from '../../services/toolsApi';
+import { complete, anthropicChatWithTools, geminiChatWithTools, openAICompatibleChatWithTools, BUILTIN_SOLC_VERSION, TRON_SOLC_LIST_URL } from '../../services/toolsApi';
+import { WORKSPACE_ACTION_VENDORS } from '../../services/aiToolProtocolAdapters';
+import { AI_APPROVAL_MAX_REVIEW_CHARS, createAIApprovalEnvelope, verifyAIApprovalEnvelope } from '../../services/aiApprovalIntegrity';
+import { AITaskRuntime, deriveAITaskStatusFromEvents, hasUnresolvedChainWrite } from '../../services/aiTaskRuntime';
+import { getAIToolPolicy } from '../../services/aiToolPolicies';
+import { AI_TASK_ERROR_CODE, AI_TASK_STATUS, AI_TOOL_ERROR_CODE, createAITask, createToolErrorResult, resumeAITask, transitionTaskStatus } from '../../services/aiTaskProtocol';
+import { canonicalizeAIToolExecutionResult } from '../../services/aiToolExecutionResult';
+import { AITaskStore } from '../../services/aiTaskStorage';
+import { emptyLocalAITaskMetrics, LocalAITaskMetrics, readLocalAITaskMetricsEnabled, writeLocalAITaskMetricsEnabled } from '../../services/aiTaskMetrics';
+import { AI_ENDPOINT_TYPE, BANK_OF_AI_VENDOR, DEFAULT_AI_ENDPOINT_TYPE, DEFAULT_AI_MODEL, DEFAULT_AI_VENDOR, classifyBankOfAIErrorCode, isOfficialBankOfAIBaseUrl, sanitizeAIError } from '../../services/aiProviderConfig';
+import { AITaskWriteLock } from '../../services/aiWriteLock';
+import { createAITaskEntry, createAITaskEntrySnapshot, getAITaskEntryReadinessIssue, getNileEnvironmentReadinessIssue, isConcreteAITaskNetwork, restoreAITaskEntry } from '../../services/aiTaskEntries';
+import { createGoldenWorkflowResult, evaluateGoldenWorkflowRun, getGoldenWorkflowForEntry } from '../../services/aiGoldenWorkflows';
+import { aiTaskDiagnosticFilename, createAITaskDiagnostic, serializeAITaskDiagnostic } from '../../services/aiTaskDiagnostics';
 import ChatHistoryRecord from './ChatHistoryRecord';
 import localforage from 'localforage';
 import { cloneDeep } from "lodash";
@@ -30,6 +46,8 @@ import CommonModal from '../common/Modal';
 import Toast from '../common/Toast';
 import ChatItemsList from "./ChatItemsList";
 import ChatSet from "./ChatSet";
+import AITaskTimeline from './AITaskTimeline';
+import AIDeploymentNextSteps from './AIDeploymentNextSteps';
 const { TextArea } = Input;
 const ONE_MEGA_BYTES = 1024 * 1024;
 
@@ -54,19 +72,43 @@ class Chat extends Component {
       canScrollBottom: true,
       apiKey:'',
       baseUrl:'',
-      gptv:'claude-opus-4-8',
+      gptv:DEFAULT_AI_MODEL,
       context:'none',
       activeKey:['1'],
       enableStreaming:true,
       enableWorkspaceActions:true,
-      aiModelVendor:'Anthropic',
+      enableLocalMetrics: readLocalAITaskMetricsEnabled(),
+      aiLocalMetrics: emptyLocalAITaskMetrics(),
+      aiModelVendor:DEFAULT_AI_VENDOR,
+      aiEndpointType:DEFAULT_AI_ENDPOINT_TYPE,
+      aiTaskHistory: [],
+      deploymentNextStep: null,
     };
     this.chatContentWrapperRef = null;
     this.exampleWrapperRef = null;
     this.textAreaRef=null;
+    // Settings can change while the current-file read is awaiting the plugin
+    // bus. A monotonic revision lets the request fail closed instead of mixing
+    // an old key with a new provider/endpoint.
+    this._aiRequestConfigRevision = 0;
   }
 
   async componentDidMount() {
+    this._isMounted = true;
+    this._aiTaskStore = new AITaskStore({ driver: localforage });
+    this._aiTaskMetrics = new LocalAITaskMetrics({ driver: localforage, enabled: this.state.enableLocalMetrics });
+    try {
+      const taskHistory = await this._aiTaskStore.initialize();
+      if (this._isMounted) this.setState({ aiTaskHistory: taskHistory.tasks });
+    } catch (e) {
+      console.debug('[ai] task history unavailable:', e);
+    }
+    try {
+      const localMetrics = await this._aiTaskMetrics.initialize();
+      if (this._isMounted) this.setState({ aiLocalMetrics: localMetrics });
+    } catch (e) {
+      console.debug('[ai] local metrics unavailable:', e);
+    }
     this.getIsShowDownArrow();
     const chatList = await localforage.getItem('chatList');
     if(chatList?.length > 0) {
@@ -85,6 +127,27 @@ class Chat extends Component {
     if (plugin?.events?.on) {
       this._onInjectPrompt = ({ prompt } = {}) => this.submitInjectedPrompt(prompt);
       plugin.events.on('injectPrompt', this._onInjectPrompt);
+      this._onInjectTask = (payload = {}) => this.submitInjectedTask(payload);
+      plugin.events.on('injectTask', this._onInjectTask);
+    }
+    // Deploy & Run publishes this after every successful contract creation,
+    // whether the user clicked Deploy or the AI assistant used aiDeploy. Keep
+    // the latest in-memory value as well so opening the AI panel after a manual
+    // deployment still offers the same five explicit next steps.
+    this._onDeploymentCompleted = (event = {}) => {
+      const deployment = event && event.detail;
+      if (!deployment || !deployment.contractAddress || !this._isMounted) return;
+      this.setState({ deploymentNextStep: deployment, activeKey: [] });
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('tronideDeploymentCompleted', this._onDeploymentCompleted);
+      this._onDeploymentContextCleared = () => {
+        if (this._isMounted) this.setState({ deploymentNextStep: null });
+      };
+      window.addEventListener('tronideDeploymentContextCleared', this._onDeploymentContextCleared);
+      if (window.__tronideLastDeployment?.contractAddress) {
+        this._onDeploymentCompleted({ detail: window.__tronideLastDeployment });
+      }
     }
     // Expose AI completion to other plugins (editor completer + inline-`//`)
     // WITHOUT ever handing out the key: the completion runs HERE, holding the
@@ -95,17 +158,30 @@ class Chat extends Component {
     if (plugin) {
       plugin._aiCompleteFn = ({ prefix, suffix, maxTokens } = {}) => {
         if (!this.state.apiKey) return Promise.resolve('');
+        const startedAt = Date.now();
         return complete({
           apiKey: this.state.apiKey,
           model: this.state.gptv,
           aiModelVendor: this.state.aiModelVendor,
+          endpointType: this.state.aiEndpointType,
           baseUrl: this.state.baseUrl,
           prefix,
           suffix,
           maxTokens
+        }).then((result) => {
+          this._recordBankOfAIProviderRequest({ status: 'succeeded', durationMs: Date.now() - startedAt });
+          return result;
+        }).catch((error) => {
+          this._recordBankOfAIProviderRequest({ status: error?.name === 'AbortError' ? 'cancelled' : 'failed', durationMs: Date.now() - startedAt, error });
+          throw error;
         });
       };
       plugin._hasAiKeyFn = () => !!this.state.apiKey;
+      plugin._getAITaskReadinessFn = () => this.getAITaskReadiness();
+      plugin._showAiSettingsFn = (message) => this.setState({
+        activeKey: ['1'],
+        ...(message ? { reminder: message } : {})
+      });
     }
 
     // Esc stops an in-flight AI request ("stop thinking"). Only acts while the
@@ -122,15 +198,32 @@ class Chat extends Component {
   }
 
   componentWillUnmount() {
+    this._isMounted = false;
+    if (this._aiTaskStore) this._aiTaskStore.flush().catch(() => {});
+    if (this._aiTaskMetrics) this._aiTaskMetrics.flush().catch(() => {});
     // The in-memory key dies with this component's state — a setState here
     // only triggered React's no-op-update-on-unmounted warning.
     if (this._onEscStop) document.removeEventListener('keydown', this._onEscStop);
+    if (typeof window !== 'undefined' && this._onDeploymentCompleted) {
+      window.removeEventListener('tronideDeploymentCompleted', this._onDeploymentCompleted);
+    }
+    if (typeof window !== 'undefined' && this._onDeploymentContextCleared) {
+      window.removeEventListener('tronideDeploymentContextCleared', this._onDeploymentContextCleared);
+    }
     this.stopAi(); // abort any in-flight request on teardown
     const { plugin } = this.props;
     if (plugin?.events?.removeListener && this._onInjectPrompt) {
       plugin.events.removeListener('injectPrompt', this._onInjectPrompt);
     }
-    if (plugin) { plugin._aiCompleteFn = null; plugin._hasAiKeyFn = null; }
+    if (plugin?.events?.removeListener && this._onInjectTask) {
+      plugin.events.removeListener('injectTask', this._onInjectTask);
+    }
+    if (plugin) {
+      plugin._aiCompleteFn = null;
+      plugin._hasAiKeyFn = null;
+      plugin._getAITaskReadinessFn = null;
+      plugin._showAiSettingsFn = null;
+    }
   }
 
   // Feed an externally-supplied prompt into the chat as if the user had typed
@@ -142,6 +235,39 @@ class Chat extends Component {
     if (loading || loadingCompleted) return;
     if (this.state.activeKey?.length) this.collapseHandle();
     this.onSubmit(prompt);
+  };
+
+  getAITaskReadiness = () => {
+    return Object.freeze({
+      hasKey: !!this.state.apiKey,
+      hasModel: !!String(this.state.gptv || '').trim(),
+      aiModelVendor: this.state.aiModelVendor,
+      workspaceActionsEnabled: this.state.enableWorkspaceActions === true,
+      toolProtocolSupported: WORKSPACE_ACTION_VENDORS.includes(this.state.aiModelVendor),
+      taskBusy: this.state.loading || this.state.loadingCompleted
+    });
+  };
+
+  // A task card supplies only a trusted registry id and a tightly bounded
+  // context. Rebuild the prompt here rather than trusting a plugin-supplied
+  // string, then enter the same onSubmit -> Task Runtime path as manual chat.
+  submitInjectedTask = ({ entryId, source, context, runtimeContext } = {}) => {
+    const { loading, loadingCompleted } = this.state;
+    if (loading || loadingCompleted) return { ok: false, code: 'TASK_BUSY' };
+    let taskEntry;
+    try { taskEntry = createAITaskEntry({ entryId, source, context }); }
+    catch (error) {
+      this.setState({ reminder: error?.message || 'This AI task entry is unavailable.' });
+      return { ok: false, code: 'INVALID_ENTRY' };
+    }
+    const issue = getAITaskEntryReadinessIssue(taskEntry, this.getAITaskReadiness(), runtimeContext);
+    if (issue) {
+      this.setState({ activeKey: ['1'], reminder: `${issue.summary} ${issue.userAction}` });
+      return issue;
+    }
+    if (this.state.activeKey?.length) this.collapseHandle();
+    this.onSubmit(taskEntry.prompt, taskEntry);
+    return { ok: true, code: 'OK', entryId: taskEntry.entryId };
   };
 
   componentDidUpdate(prevProps, prevState) {
@@ -171,7 +297,7 @@ class Chat extends Component {
     }
   }
 
-  onSubmit = (value) => {
+  onSubmit = (value, taskEntry = null) => {
     const { isExperience } = this.props;
     const { chatList, loading, myIssueList, loadingCompleted ,apiKey} = this.state;
     if (loading || !value || loadingCompleted) return;
@@ -180,7 +306,7 @@ class Chat extends Component {
     let currentMyIssueInfo = {
       chatKey: _chatList.length + 1,
       type: "0",
-      text: value,
+      text: taskEntry?.goal || value,
     };
     this.setState(
       {
@@ -193,7 +319,7 @@ class Chat extends Component {
       },
       () => {
         if (!isExperience) {
-          this.getChatGPTAnswer(value);
+          this.getChatGPTAnswer(value, taskEntry);
         } else {
           this.getCacheAnswer(value);
         }
@@ -238,12 +364,12 @@ class Chat extends Component {
     } else {
       let text = res?.message;
       if (text === "Don't find recommend answer.") {
-        text = "This question hasn't been cached. Please select another contract, question, or language.";
+        text = "No cached answer was found. Choose another contract, question, or language.";
       }
       item = {
         chatKey: chatList.length + 1,
         type: "1",
-        text: text || "The system doesn't seem to have received your question. Please check the question you sent.",
+        text: text || "Your question was not received. Check it and try again.",
         gptv,
         error: "1",
         isExperience,
@@ -341,7 +467,7 @@ class Chat extends Component {
           {
             chatKey: chatList.length + 1,
             type: "1",
-            text: "Request timeout. Please check your network connection.",
+            text: "Request timed out. Check your network and try again.",
             gptv,
             error: "1",
             isExperience,
@@ -398,15 +524,37 @@ class Chat extends Component {
     );
   };
 
-  getChatGPTAnswer = async (value) => {
+  _bumpAiRequestConfigRevision = () => {
+    this._aiRequestConfigRevision += 1;
+    // A setting change during an active request must not leave the old request
+    // running against a configuration the user no longer selected.
+    if (this._aiAbort && !this._aiAbort.signal?.aborted && (this.state.loading || this.state.loadingCompleted)) {
+      this._aiAbort.abort();
+    }
+  };
+
+  _captureAiRequestConfig = () => Object.freeze({
+    revision: this._aiRequestConfigRevision,
+    apiKey: String(this.state.apiKey || '').trim(),
+    gptv: this.state.gptv,
+    context: this.state.context,
+    enableStreaming: this.state.enableStreaming,
+    enableWorkspaceActions: this.state.enableWorkspaceActions,
+    aiModelVendor: this.state.aiModelVendor,
+    aiEndpointType: this.state.aiEndpointType,
+    baseUrl: this.state.baseUrl
+  });
+
+  getChatGPTAnswer = async (value, taskEntry = null) => {
     const { onSubmitQuestion, maxCodeLength,plugin } = this.props;
-    const {apiKey, gptv, context} =this.state;
+    const requestConfig = this._captureAiRequestConfig();
+    const { apiKey, gptv, context } = requestConfig;
     // No key → say so FIRST. The current-file read used to run before this
     // check, so with no key AND nothing open the user got "Read current file
     // error" instead of being told to set the key.
     if (!apiKey) {
       onSubmitQuestion && onSubmitQuestion();
-      this.handleState('reminder',"Please click on 'TRON IDE AI Assistant' above to open the configuration panel and set the API Key.");
+      this.handleState('reminder', "Open TRON IDE AI Assistant settings and add an API key.");
       return;
     }
     let code = "";
@@ -420,10 +568,18 @@ class Chat extends Component {
       }
     }
 
+    // Do not send a key captured before the file read to a destination selected
+    // while that read was pending. The settings handlers also abort active
+    // network requests; this check covers the pre-request async gap.
+    if (requestConfig.revision !== this._aiRequestConfigRevision) {
+      this.handleState('reminder', 'AI settings changed. Submit the request again.');
+      return;
+    }
+
     onSubmitQuestion && onSubmitQuestion();
     //this.handleState('reminder', "");
     if(code&&code?.length > maxCodeLength) {
-      this.handleState('reminder', "The source code length has reached the upper limit. Please select fewer contract files or shorten the source code.");
+      this.handleState('reminder', "The source is too long. Select fewer files or shorten the code.");
       return;
     } else {
       await this.handleState('reminder', "");
@@ -431,10 +587,11 @@ class Chat extends Component {
     const { chatList } = this.state;
     let _userContent = code ? code + " " + value : value;
 
-    // Workspace actions (v1: Anthropic only) go through the tool loop instead
-    // of the plain streaming chat, so the model can create/read files.
-    if (this.state.aiModelVendor === 'Anthropic' && this.state.enableWorkspaceActions) {
-      return this.runAnthropicToolChat(_userContent);
+    // Tool-capable vendors share one Task Runtime and policy gate. Unsupported
+    // vendors remain explicit chat-only choices in Settings; they never enter
+    // plain chat while pretending Workspace Actions were executed.
+    if (WORKSPACE_ACTION_VENDORS.includes(requestConfig.aiModelVendor) && requestConfig.enableWorkspaceActions) {
+      return this.runWorkspaceToolChat(_userContent, taskEntry, requestConfig);
     }
 
     let _messages = this.getSessionMessages();
@@ -461,10 +618,12 @@ class Chat extends Component {
       apiKey,
       userContent: _userContent,
       model: gptv,
-      stream: this.state.enableStreaming,
+      stream: requestConfig.enableStreaming,
       messages: _messages,
-      aiModelVendor: this.state.aiModelVendor,
-      baseUrl: this.state.baseUrl,
+      aiModelVendor: requestConfig.aiModelVendor,
+      endpointType: requestConfig.aiEndpointType,
+      baseUrl: requestConfig.baseUrl,
+      onProviderRequest: this._recordBankOfAIProviderRequest,
       signal: this._aiAbort.signal
     });
   };
@@ -472,6 +631,20 @@ class Chat extends Component {
   // Abort the in-flight AI request (Esc / Stop). Never throws; the request's
   // own AbortError handling resets loading and appends a "stopped" note.
   stopAi = () => {
+    const activeTool = this._activeAiToolContext?.toolName;
+    const cancelMethod = activeTool === 'deploy_contract'
+      ? 'aiDeploy'
+      : activeTool === 'write_contract'
+        ? 'aiCallMethod'
+        : activeTool === 'replay_recording'
+          ? 'aiRunScenario'
+          : null;
+    // Abort the engine queue entry as well as the model request. The udapp
+    // transaction path observes the released currentRequest through its
+    // cancellation state and stops before signing/broadcasting.
+    if (cancelMethod && this.props.plugin && typeof this.props.plugin.cancel === 'function') {
+      try { Promise.resolve(this.props.plugin.cancel('udapp', cancelMethod)).catch(() => {}) } catch (e) {}
+    }
     if (this._aiAbort && !this._aiAbort.signal.aborted) {
       try { this._aiAbort.abort(); } catch (e) { /* already settled */ }
     }
@@ -582,9 +755,15 @@ class Chat extends Component {
         onOk={() => { 
           this.setState({
             chatList: [],
+            aiTaskHistory: [],
           });
           this.hideModal();
           this.storageChatList([]);
+          if (this._aiTaskStore) {
+            this._aiTaskStore.clear()
+              .then((snapshot) => { if (this._isMounted) this.setState({ aiTaskHistory: snapshot.tasks }); })
+              .catch((error) => console.debug('[ai] task history clear failed:', error));
+          }
           gtag("event", "click", {event_category: "ai_user_action",event_label: "clear_records"})
         }}
         title=''
@@ -594,7 +773,7 @@ class Chat extends Component {
             <IconComponent className='tron-icon tron-font-size-60px' icon="#icon-warning" />
           </div>
           <div className="history-record-clear-desc">
-           Confirm to delete all chat records? Make sure you have saved all necessary data.
+           Confirm to delete all chat and AI task records? Make sure you have saved all necessary data.
           </div>
         </div>
       </CommonModal>
@@ -655,6 +834,7 @@ class Chat extends Component {
   };
 
   setNewSession = () => {
+    this._pendingAiTask = null;
     const { intl } = this.props;
     const { chatList } = this.state;
     const _chatList = cloneDeep(chatList);
@@ -688,19 +868,39 @@ class Chat extends Component {
   };
 
   gptvHandle=(e)=>{
+    this._bumpAiRequestConfigRevision();
     this.setState({
       gptv:e
     })
   }
 
   baseUrlHandle=(e)=>{
+    this._bumpAiRequestConfigRevision();
     this.setState({
       baseUrl:e
     })
   }
 
   workspaceActionsHandle=(checked)=>{
+    this._bumpAiRequestConfigRevision();
     this.setState({ enableWorkspaceActions: !!checked })
+  }
+
+  localMetricsHandle=(checked)=>{
+    const enabled = writeLocalAITaskMetricsEnabled(!!checked)
+    this.setState({ enableLocalMetrics: enabled })
+    if (this._aiTaskMetrics) {
+      this._aiTaskMetrics.setEnabled(enabled)
+        .then((snapshot) => { if (this._isMounted) this.setState({ aiLocalMetrics: snapshot }) })
+        .catch((error) => console.debug('[ai] local metrics preference failed:', error))
+    }
+  }
+
+  clearLocalMetricsHandle=()=>{
+    if (!this._aiTaskMetrics) return
+    this._aiTaskMetrics.clear()
+      .then((snapshot) => { if (this._isMounted) this.setState({ aiLocalMetrics: snapshot }) })
+      .catch((error) => console.debug('[ai] local metrics clear failed:', error))
   }
 
   // Workspace-relative FILE path (create/read): must name a file — non-empty,
@@ -746,14 +946,28 @@ class Chat extends Component {
       const current = await this.props.plugin.call('dGitProvider', 'currentbranch', {});
       branch = (current && current.name) || (typeof current === 'string' ? current : '');
     } catch (e) { branch = ''; }
-    return { workspace, branch };
+    let remotes = [];
+    try { remotes = await this.props.plugin.call('dGitProvider', 'listRemotes') || []; } catch (e) { remotes = []; }
+    const remote = remotes.find((entry) => entry && entry.remote === 'origin') || remotes[0];
+    return {
+      workspace,
+      branch,
+      remote: remote && remote.remote && remote.url
+        ? { name: remote.remote, url: String(remote.url) }
+        : null
+    };
   }
 
   _gitConfirmationScopeError = async (expected) => {
     const current = await this._gitConfirmationContext();
     if (!expected || !current) return 'Could not re-check the Git workspace after confirmation. Nothing was changed.';
-    if (expected.workspace !== current.workspace || expected.branch !== current.branch) {
-      return 'The Git workspace or branch changed while confirmation was open. Nothing was changed.';
+    const expectedRemote = expected.remote || null;
+    const currentRemote = current.remote || null;
+    const sameRemote = expectedRemote === null && currentRemote === null
+      ? true
+      : expectedRemote !== null && currentRemote !== null && expectedRemote.name === currentRemote.name && expectedRemote.url === currentRemote.url;
+    if (expected.workspace !== current.workspace || expected.branch !== current.branch || !sameRemote) {
+      return 'The Git workspace, branch, or remote changed while confirmation was open. Nothing was changed.';
     }
     return '';
   }
@@ -763,6 +977,29 @@ class Chat extends Component {
     expectedWorkspace: context.workspace,
     expectedBranch: context.branch
   })
+
+  _withGitRemoteConfirmationContext = (cmd, context) => ({
+    ...this._withGitConfirmationContext(cmd, context),
+    expectedRemote: context.remote
+  })
+
+  // Capture the exact index/worktree status used to explain a pending commit.
+  // A commit confirmation is not just approval of a message: it is approval of
+  // this staged scope. Re-read the matrix after the modal closes and abort if
+  // any staged or unstaged row changed while the user was deciding.
+  _gitStagedSnapshot = async (plugin) => {
+    await plugin.call('fileManager', 'saveCurrentFileChecked');
+    const status = await plugin.call('dGitProvider', 'status', { ref: 'HEAD' });
+    const rows = (status || [])
+      .filter((row) => row && row[0] && (row[1] !== row[2] || row[1] !== row[3] || row[2] !== row[3]))
+      .map((row) => [row[0], row[1], row[2], row[3]])
+      .sort((a, b) => a[0].localeCompare(b[0]));
+    const staged = rows.filter((row) => row[3] !== row[1]);
+    return {
+      paths: staged.map((row) => row[0]),
+      fingerprint: JSON.stringify(rows)
+    };
+  }
 
   // A confirmation applies only to the workspace in which its preview and undo
   // snapshot were created. Re-check immediately before mutation: workspace
@@ -786,6 +1023,41 @@ class Chat extends Component {
       return 'The workspace or Git branch changed while confirmation was open — nothing was changed.';
     }
     return '';
+  }
+
+  _getAiWriteLock = () => {
+    if (this._aiWriteLock) return this._aiWriteLock;
+    let storage = null;
+    try { storage = window.localStorage; } catch (e) { storage = null; }
+    this._aiWriteLock = new AITaskWriteLock({ storage });
+    this._aiWriteLock.recoverExpired();
+    return this._aiWriteLock;
+  }
+
+  _captureAiWriteContext = async (policy, input = {}) => {
+    const workspace = await this._wsName();
+    if (!workspace) return { ok: false, reason: 'The current workspace could not be identified; the side effect was blocked.' };
+    let branch = null;
+    try {
+      const current = await this.props.plugin.call('dGitProvider', 'currentbranch', {});
+      branch = (current && current.name) || (typeof current === 'string' ? current : null);
+    } catch (e) { branch = null; }
+    const context = { workspace, branch, provider: null, networkId: null, account: null };
+    if (policy?.riskLevel === 'R3') {
+      let environment;
+      try { environment = await this.props.plugin.call('udapp', 'aiGetEnvironment'); } catch (e) { environment = null; }
+      if (!environment?.network?.known || environment.network.stale) {
+        return { ok: false, reason: 'The exact chain environment is unknown or stale; the chain write was blocked.' };
+      }
+      if (environment.provider === 'injected' && environment.walletState !== 'connected') {
+        return { ok: false, reason: `Injected wallet state is ${environment.walletState}; the chain write was blocked.` };
+      }
+      context.provider = environment.provider;
+      context.networkId = environment.network.id;
+      context.account = input.from ? String(input.from).trim() : (environment.selectedAccount || null);
+      if (!context.account) return { ok: false, reason: 'No chain account is selected; the chain write was blocked.' };
+    }
+    return { ok: true, context };
   }
 
   // Decode a git blob (Uint8Array from readBlob) to text.
@@ -1065,32 +1337,152 @@ class Chat extends Component {
     return out;
   }
 
-  _confirmToolAction = ({ title, body, okText = 'Approve', cancelText = 'Reject', width = 520 }) => {
+  _confirmToolAction = ({ title, body, approvalDigest = null, okText = 'Approve', cancelText = 'Reject', width = 520 }) => {
     this._toolConfirmOpen = true;
+    const toolContext = this._activeAiToolContext;
+    const riskLevel = toolContext?.policy?.riskLevel;
+    const sideEffect = toolContext?.policy?.sideEffect;
+    const riskLabel = riskLevel ? `${riskLevel} · ${String(sideEffect || 'write').toUpperCase()}${riskLevel === 'R3' ? ' · NO UNDO' : ''}` : '';
+    const writeContext = toolContext?.writeContext;
+    const safeLockPart = (value, fallback) => {
+      const text = String(value == null || value === '' ? fallback : value)
+        .replace(/[\u0000-\u001f\u007f]/g, '')
+        .slice(0, 80);
+      return text || fallback;
+    };
+    const writeLockLabel = writeContext
+      ? `Workspace/branch write lock: held by this task\nWorkspace: ${safeLockPart(writeContext.workspace, '(unknown)')}\nBranch: ${safeLockPart(writeContext.branch, '(no Git branch)')}\nThe context is re-checked immediately before the write.`
+      : '';
+    const integrityLabel = approvalDigest ? `Approval SHA-256: ${approvalDigest}\nThis digest binds the complete review below to the exact file payload that will be written.` : '';
+    const approvalBody = [riskLabel ? `Risk: ${riskLabel}` : '', writeLockLabel, integrityLabel, String(body || '')].filter(Boolean).join('\n\n');
+    if (toolContext?.taskId && toolContext?.stepId) {
+      this._recordAiTaskEvent({ type: 'step.waiting_for_user', taskId: toolContext.taskId, stepId: toolContext.stepId, toolName: toolContext.toolName, status: AI_TASK_STATUS.WAITING_FOR_USER, riskLevel, sideEffect, at: Date.now() });
+    }
+    let removeAbortListener = () => {};
     return new Promise((resolve) => {
-      Modal.confirm({
-        title,
-        content: body ? (
-          // The 2000-char clip needs an explicit marker: without one the user
-          // scrolls a seemingly complete diff/body and blind-approves the part
-          // that was cut off (create_file's own preview marks it the same way).
-          <pre style={{ maxHeight: 240, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12 }}>{String(body).length > 2000 ? String(body).slice(0, 2000) + '\n…(preview truncated — the FULL change is applied if you approve)' : String(body)}</pre>
+      let settled = false;
+      let modal = null;
+      const finish = (approved) => {
+        if (settled) return;
+        settled = true;
+        if (!approved) this._toolApprovalRejected = true;
+        if (toolContext?.taskId && toolContext?.stepId) {
+          this._recordAiTaskEvent({ type: 'step.approval', taskId: toolContext.taskId, stepId: toolContext.stepId, toolName: toolContext.toolName, status: AI_TASK_STATUS.RUNNING, riskLevel, sideEffect, approved, at: Date.now() });
+        }
+        resolve(approved);
+      };
+      modal = Modal.confirm({
+        title: riskLabel ? `[${riskLabel}] ${title}` : title,
+        content: approvalBody ? (
+          // Never clip an approval while applying the full payload: a hostile
+          // tail could otherwise be hidden below an innocent prefix. The body
+          // is fully rendered in a bounded, scrollable review surface; callers
+          // reject oversized file changes before opening this modal.
+          <pre data-id="ai-tool-approval-body" data-approval-sha256={approvalDigest || undefined} style={{ maxHeight: 360, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 }}>{approvalBody}</pre>
         ) : undefined,
         okText,
         cancelText,
         width,
         zIndex: 11000,
-        onOk: () => resolve(true),
-        onCancel: () => resolve(false)
+        onOk: () => finish(true),
+        onCancel: () => finish(false)
       });
-    }).finally(() => { setTimeout(() => { this._toolConfirmOpen = false; }, 0); });
+      const signal = toolContext?.signal;
+      if (signal) {
+        const onAbort = () => { try { modal?.destroy(); } catch (e) {} finish(false); };
+        signal.addEventListener('abort', onAbort, { once: true });
+        removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+        if (signal.aborted) onAbort();
+      }
+    }).finally(() => { removeAbortListener(); setTimeout(() => { this._toolConfirmOpen = false; }, 0); });
+  }
+
+  _confirmMainnetChainWrite = async ({ preflight, action, batchCount = null }) => {
+    if (!preflight || preflight.environment?.network?.id !== 'main') return true;
+    const batchWarning = batchCount != null
+      ? `\nBatch size: ${batchCount} transaction(s). Each transaction may spend funds and cannot be undone.`
+      : '';
+    return this._confirmToolAction({
+      title: '⚠ FINAL MAINNET CONFIRMATION',
+      body: `You are about to ${action} on TRON MAINNET with real funds.\nAccount: ${preflight.from || '(unknown)'}\nValue: ${preflight.valueSun || '0'} SUN\nFee limit: ${preflight.feeLimitSun || '(unavailable)'} SUN${batchWarning}\n\nThis chain write has NO UNDO. Reject if any field is unexpected.`,
+      okText: 'Confirm Mainnet write',
+      cancelText: 'Reject'
+    });
   }
 
   // Executes one AI-requested workspace tool. Reads are direct; every WRITE is
   // gated behind an explicit user confirmation that shows path + content, so
   // the model (or a prompt-injected instruction) can never touch the workspace
   // silently. Runs over the plugin bus — the key never leaves the panel.
-  executeAiTool = async (name, input = {}) => {
+  executeAiTool = async (name, input = {}, executionContext = {}) => {
+    const previousContext = this._activeAiToolContext;
+    const policy = executionContext.policy || getAIToolPolicy(name);
+    const taskId = executionContext.taskId || `standalone-${Date.now()}`;
+    const standalone = !executionContext.taskId;
+    this._activeAiToolContext = { ...executionContext, taskId, toolName: name, policy };
+    this._toolApprovalRejected = false;
+    try {
+      if (policy.riskLevel !== 'R0') {
+        const captured = await this._captureAiWriteContext(policy, input);
+        if (!captured.ok) {
+          return createToolErrorResult({ code: AI_TOOL_ERROR_CODE.NOT_READY, summary: captured.reason, retryable: false, userAction: 'Restore a stable workspace, branch, network, and account before approving the write again.' });
+        }
+        const acquired = this._getAiWriteLock().acquire({ taskId, stepId: executionContext.stepId, toolName: name, context: captured.context });
+        if (!acquired.ok) {
+          return createToolErrorResult({
+            code: acquired.code === 'STATE_CHANGED' ? AI_TOOL_ERROR_CODE.STATE_CHANGED : AI_TOOL_ERROR_CODE.NOT_READY,
+            summary: acquired.reason,
+            retryable: false,
+            userAction: acquired.code === 'LOCKED'
+              ? 'Wait for the owning task to finish or for its displayed lease to expire; read-only tools remain available.'
+              : 'Review the current context and start a new approval from the updated state.'
+          });
+        }
+        this._activeAiToolContext = { ...this._activeAiToolContext, writeContext: captured.context };
+        if (executionContext.taskId) this._recordAiTaskEvent({ type: 'task.write_lock_acquired', taskId, stepId: executionContext.stepId, toolName: name, status: AI_TASK_STATUS.RUNNING, riskLevel: policy.riskLevel, sideEffect: policy.sideEffect, at: Date.now() });
+      }
+      if (executionContext.signal?.aborted) {
+        const aborted = new Error('Tool execution was stopped before the side effect started.');
+        aborted.name = 'AbortError';
+        throw aborted;
+      }
+      const result = canonicalizeAIToolExecutionResult(name, await this._executeAiTool(name, input));
+      if (this._toolApprovalRejected) {
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.USER_REJECTED,
+          summary: `User rejected ${name}; nothing else will be attempted automatically.`,
+          retryable: false,
+          userAction: 'Change the request or approve a new preview explicitly if you want to continue.'
+        });
+      }
+      // The first commit in an unborn repository materializes its default
+      // branch, so git_commit can change the lock identity even though later
+      // commits normally do not. Rebind after every successful commit; the
+      // same CAS rule used by explicit branch/workspace tools remains safe.
+      const contextChangingTools = new Set(['create_workspace', 'switch_workspace', 'git_commit', 'git_create_branch', 'git_checkout', 'git_pull', 'git_clone']);
+      if (result.ok && policy.riskLevel !== 'R0' && contextChangingTools.has(name)) {
+        const reboundContext = await this._captureAiWriteContext(policy, input);
+        const rebound = reboundContext.ok
+          ? this._getAiWriteLock().rebind({ taskId, stepId: executionContext.stepId, toolName: name, context: reboundContext.context })
+          : { ok: false, reason: reboundContext.reason };
+        if (!rebound.ok) {
+          return createToolErrorResult({
+            code: AI_TOOL_ERROR_CODE.STATE_CHANGED,
+            summary: rebound.reason || 'The write lock could not follow the approved context change.',
+            retryable: false,
+            userAction: 'Inspect the active workspace and branch before starting another write.',
+            uncertainty: 'The approved workspace or branch change may already have completed.'
+          });
+        }
+      }
+      return result;
+    } finally {
+      if (standalone && policy.riskLevel !== 'R0') this._getAiWriteLock().release(taskId);
+      this._activeAiToolContext = previousContext;
+    }
+  }
+
+  _executeAiTool = async (name, input = {}) => {
     const { plugin } = this.props;
     if (!plugin) throw new Error('IDE bridge unavailable');
     if (name === 'read_current_file') {
@@ -1108,7 +1500,9 @@ class Chat extends Component {
       try { opened = await plugin.call('fileManager', 'getOpenedFiles') || {}; } catch (e) { opened = {}; }
       const open = Object.keys(opened);
       if (!open.length && !cur) return 'No files are open in the editor.';
-      return JSON.stringify({ active: cur || null, open: open.length ? open : (cur ? [cur] : []) });
+      const visible = open.length ? open : (cur ? [cur] : []);
+      const onlySource = visible.length === 1 && /\.(?:sol|js|ts|tsx|jsx|vy)$/i.test(visible[0]) ? visible[0] : null;
+      return JSON.stringify({ active: cur || null, selected: cur || onlySource, open: visible });
     }
     if (name === 'list_workspaces') {
       let ws = [];
@@ -1151,6 +1545,12 @@ class Chat extends Component {
       let current = '';
       try { const c = await plugin.call('filePanel', 'getCurrentWorkspace'); current = (c && c.name) || ''; } catch (e) { current = ''; }
       if (current === wsName) return `Already on workspace "${wsName}".`;
+      const ok = await this._confirmToolAction({
+        title: `AI wants to switch to workspace "${wsName}"`,
+        body: `Current workspace: ${current || '(unknown)'}\nTarget workspace: ${wsName}\nOpen files and all subsequent relative paths will resolve in the target workspace.`,
+        okText: 'Switch workspace'
+      });
+      if (!ok) return 'User rejected the workspace switch — do not retry it.';
       try {
         // syncComponent=true drives the REAL component switch (the bare call is
         // just plugin bookkeeping — see the git-clone rollback path).
@@ -1170,7 +1570,14 @@ class Chat extends Component {
       const p = this._safeWorkspacePath(input.path);
       let content;
       try { content = String((await plugin.call('fileManager', 'readFile', p)) ?? ''); }
-      catch (e) { return 'Could not read ' + p + ': ' + ((e && e.message) || e); }
+      catch (e) {
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.INTERNAL_ERROR,
+          summary: 'Could not read ' + p + ': ' + ((e && e.message) || e),
+          retryable: false,
+          userAction: 'Verify the workspace path and file availability before reading it again.'
+        });
+      }
       const CHAR_CAP = 20000;
       const paged = input.offset !== undefined || input.limit !== undefined;
       if (!paged) {
@@ -1392,44 +1799,37 @@ class Chat extends Component {
       if (exists && prevContent === null) return `Could not read the current content of ${p} — not overwriting it, because the change could not be undone. Ask the user to check the file (or delete it manually) first.`;
       const undoWorkspace = await this._wsName();
       if (!undoWorkspace) return 'Could not determine the current workspace — nothing was written, because the change could not be scoped for undo.';
-      this._toolConfirmOpen = true;
-      const ok = await new Promise((resolve) => {
-        Modal.confirm({
-          title: exists ? `AI wants to OVERWRITE ${p}` : `AI wants to create ${p}`,
-          content: (
-            <pre style={{ maxHeight: 240, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12 }}>
-              {content.slice(0, 2000)}{content.length > 2000 ? '\n…(truncated preview)' : ''}
-            </pre>
-          ),
-          okText: exists ? 'Overwrite' : 'Create',
-          cancelText: 'Reject',
-          width: 560,
-          zIndex: 11000,
-          onOk: () => resolve(true),
-          onCancel: () => resolve(false)
-        });
-      }).finally(() => {
-        // Clear on a macrotask: when Esc closed the modal, antd's own keydown
-        // handler resolves this promise DURING the same keydown dispatch — a
-        // microtask clear would re-arm _onEscStop before it runs for that
-        // very keypress, reintroducing the double effect.
-        setTimeout(() => { this._toolConfirmOpen = false; }, 0);
+      const reviewBody = `Complete proposed file (not truncated):\n\n${content}`;
+      if (reviewBody.length > AI_APPROVAL_MAX_REVIEW_CHARS) return `The proposed file is too large to display safely for approval (${reviewBody.length} characters) — split it into smaller reviewed changes. Nothing was written.`;
+      const approvalFields = { operation: exists ? 'overwrite_file' : 'create_file', path: p, before: prevContent, after: content, reviewBody };
+      const approval = createAIApprovalEnvelope(approvalFields);
+      const ok = await this._confirmToolAction({
+        title: exists ? `AI wants to OVERWRITE ${p}` : `AI wants to create ${p}`,
+        body: reviewBody,
+        approvalDigest: approval.digest,
+        okText: exists ? 'Overwrite' : 'Create',
+        cancelText: 'Reject',
+        width: 560
       });
       if (!ok) return 'User rejected the write — do not retry it.';
       const workspaceScopeError = await this._workspaceScopeError(undoWorkspace);
       if (workspaceScopeError) return workspaceScopeError;
       const mutationScopeError = await this._fileMutationScopeError(plugin, mutationContext, p);
       if (mutationScopeError) return mutationScopeError;
+      let currentBefore = null;
       if (exists) {
         let nowContent = null;
         try { nowContent = String((await plugin.call('fileManager', 'readFile', p)) ?? ''); } catch (e) { nowContent = null; }
         if (nowContent !== prevContent) return `${p} changed while the confirmation was open — nothing was written. Re-read the file and try again.`;
+        currentBefore = nowContent;
       } else {
         let existsNow;
         try { existsNow = !!(await plugin.call('fileManager', 'exists', p)); }
         catch (e) { return `Could not re-check ${p} after confirmation — nothing was written.`; }
         if (existsNow) return `${p} appeared while the confirmation was open — nothing was written. Review that file before trying again.`;
       }
+      const currentApprovalFields = { ...approvalFields, before: currentBefore };
+      if (!verifyAIApprovalEnvelope(approval, currentApprovalFields)) return `Approval integrity check failed for ${p} — the reviewed payload does not match the pending write. Nothing was written.`;
       try { await plugin.call('fileManager', 'writeFile', p, content, mutationContext); }
       catch (e) { return 'Write failed: ' + ((e && e.message) || e); }
       // Open the new file in the editor so the user sees the content. Do NOT
@@ -1475,13 +1875,21 @@ class Chat extends Component {
       // snippet being replaced (so the user isn't blind-approving an empty diff)
       // and report the occurrence count instead of a bogus (+0/-0).
       const tooLarge = diff.added === null;
-      const clip = (s) => s.length > 1000 ? s.slice(0, 1000) + '\n…(truncated)' : s;
+      // old_string/new_string are the exact patch payload. Show both in full,
+      // even when the convenience unified diff is line-capped or the file is
+      // too large for an O(n*m) diff. If the full patch cannot fit the bounded
+      // approval surface, reject instead of applying an unseen tail.
+      const fullPatch = `Complete replacement patch (not truncated):\nOccurrences: ${count}\nReplace all: ${replaceAll}\n\n--- old_string (full) ---\n${oldStr}\n--- new_string (full) ---\n${newStr}`;
       const body = tooLarge
-        ? `Replacing ${count} occurrence(s) of:\n${clip(oldStr)}\n———\nwith:\n${clip(newStr)}\n\n(${content.split('\n').length}-line file — too large for a full line-by-line diff)`
-        : diff.text;
+        ? `${fullPatch}\n\n(${content.split('\n').length}-line file — too large for a line-by-line diff; the complete replacement payload is shown above.)`
+        : `Unified diff${diff.text.includes('diff truncated') ? ' (line preview may be shortened; complete replacement payload follows)' : ''}:\n${diff.text}\n\n${fullPatch}`;
+      if (body.length > AI_APPROVAL_MAX_REVIEW_CHARS) return `The replacement patch is too large to display safely for approval (${body.length} characters) — split it into smaller exact edits. Nothing was written.`;
+      const approvalFields = { operation: 'edit_file', path: p, before: content, after: newContent, reviewBody: body };
+      const approval = createAIApprovalEnvelope(approvalFields);
       const ok = await this._confirmToolAction({
         title: `AI wants to edit ${p}${replaceAll && count > 1 ? ` (${count} occurrences)` : ''}`,
         body,
+        approvalDigest: approval.digest,
         okText: 'Apply edit',
         cancelText: 'Reject',
         width: 620
@@ -1497,6 +1905,7 @@ class Chat extends Component {
       let nowContent = null;
       try { nowContent = String((await plugin.call('fileManager', 'readFile', p)) ?? ''); } catch (e) { nowContent = null; }
       if (nowContent !== content) return `${p} changed while the confirmation was open — nothing was written. Re-read the file and re-apply the edit against its current content.`;
+      if (!verifyAIApprovalEnvelope(approval, { ...approvalFields, before: nowContent })) return `Approval integrity check failed for ${p} — the reviewed patch does not match the pending write. Nothing was written.`;
       try { await plugin.call('fileManager', 'writeFile', p, newContent, mutationContext); }
       catch (e) { return 'Edit failed: ' + ((e && e.message) || e); }
       this._pushUndo({ op: 'edited', path: p, prevContent: content, newContent, workspace: undoWorkspace, mutationContext });
@@ -1976,14 +2385,26 @@ class Chat extends Component {
       await this._revealPlugin('gitPanel');
       const approvedContext = await this._gitConfirmationContext();
       if (!approvedContext) return 'Could not identify the Git workspace. Commit cancelled.';
+      let stagedSnapshot;
+      try { stagedSnapshot = await this._gitStagedSnapshot(plugin); } catch (e) {
+        return 'Could not read the staged Git changes before confirmation. Commit cancelled.';
+      }
+      if (!stagedSnapshot.paths.length) return 'Nothing is staged. Stage at least one change before committing.';
       const ok = await this._confirmToolAction({
         title: 'AI wants to commit the staged changes',
-        body: 'Commit message:\n\n' + message,
+        body: 'Commit message:\n\n' + message + '\n\nStaged files:\n' + stagedSnapshot.paths.slice(0, 30).join('\n') + (stagedSnapshot.paths.length > 30 ? `\n… and ${stagedSnapshot.paths.length - 30} more` : ''),
         okText: 'Commit'
       });
       if (!ok) return 'User rejected the commit — do not retry it.';
       const scopeError = await this._gitConfirmationScopeError(approvedContext);
       if (scopeError) return scopeError;
+      let liveStagedSnapshot;
+      try { liveStagedSnapshot = await this._gitStagedSnapshot(plugin); } catch (e) {
+        return 'Could not re-check the staged Git changes after confirmation. Commit cancelled.';
+      }
+      if (liveStagedSnapshot.fingerprint !== stagedSnapshot.fingerprint) {
+        return 'The staged Git scope changed while confirmation was open. Commit cancelled; review the Git panel and confirm again.';
+      }
       // isomorphic-git's commit REQUIRES an author. Pass an explicit author
       // (the connected GitHub login when available, else a stable default).
       let author = { name: 'TRON IDE AI', email: 'ai@tronide.local' };
@@ -2086,7 +2507,7 @@ class Chat extends Component {
       const scopeError = await this._gitConfirmationScopeError(approvedContext);
       if (scopeError) return scopeError;
       try {
-        const res = await plugin.call('dGitProvider', 'pushRemote', this._withGitConfirmationContext({ branch: branch || undefined, force }, approvedContext));
+        const res = await plugin.call('dGitProvider', 'pushRemote', this._withGitRemoteConfirmationContext({ branch: branch || undefined, force }, approvedContext));
         if (res && res.ok === false) return 'Push failed: ' + ((res.error && (res.error.message || res.error)) || 'rejected — a non-fast-forward push needs a git_pull first (or force).');
         return `Pushed ${branch || 'the current branch'} to the remote.`;
       } catch (e) { return 'Push failed: ' + ((e && e.message) || e) + ' — connect GitHub and add a remote (origin) first.'; }
@@ -2122,7 +2543,7 @@ class Chat extends Component {
       const scopeError = await this._gitConfirmationScopeError(approvedContext);
       if (scopeError) return scopeError;
       try {
-        await plugin.call('dGitProvider', 'pullRemote', this._withGitConfirmationContext({ branch: branch || undefined }, approvedContext));
+        await plugin.call('dGitProvider', 'pullRemote', this._withGitRemoteConfirmationContext({ branch: branch || undefined }, approvedContext));
         return `Pulled ${branch || 'the current branch'} from the remote.`;
       } catch (e) { return 'Pull failed: ' + ((e && e.message) || e) + ' — connect GitHub and add a remote (origin) first.'; }
     }
@@ -2178,6 +2599,160 @@ class Chat extends Component {
         return `${res.address}: ${res.balanceTrx} TRX`;
       } catch (e) { return 'Could not read the balance: ' + ((e && e.message) || e); }
     }
+    if (name === 'get_environment') {
+      await this._revealPlugin('udapp');
+      try {
+        const env = await plugin.call('udapp', 'aiGetEnvironment');
+        if (!env || env.ok === false) {
+          return createToolErrorResult({
+            code: AI_TOOL_ERROR_CODE.NETWORK_UNAVAILABLE,
+            summary: (env && env.message) || 'Could not read the execution environment.',
+            retryable: false,
+            userAction: 'Check Deploy & Run and run get_environment again.'
+          });
+        }
+        const network = env.network || {};
+        const walletState = env.provider === 'vm' && env.walletState === 'not_applicable'
+          ? 'not checked — Deploy & Run is using the local VM; this does not mean TronLink is disconnected'
+          : (env.walletState || 'unknown');
+        const summary = [
+          `Deploy & Run provider: ${env.provider || 'unknown'}`,
+          `Network: ${network.name || 'Unknown'}${network.id ? ` (${network.id})` : ''}${network.known ? '' : ' — unverified/unknown'}${network.stale ? ' — stale' : ''}`,
+          `Wallet: ${walletState}`,
+          `Selected account: ${env.selectedAccount || '(none)'}`,
+          `Available accounts: ${Array.isArray(env.accounts) ? env.accounts.length : 0}`,
+          env.providerTransition?.pending ? `Environment switch still pending: selected ${env.providerTransition.selectedProvider || 'unknown'}, active ${env.providerTransition.activeProvider || env.provider || 'unknown'}` : null,
+          env.endpoint ? `Endpoint: ${env.endpoint}` : null,
+          env.error ? `Network error: ${env.error}` : null
+        ].filter(Boolean).join('\n');
+        const expectedNetwork = this._activeAiToolContext?.expectedNetwork;
+        const environmentData = {
+          provider: env.provider || null,
+          networkId: network.id || null,
+          networkKnown: network.known === true,
+          networkStale: network.stale === true,
+          walletState: env.walletState || 'unknown',
+          hasSelectedAccount: Boolean(env.selectedAccount),
+          providerTransitionPending: env.providerTransition?.pending === true
+        };
+        if (expectedNetwork === 'nile') {
+          const readinessIssue = getNileEnvironmentReadinessIssue(env);
+          if (readinessIssue) {
+            const code = readinessIssue.kind === 'wallet'
+              ? AI_TOOL_ERROR_CODE.WALLET_LOCKED
+              : (readinessIssue.kind === 'network' ? AI_TOOL_ERROR_CODE.NETWORK_UNAVAILABLE : AI_TOOL_ERROR_CODE.NOT_READY);
+            return createToolErrorResult({
+              code,
+              summary,
+              retryable: false,
+              userAction: readinessIssue.userAction
+            });
+          }
+        }
+        return {
+          ok: true,
+          code: 'OK',
+          summary,
+          retryable: false,
+          data: { environment: environmentData }
+        };
+      } catch (e) {
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.NETWORK_UNAVAILABLE,
+          summary: 'Could not read the execution environment: ' + ((e && e.message) || e),
+          retryable: false,
+          userAction: 'Check Deploy & Run and the wallet provider, then run get_environment again.'
+        });
+      }
+    }
+    if (name === 'preflight_transaction') {
+      await this._revealPlugin('udapp');
+      try {
+        const report = await plugin.call('udapp', 'aiPreflightTransaction', {
+          operation: input.operation,
+          contractName: input.contract_name,
+          address: input.address,
+          method: input.method,
+          args: Array.isArray(input.args) ? input.args : [],
+          abi: input.abi,
+          from: input.from,
+          value: input.value,
+          tokenId: input.token_id,
+          tokenValue: input.token_value,
+          feeLimit: input.fee_limit
+        });
+        if (!report || report.ok === false) {
+          return createToolErrorResult({
+            code: AI_TOOL_ERROR_CODE.NOT_READY,
+            summary: (report && report.message) || 'Transaction preflight failed.',
+            retryable: false,
+            userAction: 'Review the environment and transaction inputs before running preflight again.'
+          });
+        }
+        const expectedNetwork = this._activeAiToolContext?.expectedNetwork;
+        const enforceExpectedNetwork = isConcreteAITaskNetwork(expectedNetwork);
+        const networkId = report.environment?.network?.id || null;
+        const ready = report.ready && (!enforceExpectedNetwork || networkId === expectedNetwork);
+        const summary = `Preflight ${ready ? 'READY' : 'BLOCKED'} (read-only; nothing was sent):\n${report.summary}`;
+        if (!ready) {
+          const blockers = (report.issues || []).filter((issue) => issue.severity === 'blocker').map((issue) => issue.message).filter(Boolean);
+          return createToolErrorResult({
+            code: AI_TOOL_ERROR_CODE.NOT_READY,
+            summary,
+            retryable: false,
+            userAction: enforceExpectedNetwork && networkId !== expectedNetwork
+              ? `Switch to the required ${expectedNetwork} network, verify the wallet, then run preflight again.`
+              : (blockers[0] || 'Fix the reported preflight blockers, then run preflight again.')
+          });
+        }
+        return {
+          ok: true,
+          code: 'OK',
+          summary,
+          retryable: false,
+          data: { preflight: { ready: true, networkId } }
+        };
+      } catch (e) {
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.NOT_READY,
+          summary: 'Transaction preflight failed: ' + ((e && e.message) || e),
+          retryable: false,
+          userAction: 'Review the environment and transaction inputs before running preflight again.'
+        });
+      }
+    }
+    if (name === 'get_transaction_status') {
+      const txHash = String(input.tx_hash || '').trim();
+      if (!txHash) return 'Provide the transaction hash to query.';
+      await this._revealPlugin('udapp');
+      try {
+        const result = await plugin.call('udapp', 'aiGetTransactionStatus', { txHash });
+        if (!result) return 'Could not resolve the transaction status.';
+        const details = [
+          `Transaction ${result.txHash}: ${String(result.status || 'unknown').toUpperCase()}`,
+          result.blockNumber != null ? `Block: ${result.blockNumber}` : null,
+          result.energyUsed != null ? `Energy used: ${result.energyUsed}` : null,
+          result.feeSun != null ? `Fee: ${result.feeSun} SUN` : null,
+          result.explorerUrl ? `TronScan: ${result.explorerUrl}` : null,
+          result.error ? `Lookup error: ${result.error}` : null,
+          result.userAction || null
+        ].filter(Boolean);
+        const summary = details.join('\n');
+        if (result.code === AI_TOOL_ERROR_CODE.STATE_CHANGED || result.status === 'unknown') {
+          const stateChanged = result.code === AI_TOOL_ERROR_CODE.STATE_CHANGED;
+          return createToolErrorResult({
+            code: stateChanged ? AI_TOOL_ERROR_CODE.STATE_CHANGED : AI_TOOL_ERROR_CODE.TX_UNKNOWN,
+            summary,
+            retryable: false,
+            userAction: result.userAction || (stateChanged
+              ? 'Restore the original provider and network, then query the same transaction hash again.'
+              : 'Verify the provider and network, then query the same transaction hash again without resubmitting.'),
+            ...(!stateChanged ? { uncertainty: 'The transaction status could not be proven from the active network.' } : {})
+          });
+        }
+        return summary;
+      } catch (e) { return 'Could not resolve the transaction status: ' + ((e && e.message) || e); }
+    }
     if (name === 'list_deployable_contracts') {
       await this._revealPlugin('udapp');
       const res = await plugin.call('udapp', 'aiListContracts');
@@ -2190,19 +2765,93 @@ class Chat extends Component {
       if (!contractName) return 'Provide the contract name to deploy.';
       const args = Array.isArray(input.args) ? input.args : [];
       await this._revealPlugin('udapp');
-      let env = '';
-      try { const l = await plugin.call('udapp', 'aiListContracts'); env = l && l.environment; } catch (e) { env = ''; }
+      let preflight;
+      try {
+        preflight = await plugin.call('udapp', 'aiPreflightTransaction', { operation: 'deploy', contractName, args, from: input.from, value: input.value, tokenId: input.token_id, tokenValue: input.token_value });
+      } catch (e) {
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.NOT_READY,
+          summary: 'Deployment preflight failed — nothing was sent: ' + ((e && e.message) || e),
+          retryable: false,
+          userAction: 'Review the environment and constructor inputs, then run preflight again.'
+        });
+      }
+      if (!preflight || !preflight.ready) {
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.NOT_READY,
+          summary: `Deployment blocked by preflight — nothing was sent:\n${(preflight && preflight.summary) || 'The deployment context is not ready.'}`,
+          retryable: false,
+          userAction: 'Fix the reported preflight blockers, then run preflight again.'
+        });
+      }
+      const expectedNetwork = this._activeAiToolContext?.expectedNetwork;
+      const enforceExpectedNetwork = isConcreteAITaskNetwork(expectedNetwork);
+      const preflightNetwork = preflight.environment?.network?.id || null;
+      if (enforceExpectedNetwork && preflightNetwork !== expectedNetwork) {
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.NOT_READY,
+          summary: `Deployment blocked before approval: this task requires ${expectedNetwork}, but the verified network is ${preflightNetwork || 'unknown'}. Nothing was sent.`,
+          retryable: false,
+          userAction: `Switch to ${expectedNetwork}, verify the wallet, and run preflight again.`
+        });
+      }
       const ok = await this._confirmToolAction({
         title: `AI wants to DEPLOY ${contractName}`,
-        body: `Environment: ${this._aiEnvLabel(env)}\nConstructor args: ${args.length ? JSON.stringify(args) : '(none)'}${input.from ? `\nFrom: ${input.from}` : ''}${this._aiMoneyLines(input)}`,
+        body: `${preflight.summary}\nConstructor args: ${args.length ? JSON.stringify(args) : '(none)'}${this._aiMoneyLines(input)}`,
         okText: 'Deploy'
       });
       if (!ok) return 'User rejected the deployment — do not retry it.';
+      const mainnetOk = await this._confirmMainnetChainWrite({ preflight, action: `deploy ${contractName}` });
+      if (!mainnetOk) return 'User rejected the final Mainnet deployment confirmation — do not retry it.';
+      if (this._activeAiToolContext?.signal?.aborted) return 'Deployment stopped before broadcast — nothing was sent.';
       try {
-        const res = await plugin.call('udapp', 'aiDeploy', { contractName, args, value: input.value, tokenId: input.token_id, tokenValue: input.token_value, from: input.from });
-        if (!res || res.ok === false) return 'Deployment failed: ' + ((res && res.message) || 'unknown error');
-        return `Deployed ${contractName} at ${res.address}. Use read_contract/write_contract with this address to interact.`;
-      } catch (e) { return 'Deployment failed: ' + ((e && e.message) || e); }
+        const res = await plugin.call('udapp', 'aiDeploy', { contractName, args, value: input.value, tokenId: input.token_id, tokenValue: input.token_value, from: input.from, approvalSnapshot: preflight.approvalSnapshot, approvalDeadline: Date.now() + 2 * 60 * 1000, taskId: this._activeAiToolContext?.taskId });
+        if (!res || res.ok === false) {
+          return createToolErrorResult({
+            code: AI_TOOL_ERROR_CODE.EXECUTION_REVERTED,
+            summary: 'Deployment failed: ' + ((res && res.message) || 'unknown error'),
+            retryable: false,
+            userAction: 'Inspect the deployment receipt and inputs before creating a new approved deployment.'
+          });
+        }
+        if (!res.address) {
+          return createToolErrorResult({
+            code: AI_TOOL_ERROR_CODE.TX_UNKNOWN,
+            summary: `The ${contractName} deployment completed without a resolvable contract address.`,
+            retryable: false,
+            userAction: 'Inspect Deploy & Run and the wallet receipt before deciding whether to deploy again.',
+            uncertainty: 'The runtime cannot prove the deployed address, so it will not offer address-bound next steps.'
+          });
+        }
+        const network = preflight.environment?.network || {};
+        const networkLabel = network.name || network.id || 'unknown network';
+        const txHash = res.txHash || res.transactionHash || null;
+        return {
+          ok: true,
+          code: 'OK',
+          summary: `Deployed ${contractName} at ${res.address}. Use read_contract/write_contract with this address to interact.`,
+          retryable: false,
+          data: {
+            contractAddress: res.address,
+            contractName,
+            transactionHash: txHash,
+            network: networkLabel,
+            networkId: network.id || null
+          },
+          artifacts: [
+            { type: 'contract', label: `${contractName} deployment`, ref: String(res.address) },
+            ...(txHash ? [{ type: 'transaction', label: 'Deployment transaction', ref: String(txHash) }] : [])
+          ]
+        };
+      } catch (e) {
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.TX_UNKNOWN,
+          summary: 'Deployment status is unknown: ' + ((e && e.message) || e),
+          retryable: false,
+          userAction: 'Check Deploy & Run and query the wallet or transaction state before deciding whether to deploy again.',
+          uncertainty: 'The provider call failed after approval, so broadcast or deployment cannot be ruled out.'
+        });
+      }
     }
     if (name === 'read_contract') {
       const address = String(input.address || '').trim();
@@ -2223,21 +2872,43 @@ class Chat extends Component {
       if (!address || !contractName || !method) return 'write_contract needs address, contract_name and method.';
       const args = Array.isArray(input.args) ? input.args : [];
       await this._revealPlugin('udapp');
-      // A write signs / spends gas — confirm with the user first (same gate as
-      // deploy_contract). On a real wallet the wallet then prompts to sign too.
-      let env = '';
-      try { const l = await plugin.call('udapp', 'aiListContracts'); env = l && l.environment; } catch (e) { env = ''; }
+      // Bind the confirmation to a read-only preflight of the exact account,
+      // network, ABI/value and resource estimate. A blocker never reaches the
+      // wallet prompt or broadcast path.
+      let preflight;
+      try {
+        preflight = await plugin.call('udapp', 'aiPreflightTransaction', { operation: 'write', address, contractName, method, args, abi: input.abi, from: input.from, value: input.value, tokenId: input.token_id, tokenValue: input.token_value });
+      } catch (e) { return 'Transaction preflight failed — nothing was sent: ' + ((e && e.message) || e); }
+      if (!preflight || !preflight.ready) return `Transaction blocked by preflight — nothing was sent:\n${(preflight && preflight.summary) || 'The transaction context is not ready.'}`;
       const ok = await this._confirmToolAction({
         title: `AI wants to send ${contractName}.${method}(…)`,
-        body: `${this._aiEnvLabel(env)}\nContract: ${address}\nArgs: ${args.length ? JSON.stringify(args) : '(none)'}${input.from ? `\nFrom: ${input.from}` : ''}${this._aiMoneyLines(input)}`,
+        body: `${preflight.summary}\nContract: ${address}\nArgs: ${args.length ? JSON.stringify(args) : '(none)'}${this._aiMoneyLines(input)}`,
         okText: 'Send transaction'
       });
       if (!ok) return 'User rejected the transaction — do not retry it.';
+      const mainnetOk = await this._confirmMainnetChainWrite({ preflight, action: `send ${contractName}.${method}(…)` });
+      if (!mainnetOk) return 'User rejected the final Mainnet transaction confirmation — do not retry it.';
+      if (this._activeAiToolContext?.signal?.aborted) return 'Transaction stopped before broadcast — nothing was sent.';
       try {
-        const res = await plugin.call('udapp', 'aiCallMethod', { address, contractName, method, args, readOnly: false, value: input.value, tokenId: input.token_id, tokenValue: input.token_value, abi: input.abi, from: input.from });
-        if (!res || res.ok === false) return 'Transaction failed: ' + ((res && res.message) || 'unknown error');
+        const res = await plugin.call('udapp', 'aiCallMethod', { address, contractName, method, args, readOnly: false, value: input.value, tokenId: input.token_id, tokenValue: input.token_value, abi: input.abi, from: input.from, approvalSnapshot: preflight.approvalSnapshot, approvalDeadline: Date.now() + 2 * 60 * 1000, taskId: this._activeAiToolContext?.taskId });
+        if (!res || res.ok === false) {
+          return createToolErrorResult({
+            code: AI_TOOL_ERROR_CODE.EXECUTION_REVERTED,
+            summary: 'Transaction failed: ' + ((res && res.message) || 'unknown error'),
+            retryable: false,
+            userAction: 'Inspect the receipt and contract state before preparing a new transaction.'
+          });
+        }
         return `Sent ${contractName}.${method}() — transaction ${res.txHash || 'mined'}.`;
-      } catch (e) { return 'Transaction failed: ' + ((e && e.message) || e); }
+      } catch (e) {
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.TX_UNKNOWN,
+          summary: 'Transaction status is unknown: ' + ((e && e.message) || e),
+          retryable: false,
+          userAction: 'Query the transaction or contract state before deciding whether to send another write.',
+          uncertainty: 'The provider call failed after approval, so broadcast cannot be ruled out.'
+        });
+      }
     }
     if (name === 'check_verification') {
       const address = String(input.address || '').trim();
@@ -2376,6 +3047,7 @@ class Chat extends Component {
         res = await plugin.call('udapp', 'aiExportTronbox', {
           dir: outDir,
           expectedState: { hadDir: dirExists, files: preExportFiles },
+          expectedRecording: info && info.recordingSnapshot,
           mutationContext
         });
       }
@@ -2407,7 +3079,8 @@ class Chat extends Component {
       try { await plugin.call('fileManager', 'open', res.dir + '/migrations/2_deploy_contracts.js'); } catch (e) { /* best-effort */ }
       const lines = [
         `Exported a runnable TronBox project to ${res.dir}/ — ${res.files.length} files from ${res.txCount} recorded transaction(s) (${res.source}), solc pinned to ${res.solcVersion || 'unknown (set it in tronbox-config.js)'}.`,
-        `Deploy script: ${res.dir}/migrations/2_deploy_contracts.js · config: ${res.dir}/tronbox-config.js`,
+        `Deploy script: ${res.dir}/migrations/2_deploy_contracts.js · config: ${res.dir}/tronbox-config.js · metadata: ${res.metadataPath || `${res.dir}/tronide-export.json`}`,
+        `Metadata network: ${res.network?.name || res.network?.provider || 'unknown'} (${res.network?.source || 'unknown source'}) · scenario: ${res.scenarioSource?.type || 'unknown'}.`,
         `Run it with: cd ${res.dir} && tronbox migrate --network <shasta|nile|mainnet> (set the matching PRIVATE_KEY_* — see ${res.dir}/sample-env).`
       ];
       if (res.removedStale && res.removedStale.length) lines.push(`Removed ${res.removedStale.length} stale file(s) from the previous export: ${res.removedStale.slice(0, 6).join(', ')}${res.removedStale.length > 6 ? ', …' : ''}`);
@@ -2544,10 +3217,26 @@ class Chat extends Component {
       await this._revealPlugin('udapp');
       // Peek env + tx count for the confirm. Replay RE-EXECUTES the recorded
       // transactions, so it is gated like a deploy (one approval for the batch).
-      let env = '';
-      try { const l = await plugin.call('udapp', 'aiListContracts'); env = l && l.environment; } catch (e) { env = ''; }
+      let environment;
+      try { environment = await plugin.call('udapp', 'aiGetEnvironment'); } catch (e) { return 'Could not verify the replay environment — nothing was sent.'; }
+      if (!environment?.network?.known || environment.network.stale) return 'Replay blocked: the current network is unknown or stale. Wait for an exact network check before retrying.';
+      if (environment.provider === 'injected' && environment.walletState !== 'connected') return `Replay blocked: injected wallet state is ${environment.walletState}.`;
+      let replayPath;
+      try { replayPath = this._safeWorkspacePath(path); } catch (e) { return 'Invalid scenario path: ' + ((e && e.message) || e); }
       let txCount = null;
-      try { const raw = await plugin.call('fileManager', 'readFile', this._safeWorkspacePath(path)); txCount = ((JSON.parse(raw) || {}).transactions || []).length; } catch (e) { txCount = null; }
+      let scenarioContent = null;
+      let replayMutationContext = null;
+      try {
+        scenarioContent = String(await plugin.call('fileManager', 'readFile', replayPath));
+        txCount = ((JSON.parse(scenarioContent) || {}).transactions || []).length;
+        // Bind the approved bytes to the active workspace/Git generation. The
+        // Recorder receives this exact snapshot below; it must not re-read a
+        // different file after the modal closes.
+        replayMutationContext = await this._captureFileMutationContext(plugin, replayPath);
+      } catch (e) {
+        return `Could not read ${replayPath} as a scenario file — nothing was sent.`;
+      }
+      if (!replayMutationContext) return `Could not bind ${replayPath} to the active workspace version — nothing was sent.`;
       if (txCount === 0) return `${path} has no transactions to replay.`;
       // The recorder model CLEARS the live journal when the batch ends — an
       // unsaved recording dies with the replay, so the user must be told at
@@ -2559,16 +3248,51 @@ class Chat extends Component {
         : '';
       const ok = await this._confirmToolAction({
         title: `AI wants to REPLAY ${path}`,
-        body: `Environment: ${this._aiEnvLabel(env)}\nThis re-executes ${txCount != null ? txCount + ' recorded transaction(s)' : 'the recorded transactions'} (deploys/calls) and rebuilds on-chain state.${liveNote}`,
+        body: `Environment: ${environment.network.name} (${this._aiEnvLabel(environment.provider)})\nAccount: ${environment.selectedAccount || '(none)'}\nThis re-executes ${txCount != null ? txCount + ' recorded transaction(s)' : 'the recorded transactions'} (deploys/calls) and rebuilds on-chain state.${liveNote}`,
         okText: 'Replay'
       });
       if (!ok) return 'User rejected the replay — do not retry it.';
+      const replayPreflight = { environment, from: environment.selectedAccount, valueSun: '(varies by scenario)', feeLimitSun: '(varies by scenario)' };
+      const mainnetOk = await this._confirmMainnetChainWrite({ preflight: replayPreflight, action: `replay ${path}`, batchCount: txCount });
+      if (!mainnetOk) return 'User rejected the final Mainnet replay confirmation — do not retry it.';
+      if (this._activeAiToolContext?.signal?.aborted) return 'Replay stopped before execution — nothing was sent.';
+      const replayScopeError = await this._fileMutationScopeError(plugin, replayMutationContext, replayPath);
+      if (replayScopeError) return replayScopeError;
+      let currentScenarioContent;
+      try { currentScenarioContent = String(await plugin.call('fileManager', 'readFile', replayPath)); } catch (e) { return `Could not re-check ${replayPath} after replay approval — nothing was sent.`; }
+      if (currentScenarioContent !== scenarioContent) return `${replayPath} changed after replay approval — nothing was sent. Review and approve the updated scenario again.`;
+      let currentEnvironment;
+      try { currentEnvironment = await plugin.call('udapp', 'aiGetEnvironment'); } catch (e) { return 'Could not re-check the replay environment after confirmation — nothing was sent.'; }
+      const approvedEnvironmentKey = JSON.stringify([environment.provider, environment.network.id, environment.network.stale, environment.selectedAccount]);
+      const currentEnvironmentKey = JSON.stringify([currentEnvironment.provider, currentEnvironment.network?.id, currentEnvironment.network?.stale, currentEnvironment.selectedAccount]);
+      if (approvedEnvironmentKey !== currentEnvironmentKey) return 'The network or account changed after replay approval — nothing was sent. Review and approve the batch again.';
+      if (this._activeAiToolContext?.signal?.aborted) return 'Replay stopped after the context check — nothing was sent.';
       let res;
-      try { res = await plugin.call('udapp', 'aiRunScenario', { path }); }
-      catch (e) { return 'Replay failed: ' + ((e && e.message) || e); }
+      try {
+        res = await plugin.call('udapp', 'aiRunScenario', {
+          path: replayPath,
+          scenarioContent,
+          expectedState: { content: scenarioContent },
+          mutationContext: replayMutationContext
+        });
+      }
+      catch (e) {
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.TX_UNKNOWN,
+          summary: 'Replay status is unknown: ' + ((e && e.message) || e),
+          retryable: false,
+          userAction: 'Inspect every scenario transaction before deciding whether to replay again.',
+          uncertainty: 'The replay provider failed after approval, so one or more transactions may have executed.'
+        });
+      }
       if (!res || res.ok === false) {
         const extra = (res && res.alerts && res.alerts.length) ? '\n' + res.alerts.slice(0, 5).map((a) => '⚠ ' + a).join('\n') : '';
-        return 'Replay failed: ' + ((res && res.message) || 'unknown error') + extra;
+        return createToolErrorResult({
+          code: AI_TOOL_ERROR_CODE.EXECUTION_REVERTED,
+          summary: 'Replay failed: ' + ((res && res.message) || 'unknown error') + extra,
+          retryable: false,
+          userAction: 'Inspect the failed replay step and current chain state before preparing a new replay.'
+        });
       }
       const lines = [`Replayed ${res.txCount} transaction(s) from ${path}.`];
       if (res.lastContract) lines.push(`Last deployed: ${res.lastContract}${res.lastAddress ? ' at ' + res.lastAddress : ''}.`);
@@ -2579,10 +3303,10 @@ class Chat extends Component {
     throw new Error('Unknown tool: ' + name);
   }
 
-  // Anthropic + workspace-actions path: a non-streaming tool loop (a tool
+  // Vendor-neutral workspace-actions path: a non-streaming tool loop (a tool
   // round-trip needs the complete message anyway). The whole exchange lands as
   // one assistant bubble, with tool activity as quoted status lines.
-  runAnthropicToolChat = async (userContent) => {
+  runWorkspaceToolChat = async (userContent, taskEntry = null, requestConfig = this._captureAiRequestConfig()) => {
     // A UNIQUE chatKey, not length+1: after the localStorage-fallback trim
     // (storageChatList shift()s old entries but survivors keep their keys)
     // length+1 can equal a surviving historical bubble's key — _setToolProgress
@@ -2591,27 +3315,128 @@ class Chat extends Component {
     this.handleState('loading', true);
     this.setState({ loadingCompleted: true });
     this._aiAbort = new AbortController();
+    const pendingTask = !taskEntry && this._pendingAiTask?.task && [AI_TASK_STATUS.PLANNED, AI_TASK_STATUS.RUNNING, AI_TASK_STATUS.WAITING_FOR_USER, AI_TASK_STATUS.FAILED, AI_TASK_STATUS.UNCERTAIN].includes(this._pendingAiTask.task.status)
+      ? this._pendingAiTask
+      : null;
+    const initialChainWriteUncertain = pendingTask?.chainWriteUncertain === true;
+    if (pendingTask) taskEntry = pendingTask.taskEntry;
+    else if (taskEntry) this._pendingAiTask = null;
+    const modelUserContent = pendingTask && taskEntry ? taskEntry.prompt : userContent;
+    let taskId;
+    let workspace = null;
+    const attemptEventOffset = (this._aiTaskEvents || []).length;
+    try { workspace = await this._wsName(); } catch (e) { workspace = null; }
+    if (pendingTask) {
+      taskId = pendingTask.task.taskId;
+      this._activeAiTask = resumeAITask(pendingTask.task);
+      this._recordAiTaskEvent({ type: 'task.resumed', task: this._activeAiTask, at: this._activeAiTask.updatedAt });
+    } else {
+      taskId = `task-${Date.now()}-${key}`;
+      const taskSource = taskEntry ? `${taskEntry.source}:${taskEntry.entryId}` : 'chat';
+      this._activeAiTask = createAITask({ taskId, goal: taskEntry?.goal || userContent, source: taskSource, workspace, entry: taskEntry ? createAITaskEntrySnapshot(taskEntry) : null });
+      this._recordAiTaskEvent({ type: 'task.created', task: this._activeAiTask, at: this._activeAiTask.createdAt });
+      this._activeAiTask = transitionTaskStatus(this._activeAiTask, AI_TASK_STATUS.RUNNING);
+      this._recordAiTaskEvent({ type: 'task.started', task: this._activeAiTask, at: this._activeAiTask.updatedAt });
+    }
+    this._activeAiTaskUncertain = initialChainWriteUncertain;
+    let stepNumber = (this._aiTaskEvents || []).filter((event) => event?.taskId === taskId && event?.type === 'step.planned').length;
+    const runtime = new AITaskRuntime({
+      executeTool: this.executeAiTool,
+      onEvent: this._recordAiTaskEvent,
+      initialChainWriteUncertain
+    });
     try {
-      const finalText = await anthropicChatWithTools({
-        apiKey: this.state.apiKey,
-        baseUrl: this.state.baseUrl,
-        model: this.state.gptv,
-        userContent,
+      const toolChat = requestConfig.aiModelVendor === 'Anthropic' || (requestConfig.aiModelVendor === BANK_OF_AI_VENDOR && requestConfig.aiEndpointType === AI_ENDPOINT_TYPE.ANTHROPIC)
+        ? anthropicChatWithTools
+        : requestConfig.aiModelVendor === 'Google'
+          ? geminiChatWithTools
+          : openAICompatibleChatWithTools;
+      const finalText = await toolChat({
+        apiKey: requestConfig.apiKey,
+        baseUrl: requestConfig.baseUrl,
+        model: requestConfig.gptv,
+        aiModelVendor: requestConfig.aiModelVendor,
+        endpointType: requestConfig.aiEndpointType,
+        userContent: modelUserContent,
         // Prior conversation so multi-turn workflows keep context — e.g. a
         // deployed address from one message is available to interact with it
         // in the next. Without this the tool loop only saw the latest message.
         history: this.getSessionMessages(),
-        executeTool: this.executeAiTool,
+        executeTool: async (name, input) => {
+          this._recordBankOfAIToolCall();
+          const run = await runtime.runStep({
+            taskId,
+            stepId: `${taskId}-step-${++stepNumber}`,
+            toolName: name,
+            input,
+            policy: getAIToolPolicy(name),
+            expectedNetwork: taskEntry?.expectedNetwork || null,
+            signal: this._aiAbort.signal
+          });
+          if (name === 'deploy_contract' && run.result?.ok && run.result?.data?.contractAddress && this._isMounted) {
+            const published = typeof window !== 'undefined' ? window.__tronideLastDeployment : null;
+            const samePublishedDeployment = published && run.result.data.transactionHash &&
+              published.transactionHash === run.result.data.transactionHash;
+            const deployment = samePublishedDeployment
+              ? { ...run.result.data, ...published }
+              : run.result.data;
+            this.setState({ deploymentNextStep: deployment, activeKey: [] });
+          }
+          return run.result;
+        },
         // Live transcript into the same bubble as each step runs.
         onProgress: (partial) => this._setToolProgress(partial, key),
+        onProviderRequest: this._recordBankOfAIProviderRequest,
         signal: this._aiAbort.signal
       });
       this.handleState('loading', false);
+      const stepEvents = (this._aiTaskEvents || []).filter((event) => event?.taskId === taskId);
+      const attemptStepEvents = (this._aiTaskEvents || []).slice(attemptEventOffset).filter((event) => event?.taskId === taskId);
+      // A task-entry request is an action request, not ordinary chat. If the
+      // model answers in prose without emitting a tool call, do not report a
+      // false success: preserve a stable diagnostic code for QA to separate
+      // model/tool-following behavior from IDE execution failures.
+      const requiresWorkspaceAction = !!taskEntry && taskEntry.requiresWorkspaceActions !== false && !pendingTask;
+      const actionRequiredButNoTool = requiresWorkspaceAction && !attemptStepEvents.some((event) => event?.type === 'step.finished');
+      const finalTranscript = actionRequiredButNoTool
+        ? `${finalText || '(no reply)'}\n\n⚠️ 未调用 Workspace Action，任务未执行。[${AI_TASK_ERROR_CODE.MODEL_DID_NOT_CALL_TOOL}]`
+        : (finalText || '(no reply)');
       // Replace the progress bubble with the final transcript (same bubble, no
       // duplicate).
-      this._setToolProgress(finalText || '(no reply)', key);
+      this._setToolProgress(finalTranscript, key);
       this.setState({ loadingCompleted: false });
       this.storageChatList(this.state.chatList);
+      const resumedFallbackStatus = pendingTask
+        ? ([AI_TASK_STATUS.FAILED, AI_TASK_STATUS.WAITING_FOR_USER, AI_TASK_STATUS.UNCERTAIN].includes(pendingTask.task.status)
+            ? pendingTask.task.status
+            : AI_TASK_STATUS.WAITING_FOR_USER)
+        : AI_TASK_STATUS.SUCCEEDED;
+      let nextTaskStatus = deriveAITaskStatusFromEvents(attemptStepEvents, resumedFallbackStatus, {
+        requireToolStep: requiresWorkspaceAction,
+        unresolvedChainWrite: runtime.chainWriteUncertain
+      });
+      let workflowResult = null;
+      const workflow = getGoldenWorkflowForEntry(taskEntry?.entryId);
+      if (workflow) {
+        const evaluation = evaluateGoldenWorkflowRun({ workflowId: workflow.id, stepEvents, taskStatus: nextTaskStatus });
+        // An incomplete workflow is normally resumable, but a fresh action
+        // task with no tool call is a model/tool-following failure and must
+        // remain failed rather than becoming waiting_for_user.
+        nextTaskStatus = actionRequiredButNoTool ? AI_TASK_STATUS.FAILED : evaluation.taskStatus;
+        workflowResult = evaluation.workflowResult;
+      }
+      this._activeAiTask = transitionTaskStatus(this._activeAiTask, nextTaskStatus);
+      const taskEventType = nextTaskStatus === AI_TASK_STATUS.WAITING_FOR_USER ? 'task.waiting_for_user' : 'task.finished';
+      this._recordAiTaskEvent({
+        type: taskEventType,
+        task: this._activeAiTask,
+        at: this._activeAiTask.updatedAt,
+        ...(actionRequiredButNoTool ? { errorCode: AI_TASK_ERROR_CODE.MODEL_DID_NOT_CALL_TOOL } : {})
+      });
+      this._recordGoldenWorkflowResult(taskEntry, this._activeAiTask, taskId, workflowResult);
+      this._pendingAiTask = nextTaskStatus === AI_TASK_STATUS.WAITING_FOR_USER
+        ? { task: this._activeAiTask, taskEntry, chainWriteUncertain: runtime.chainWriteUncertain }
+        : null;
     } catch (e) {
       this.handleState('loading', false);
       this.setState({ loadingCompleted: false });
@@ -2619,14 +3444,168 @@ class Chat extends Component {
         // Keep the progress so far; append the stop marker.
         this._setToolProgress('\n\n⏹ Stopped.', key, true);
         this.setState({ loadingCompleted: false });
+        const stoppedStatus = this._activeAiTaskUncertain ? AI_TASK_STATUS.UNCERTAIN : AI_TASK_STATUS.CANCELLED;
+        this._activeAiTask = transitionTaskStatus(this._activeAiTask, stoppedStatus);
+        this._pendingAiTask = null;
+        this._recordAiTaskEvent({ type: 'task.finished', task: this._activeAiTask, at: this._activeAiTask.updatedAt });
+        this._recordGoldenWorkflowResult(taskEntry, this._activeAiTask, taskId);
       } else {
-        console.error('workspace-actions chat error:', e);
-        this.handleErrorMessage(e?.message || 'Unknown error');
+        const safeError = sanitizeAIError(e);
+        console.error('workspace-actions chat error:', safeError);
+        this.handleErrorMessage(safeError.message);
+        const failedStatus = this._activeAiTaskUncertain ? AI_TASK_STATUS.UNCERTAIN : AI_TASK_STATUS.FAILED;
+        this._activeAiTask = transitionTaskStatus(this._activeAiTask, failedStatus);
+        this._pendingAiTask = null;
+        this._recordAiTaskEvent({ type: 'task.finished', task: this._activeAiTask, at: this._activeAiTask.updatedAt, error: safeError.message });
+        this._recordGoldenWorkflowResult(taskEntry, this._activeAiTask, taskId);
+      }
+    } finally {
+      const writeLock = this._getAiWriteLock();
+      const owned = writeLock.snapshot();
+      if (owned?.taskId === taskId) {
+        if (this._activeAiTaskUncertain) {
+          writeLock.preserveUntilExpiry(taskId, 3 * 60 * 1000);
+          const preserved = writeLock.snapshot();
+          this._recordAiTaskEvent({ type: 'task.write_lock_preserved', taskId, status: AI_TASK_STATUS.UNCERTAIN, at: Date.now(), expiresAt: preserved?.expiresAt });
+        } else {
+          writeLock.release(taskId);
+          this._recordAiTaskEvent({ type: 'task.write_lock_released', taskId, status: this._activeAiTask?.status, at: Date.now() });
+        }
       }
     }
   }
 
+  _recordAiTaskEvent = (event) => {
+    const safeEvent = event?.error != null
+      ? { ...event, error: sanitizeAIError(event.error).message }
+      : event;
+    this._aiTaskEvents = [...(this._aiTaskEvents || []), safeEvent].slice(-500);
+    if (safeEvent?.status === AI_TASK_STATUS.UNCERTAIN || safeEvent?.task?.status === AI_TASK_STATUS.UNCERTAIN) {
+      this._activeAiTaskUncertain = true;
+    }
+    try { this.props.plugin?.events?.emit('aiTaskEvent', safeEvent); } catch (_) { /* task observers are best-effort */ }
+    if (this._aiTaskStore) {
+      this._aiTaskStore.recordEvent(safeEvent).then((snapshot) => {
+        if (this._isMounted) this.setState({ aiTaskHistory: snapshot.tasks });
+      }).catch((error) => console.debug('[ai] task history write failed:', error));
+    }
+    if (this._aiTaskMetrics) {
+      this._aiTaskMetrics.recordEvent(safeEvent).then((snapshot) => {
+        if (this._isMounted) this.setState({ aiLocalMetrics: snapshot });
+      }).catch((error) => console.debug('[ai] local metrics write failed:', error));
+    }
+  }
+
+  _recordLocalMetricEvent = (event) => {
+    if (!this._aiTaskMetrics) return;
+    this._aiTaskMetrics.recordEvent(event).then((snapshot) => {
+      if (this._isMounted) this.setState({ aiLocalMetrics: snapshot });
+    }).catch((error) => console.debug('[ai] local metrics write failed:', error));
+  }
+
+  _usesOfficialBankOfAI = () =>
+    this.state.aiModelVendor === BANK_OF_AI_VENDOR && isOfficialBankOfAIBaseUrl(this.state.baseUrl);
+
+  _recordBankOfAIProviderRequest = ({ status, durationMs, error } = {}) => {
+    if (!this._usesOfficialBankOfAI()) return;
+    const normalizedStatus = status === 'succeeded' || status === 'cancelled' ? status : 'failed';
+    this._recordLocalMetricEvent({
+      type: 'integration.request.finished',
+      integration: 'bankofai',
+      status: normalizedStatus,
+      durationMs: Number.isFinite(durationMs) ? durationMs : 0,
+      ...(normalizedStatus === 'failed' ? { errorCode: classifyBankOfAIErrorCode(error) } : {})
+    });
+  }
+
+  _recordBankOfAIToolCall = () => {
+    if (!this._usesOfficialBankOfAI()) return;
+    this._recordLocalMetricEvent({ type: 'integration.tool.called', integration: 'bankofai' });
+  }
+
+  _recordGoldenWorkflowResult = (taskEntry, task, taskId, evaluatedResult = null) => {
+    const workflow = getGoldenWorkflowForEntry(taskEntry?.entryId);
+    if (!workflow || !task || !taskId) return;
+    try {
+      const stepEvents = (this._aiTaskEvents || []).filter((event) => event?.taskId === taskId);
+      const workflowResult = evaluatedResult || createGoldenWorkflowResult({ workflowId: workflow.id, stepEvents, taskStatus: task.status });
+      this._recordAiTaskEvent({ type: 'task.workflow_result', taskId, workflowResult, at: Date.now() });
+    } catch (error) {
+      console.debug('[ai] Golden Workflow result unavailable:', error);
+    }
+  }
+
+  _continueAiTask = (record) => {
+    const task = record?.task;
+    if (!task?.goal || this.state.loading || this.state.loadingCompleted) return;
+    const taskEntry = restoreAITaskEntry(task);
+    const restoredEvents = Array.isArray(record?.events) ? record.events : [];
+    this._aiTaskEvents = [
+      ...(this._aiTaskEvents || []).filter((event) => event?.taskId !== task.taskId),
+      ...restoredEvents
+    ].slice(-500);
+    this._pendingAiTask = { task, taskEntry, chainWriteUncertain: hasUnresolvedChainWrite(record?.steps) };
+    this.setState({ value: task.goal });
+    setTimeout(() => this.textAreaRef?.focus(), 0);
+  }
+
+  _exportAiTaskDiagnostic = (record, format, { includeEventLog = false } = {}) => {
+    try {
+      const report = createAITaskDiagnostic(record, {
+        appVersion: this.props.plugin?.profile?.version || 'unknown',
+        includeEventLog
+      });
+      const contents = serializeAITaskDiagnostic(report, format);
+      const mimeType = format === 'markdown' ? 'text/markdown;charset=utf-8' : 'application/json;charset=utf-8';
+      const href = URL.createObjectURL(new Blob([contents], { type: mimeType }));
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = aiTaskDiagnosticFilename(report, format);
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 0);
+      try { gtag('event', 'click', { event_category: 'ai_user_action', event_label: `export_task_diagnostic_${format}` }); } catch (_) { /* analytics are best-effort */ }
+    } catch (error) {
+      console.debug('[ai] task diagnostic export failed:', error);
+      this.setState({ reminder: 'Task diagnostic export failed. Try again.' });
+    }
+  }
+
+  _startDeploymentNextStep = (entryId) => {
+    const deployment = this.state.deploymentNextStep;
+    if (!deployment || this.state.loading || this.state.loadingCompleted) return;
+    if (deployment.contextEpoch != null && typeof window !== 'undefined') {
+      const published = window.__tronideLastDeployment;
+      const sameContext = published &&
+        published.contractAddress === deployment.contractAddress &&
+        published.timestamp === deployment.timestamp &&
+        published.contextEpoch === deployment.contextEpoch &&
+        published.workspace === deployment.workspace;
+      if (!sameContext) {
+        this.setState({
+          deploymentNextStep: null,
+          reminder: 'The deployment workspace or network changed. Deploy again in the active context before starting a next step.'
+        });
+        return;
+      }
+    }
+    this.submitInjectedTask({
+      entryId,
+      source: 'deploy',
+      context: deployment,
+      runtimeContext: { tronLinkDetected: true }
+    });
+  }
+
+  _dismissDeploymentNextStep = () => {
+    if (typeof window !== 'undefined') delete window.__tronideLastDeployment;
+    this.setState({ deploymentNextStep: null });
+  }
+
   apiKeyHandle=(e)=>{
+    this._bumpAiRequestConfigRevision();
     this.setState({
       apiKey:e
     })
@@ -2643,6 +3622,7 @@ class Chat extends Component {
   }
 
   enableStreamingHandle=(checked)=>{
+    this._bumpAiRequestConfigRevision();
     this.setState({ enableStreaming: checked });
   }
 
@@ -2653,7 +3633,13 @@ class Chat extends Component {
   }
 
   getAiModelVendor=(vendor)=>{
+    this._bumpAiRequestConfigRevision();
     this.setState({ aiModelVendor: vendor })
+  }
+
+  endpointTypeHandle=(endpointType)=>{
+    this._bumpAiRequestConfigRevision();
+    this.setState({ aiEndpointType: endpointType })
   }
 
   render() {
@@ -2668,7 +3654,7 @@ class Chat extends Component {
       gptv,
       activeKey,
       enableStreaming,
-      apiKey,
+      deploymentNextStep,
     } = this.state;
     const {
       isExperience,
@@ -2687,7 +3673,7 @@ class Chat extends Component {
                 {
                   key: '1',
                   label: <span className="ai-title">TRON IDE AI Assistant</span>,
-                  children: <ChatSet  enableStreaming={enableStreaming} enableStreamingHandle={this.enableStreamingHandle} enableWorkspaceActions={this.state.enableWorkspaceActions} workspaceActionsHandle={this.workspaceActionsHandle} collapseHandle={this.collapseHandle} gptvHandle={this.gptvHandle} apiKeyHandle={this.apiKeyHandle} baseUrlHandle={this.baseUrlHandle} contextHandle={this.contextHandle} getAiModelVendor={this.getAiModelVendor}/>,
+                  children: <ChatSet  enableStreaming={enableStreaming} enableStreamingHandle={this.enableStreamingHandle} enableWorkspaceActions={this.state.enableWorkspaceActions} workspaceActionsHandle={this.workspaceActionsHandle} enableLocalMetrics={this.state.enableLocalMetrics} localMetrics={this.state.aiLocalMetrics} localMetricsHandle={this.localMetricsHandle} clearLocalMetricsHandle={this.clearLocalMetricsHandle} collapseHandle={this.collapseHandle} gptvHandle={this.gptvHandle} apiKeyHandle={this.apiKeyHandle} baseUrlHandle={this.baseUrlHandle} contextHandle={this.contextHandle} getAiModelVendor={this.getAiModelVendor} endpointTypeHandle={this.endpointTypeHandle} panelVisible={this.props.aiPanelvisible}/>,
                 }
               ]}
             />
@@ -2706,6 +3692,7 @@ class Chat extends Component {
             </span>
           </div> 
           <div className="chat-content-out">
+            <AITaskTimeline history={this.state.aiTaskHistory} onContinue={this._continueAiTask} onExport={this._exportAiTaskDiagnostic} />
             <div
               className="chat-content-wrapper"
               ref={(ref) => {
@@ -2713,6 +3700,12 @@ class Chat extends Component {
               }}
               onScroll={this.handleScrollEvent}
             >
+              <AIDeploymentNextSteps
+                deployment={deploymentNextStep}
+                busy={loading || loadingCompleted}
+                onStart={this._startDeploymentNextStep}
+                onDismiss={this._dismissDeploymentNextStep}
+              />
               {chatList.length ? (
                 <ChatItemsList
                   list={chatList}
@@ -2779,7 +3772,7 @@ class Chat extends Component {
           </div>
         </div>
         {modal}
-        {showToast && <Toast content={"Given the massive historical data volume, earliest chat records are deleted to retain the new ones."} />}
+        {showToast && <Toast content={"Oldest chats were removed to make room for new ones."} />}
       </div>
     );
   }

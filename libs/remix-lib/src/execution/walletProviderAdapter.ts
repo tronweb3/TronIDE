@@ -29,25 +29,25 @@ export const WALLET_ERROR_CODES = {
 } as const
 
 export const WALLET_ERROR_MESSAGES = {
-  [WALLET_ERROR_CODES.WALLET_DISCONNECTED]: 'Wallet disconnected. Please reconnect TronLink.',
+  [WALLET_ERROR_CODES.WALLET_DISCONNECTED]: 'TronLink disconnected. Reconnect to continue.',
   [WALLET_ERROR_CODES.WALLET_CONNECTION_REJECTED]: 'Connection request was rejected.',
   [WALLET_ERROR_CODES.USER_REJECTED]: 'Confirmation declined by user.',
-  [WALLET_ERROR_CODES.WALLET_LOCKED]: 'Please unlock TronLink and try again.',
+  [WALLET_ERROR_CODES.WALLET_LOCKED]: 'Unlock TronLink and try again.',
   // A locked wallet and an unauthorized site are indistinguishable from the
   // page (TronLink reports ready=false with no address in both cases), so
   // this message covers both states (TC-WAL-002/003).
-  [WALLET_ERROR_CODES.WALLET_UNAUTHORIZED]: 'Please unlock TronLink and approve the connection to this site.',
-  [WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT]: 'Wallet request timed out. Please try again.',
+  [WALLET_ERROR_CODES.WALLET_UNAUTHORIZED]: 'Unlock TronLink and approve this site.',
+  [WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT]: 'TronLink timed out. Try again.',
   [WALLET_ERROR_CODES.WALLET_UNAVAILABLE]: 'TronLink is not available in this browser.',
-  [WALLET_ERROR_CODES.WALLET_ACCOUNT_CHANGED]: 'Wallet account changed. Please reconnect TronLink.',
-  [WALLET_ERROR_CODES.WALLET_NETWORK_CHANGED]: 'Wallet network changed. Please review the selected network.',
+  [WALLET_ERROR_CODES.WALLET_ACCOUNT_CHANGED]: 'TronLink account changed. Reconnect to continue.',
+  [WALLET_ERROR_CODES.WALLET_NETWORK_CHANGED]: 'TronLink network changed. Review the selected network.',
   [WALLET_ERROR_CODES.WALLET_WRONG_NETWORK]: 'Wallet network does not match the selected TronIDE environment.',
-  [WALLET_ERROR_CODES.WALLET_CAPABILITY_MISSING]: 'Wallet action unsupported. Please update TronLink or use another provider.',
-  [WALLET_ERROR_CODES.WALLET_ADDRESS_INVALID]: 'Unable to verify wallet address format. Please reconnect TronLink.',
+  [WALLET_ERROR_CODES.WALLET_CAPABILITY_MISSING]: 'This wallet action is unsupported. Update TronLink or use another provider.',
+  [WALLET_ERROR_CODES.WALLET_ADDRESS_INVALID]: 'The wallet address is invalid. Reconnect TronLink.',
   [WALLET_ERROR_CODES.WALLET_SIGN_REJECTED]: 'Transaction signature was rejected by the wallet.',
-  [WALLET_ERROR_CODES.WALLET_SIGN_TIMEOUT]: 'Transaction signature timed out. Please try again.',
-  [WALLET_ERROR_CODES.WALLET_BROADCAST_FAILED]: 'Transaction broadcast failed. Please verify the wallet network and try again.',
-  [WALLET_ERROR_CODES.WALLET_UNKNOWN_ERROR]: 'Wallet request failed. Please try again.'
+  [WALLET_ERROR_CODES.WALLET_SIGN_TIMEOUT]: 'Transaction signature timed out. Try again.',
+  [WALLET_ERROR_CODES.WALLET_BROADCAST_FAILED]: 'Transaction broadcast failed. Check the wallet network and try again.',
+  [WALLET_ERROR_CODES.WALLET_UNKNOWN_ERROR]: 'Wallet request failed. Try again.'
 } as const
 
 export type WalletStatus = typeof WALLET_STATUS[keyof typeof WALLET_STATUS]

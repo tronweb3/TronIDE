@@ -42,7 +42,7 @@ async function exportBackupZip (page: Page, destPath: string) {
   expect(fs.existsSync(destPath)).toBe(true)
 }
 
-async function restoreBackupZip (page: Page, zipPath: string, expectInLog: string, maxWriteFilePrompts = Infinity) {
+async function openRestoreArchive (page: Page, zipPath: string) {
   await page.locator('#icon-panel div[plugin="pluginManager"]').click()
   const search = page.locator('[data-id="pluginManagerComponentSearchInput"]')
   await search.waitFor({ state: 'visible', timeout: 5000 })
@@ -57,6 +57,29 @@ async function restoreBackupZip (page: Page, zipPath: string, expectInLog: strin
   await iframe.locator('#file-input').setInputFiles(zipPath)
   const importBtn = iframe.locator('.importfile')
   await importBtn.waitFor({ state: 'visible', timeout: 10_000 })
+  return { iframe, importBtn }
+}
+
+async function acceptPermissionsUntil (page: Page, method: string) {
+  const message = page.locator('[data-id="permissionHandlerMessage"]')
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await message.waitFor({ state: 'visible', timeout: 10_000 })
+    const text = await message.textContent() || ''
+    if (text.includes(`"${method}"`)) return
+
+    const remember = page.locator('#remember')
+    if (await remember.isVisible() && !await remember.isChecked()) await remember.check()
+    await page.locator('#modal-footer-ok').click()
+    await page.waitForFunction((previous) => {
+      const current = document.querySelector('[data-id="permissionHandlerMessage"]')
+      return !current || current.textContent !== previous
+    }, text, { timeout: 10_000 })
+  }
+  throw new Error(`Permission prompt for ${method} did not appear`)
+}
+
+async function restoreBackupZip (page: Page, zipPath: string, expectInLog: string, maxWriteFilePrompts = Infinity) {
+  const { iframe, importBtn } = await openRestoreArchive(page, zipPath)
 
   // Accept permission/confirm modals in the parent while importing.
   let importing = true
@@ -116,6 +139,96 @@ test.describe('Workspace backup integrity', () => {
 
       const writeFilePermissionAccepts = await restoreBackupZip(page, zipPath, 'imported second.txt', 1)
       expect(writeFilePermissionAccepts, 'remembered writeFile permission is requested only once for both files').toBe(1)
+    } finally {
+      if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath)
+    }
+  })
+
+  test('remembered writeFile decline blocks every later write without another prompt @gate', async ({ page }) => {
+    const zipPath = path.join(tmpDir, 'restore_permission_decline.zip')
+    const archive = new JSZip()
+    archive.file('.workspaces/PermissionDenyE2E/first.txt', 'FIRST')
+    archive.file('.workspaces/PermissionDenyE2E/second.txt', 'SECOND')
+    fs.writeFileSync(zipPath, await archive.generateAsync({ type: 'nodebuffer' }))
+
+    try {
+      await page.goto('/')
+      await dismissWelcomeModal(page)
+      await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+      const { iframe, importBtn } = await openRestoreArchive(page, zipPath)
+      await importBtn.click()
+
+      // The restore plugin first needs FilePanel discovery/workspace grants.
+      // Accept and remember those prerequisites before testing write denial.
+      await acceptPermissionsUntil(page, 'writeFile')
+
+      const remember = page.locator('#remember')
+      await remember.waitFor({ state: 'visible', timeout: 10_000 })
+      await remember.check()
+      await page.locator('#modal-footer-cancel').click()
+
+      await expect(iframe.locator('#log-entry li.text-danger')).toHaveCount(2, { timeout: 20_000 })
+      await expect(iframe.locator('#log-entry')).not.toContainText('imported first.txt')
+      await expect(iframe.locator('#log-entry')).not.toContainText('imported second.txt')
+      await expect(page.locator('#modal-dialog')).toHaveCount(0)
+      const storedFiles = await page.evaluate(() => {
+        const fsApi = (window as any).remixFileSystem
+        const read = (path: string) => {
+          try { return fsApi.readFileSync(path, 'utf8') } catch (e) { return null }
+        }
+        return [
+          read('.workspaces/PermissionDenyE2E/first.txt'),
+          read('.workspaces/PermissionDenyE2E/second.txt')
+        ]
+      })
+      expect(storedFiles).toEqual([null, null])
+    } finally {
+      if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath)
+    }
+  })
+
+  test('resetting permissions cannot resurrect a stale remembered grant @gate', async ({ page }) => {
+    const zipPath = path.join(tmpDir, 'restore_permission_reset.zip')
+    const archive = new JSZip()
+    archive.file('.workspaces/PermissionResetE2E/first.txt', 'FIRST')
+    archive.file('.workspaces/PermissionResetE2E/second.txt', 'SECOND')
+    fs.writeFileSync(zipPath, await archive.generateAsync({ type: 'nodebuffer' }))
+
+    try {
+      await page.addInitScript(() => {
+        localStorage.setItem('permissionVersion', '1')
+        localStorage.setItem('plugins/permissions', JSON.stringify({
+          fileManager: {
+            writeFile: {
+              restorebackupzip: { allow: true, hash: 'stale-plugin-hash' }
+            }
+          }
+        }))
+      })
+      await page.goto('/')
+      await dismissWelcomeModal(page)
+      await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+      const { iframe, importBtn } = await openRestoreArchive(page, zipPath)
+      await importBtn.click()
+
+      await acceptPermissionsUntil(page, 'writeFile')
+
+      const remembered = page.locator('[data-id="permissionHandlerRememberChecked"]')
+      await expect(remembered).toBeVisible({ timeout: 10_000 })
+      await expect(remembered).toBeChecked()
+      await expect(page.locator('[data-id="permissionHandlerMessage"]')).toContainText('has changed')
+      await page.getByRole('button', { name: 'Reset all Permissions' }).click()
+      await expect(remembered).not.toBeChecked()
+      await page.locator('#modal-footer-ok').click()
+
+      const secondPrompt = page.locator('[data-id="permissionHandlerRememberUnchecked"]')
+      await expect(secondPrompt).toBeVisible({ timeout: 10_000 })
+      await expect(secondPrompt).not.toBeChecked()
+      await page.locator('#modal-footer-ok').click()
+      await expect(iframe.locator('#log-entry')).toContainText('imported second.txt', { timeout: 20_000 })
+
+      const savedPermissions = await page.evaluate(() => JSON.parse(localStorage.getItem('plugins/permissions') || '{}'))
+      expect(savedPermissions?.fileManager?.writeFile?.restorebackupzip).toBeUndefined()
     } finally {
       if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath)
     }

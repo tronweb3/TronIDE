@@ -23,6 +23,7 @@ import ReactDOM from 'react-dom'
 import * as packageJson from '../../../../../package.json'
 import { RemixUiSettings } from '@remix-ui/settings' //eslint-disable-line
 const globalRegistry = require('../../global/registry')
+const { requireUserPermission } = require('../ui/permission-security')
 
 const profile = {
   name: 'settings',
@@ -72,7 +73,8 @@ module.exports = class SettingsTab extends ViewPlugin {
   }
 
   get (key) {
-    return this.config.get(key)
+    if (!this.currentRequest) return this.config.get(key)
+    return requireUserPermission(this, 'get', 'read an IDE setting').then(() => this.config.get(key))
   }
 
   updateMatomoAnalyticsChoice (isChecked) {

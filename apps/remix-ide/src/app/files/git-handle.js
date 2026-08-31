@@ -17,7 +17,7 @@
  * limitations under the License.
  */
 
-import { WebsocketPlugin } from '@remixproject/engine-web'
+import { SecureWebsocketPlugin, requestLocalSessionUrl } from '../components/secure-websocket-plugin'
 import * as packageJson from '../../../../../package.json'
 
 const profile = {
@@ -30,8 +30,12 @@ const profile = {
   version: packageJson.version
 }
 
-export class GitHandle extends WebsocketPlugin {
+export class GitHandle extends SecureWebsocketPlugin {
   constructor () {
     super(profile)
+  }
+
+  async connect (url) {
+    return super.connect(await requestLocalSessionUrl(url))
   }
 }

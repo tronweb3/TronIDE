@@ -16,7 +16,7 @@
 
 import React from "react";
 import { alpha } from "../../../utils";
-import {Tooltip} from "antd";
+import Tooltip from 'antd/lib/tooltip';
 // import {t,t2,tv} from "../../utils/i18n";
 import cx from 'classnames';
 import './index.scss';

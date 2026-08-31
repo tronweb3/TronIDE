@@ -35,7 +35,6 @@ import { SidePanel } from './app/components/side-panel'
 import { HiddenPanel } from './app/components/hidden-panel'
 import { VerticalIcons } from './app/components/vertical-icons'
 import { LandingPage } from './app/ui/landing-page/landing-page'
-import { ReleaseNotes } from './app/ui/release-notes/release-notes'
 import { MainPanel } from './app/components/main-panel'
 import { AiPanel } from './app/components/ai-panel'
 import { HeaderPanel } from './app/components/header-panel'
@@ -51,7 +50,9 @@ const remixLib = require('@remix-project/remix-lib')
 const registry = require('./global/registry')
 
 const QueryParams = require('./lib/query-params')
-const { filterUrlPluginNames, parseUrlPluginCall } = require('./lib/url-param-security')
+const { decodeUrlParameter, filterUrlPluginNames, parseUrlPluginCall } = require('./lib/url-param-security')
+const { markTrustedPluginProfile } = require('./lib/plugin-trust-security')
+const { installPermissionedCallPluginMethod } = require('./app/ui/permission-security')
 const GistHandler = require('./lib/gist-handler')
 const normalizeGistId = require('./lib/normalize-gist-id')
 const Storage = remixLib.Storage
@@ -179,12 +180,15 @@ class App {
     self.appManager = new RemixAppManager({})
     self._components = {}
     self._view = {}
-    self._view.splashScreen = yo`
-      <div class=${css.centered}>
-        ${basicLogo()}
-      </div>
-    `
-    document.body.appendChild(self._view.splashScreen)
+    self._view.splashScreen = document.getElementById('tronide-initial-splash')
+    if (!self._view.splashScreen) {
+      self._view.splashScreen = yo`
+        <div class=${css.centered} role="status" aria-label="Loading TRON IDE">
+          ${basicLogo()}
+        </div>
+      `
+      document.body.appendChild(self._view.splashScreen)
+    }
 
     // setup storage
     const configStorage = new Storage('config-v0.8:')
@@ -279,6 +283,15 @@ module.exports = App
 async function run () {
   var self = this
 
+  const revealApp = () => {
+    if (self._view.splashScreen && self._view.splashScreen.parentNode) {
+      self._view.splashScreen.parentNode.removeChild(self._view.splashScreen)
+      self._view.splashScreen = null
+    }
+    document.documentElement.removeAttribute('data-splash-theme')
+    if (self._view.el) self._view.el.style.visibility = 'visible'
+  }
+
   // check the origin and warn message
   if (window.location.protocol.indexOf('https') === 0) {
     // toolTip('You are using an `https` connection. Please switch to `http` if you are using Remix against an `http Web3 provider` or allow Mixed Content in your browser.')
@@ -306,22 +319,19 @@ async function run () {
   registry.put({ api: themeModule, name: 'themeModule' })
   themeModule.initTheme(() => {
     setTimeout(() => {
-      if (self._view.splashScreen && self._view.splashScreen.parentNode === document.body) {
-        document.body.removeChild(self._view.splashScreen)
-      }
-      self._view.el.style.visibility = 'visible'
+      revealApp()
     }, 1500)
   })
   setTimeout(() => {
     if (self._view.el && self._view.el.style.visibility !== 'visible') {
-      if (self._view.splashScreen && self._view.splashScreen.parentNode === document.body) {
-        document.body.removeChild(self._view.splashScreen)
-      }
-      self._view.el.style.visibility = 'visible'
+      revealApp()
     }
   }, 4000)
   // ----------------- editor service ----------------------------
-  const editor = new Editor({}, themeModule) // wrapper around ace editor
+  const editor = installPermissionedCallPluginMethod(
+    new Editor({}, themeModule),
+    (method) => `use editor capability ${method}`
+  ) // wrapper around ace editor
   registry.put({ api: editor, name: 'editor' })
   editor.event.register('requiringToSaveCurrentfile', () => fileManager.saveCurrentFile())
 
@@ -332,24 +342,39 @@ async function run () {
   const dGitProvider = new DGitProvider()
 
   // ----------------- import content service ------------------------
-  const contentImport = new CompilerImports()
+  const contentImport = installPermissionedCallPluginMethod(
+    new CompilerImports(),
+    (method) => `use compiler import capability ${method}`
+  )
 
   const blockchain = new Blockchain(registry.get('config').api)
 
   // ----------------- compilation metadata generation service ---------
-  const compilerMetadataGenerator = new CompilerMetadata()
+  const compilerMetadataGenerator = installPermissionedCallPluginMethod(
+    new CompilerMetadata(),
+    (method) => `use compiler metadata capability ${method}`
+  )
   // ----------------- compilation result service (can keep track of compilation results) ----------------------------
-  const compilersArtefacts = new CompilerArtefacts() // store all the compilation results (key represent a compiler name)
+  const compilersArtefacts = installPermissionedCallPluginMethod(
+    new CompilerArtefacts(),
+    (method) => `use compiler artefact capability ${method}`
+  ) // store all the compilation results (key represent a compiler name)
   registry.put({ api: compilersArtefacts, name: 'compilersartefacts' })
 
   // service which fetch contract artifacts from sourve-verify, put artifacts in remix and compile it
-  const fetchAndCompile = new FetchAndCompile()
+  const fetchAndCompile = installPermissionedCallPluginMethod(
+    new FetchAndCompile(),
+    (method) => `fetch, store, and compile verified source through ${method}`
+  )
   // ----------------- network service (resolve network id / name) -----
   const networkModule = new NetworkModule(blockchain)
   // ----------------- represent the current selected web3 provider ----
   const web3Provider = new Web3ProviderModule(blockchain)
   // ----------------- convert offset to line/column service -----------
-  const offsetToLineColumnConverter = new OffsetToLineColumnConverter()
+  const offsetToLineColumnConverter = installPermissionedCallPluginMethod(
+    new OffsetToLineColumnConverter(),
+    (method) => `use source-location conversion capability ${method}`
+  )
   registry.put({ api: offsetToLineColumnConverter, name: 'offsettolinecolumnconverter' })
 
   // -------------------Terminal----------------------------------------
@@ -400,13 +425,18 @@ async function run () {
   // those views depend on app_manager
   const menuicons = new VerticalIcons(appManager)
   const sidePanel = new SidePanel(appManager, menuicons)
-  const aiPanel = new AiPanel(appManager, registry.get('config').api)
-  const headerPanel = new HeaderPanel(appManager, mainview)
+  const aiPanel = installPermissionedCallPluginMethod(
+    new AiPanel(appManager, registry.get('config').api),
+    (method) => `use AI panel capability ${method}`
+  )
+  const headerPanel = new HeaderPanel(appManager, mainview, menuicons)
   const hiddenPanel = new HiddenPanel()
   const pluginManagerComponent = new PluginManagerComponent(appManager, engine)
   const filePanel = new FilePanel(appManager)
   const landingPage = new LandingPage(appManager, menuicons, fileManager, filePanel)
-  const releaseNotes = new ReleaseNotes()
+  // Home is bundled host code but remains an optional view. Bind native trust
+  // to this exact instance rather than making the name alone privileged.
+  markTrustedPluginProfile(landingPage.profile)
   const settings = new SettingsTab(
     registry.get('config').api,
     editor,
@@ -424,7 +454,6 @@ async function run () {
   engine.register([
     menuicons,
     landingPage,
-    releaseNotes,
     hiddenPanel,
     sidePanel,
     aiPanel,
@@ -480,7 +509,7 @@ async function run () {
       // already works; this covers editing the param in the address bar / deep
       // links). Done before the gist early-return so a theme-only edit is honored.
       // Only switch to a known theme that differs from the active one.
-      const nextTheme = nextParams.theme
+      const nextTheme = decodeUrlParameter(nextParams.theme, 128)
       if (nextTheme && themeModule.themes && themeModule.themes[nextTheme] && nextTheme !== themeModule.active) {
         try { themeModule.switchTheme(nextTheme) } catch (e) { console.debug('[hashParamsReload] theme switch failed', e) }
       }
@@ -528,15 +557,14 @@ async function run () {
     // @TODO remove next line when https://github.com/matomo-org/matomo/commit/9e10a150585522ca30ecdd275007a882a70c6df5 is used
     document.cookie = 'mtm_consent_removed=; expires=Thu, 01 Jan 1970 00:00:01 GMT;'
     settings.updateMatomoAnalyticsChoice(true)
-    const el = document.getElementById('modal-dialog')
-    el.parentElement.removeChild(el)
+    matomoModal.hide()
   }
   const onDeclineMatomo = () => {
     settings.updateMatomoAnalyticsChoice(false)
     _paq.push(['optUserOut'])
-    const el = document.getElementById('modal-dialog')
-    el.parentElement.removeChild(el)
+    matomoModal.hide()
   }
+  let matomoModal
 
   // Ask to opt in to Matomo for remix, remix-alpha and remix-beta
   const matomoDomains = {
@@ -545,7 +573,7 @@ async function run () {
     'remix.ethereum.org': 23
   }
   if (matomoDomains[window.location.hostname] && !registry.get('config').api.exists('settings/matomo-analytics')) {
-    modalDialog(
+    matomoModal = modalDialog(
       'Help us to improve Remix IDE',
       yo`
       <div>
@@ -604,6 +632,32 @@ async function run () {
     contentImport
   )
 
+  // These bundled tools can otherwise become confused deputies: an external
+  // connector could call a host tool which then reads files, changes a local
+  // checkout, or returns compiler/trace data through trusted downstream APIs.
+  // Gate the engine dispatch before any exposed implementation sees payload or
+  // state. Host-to-host calls retain the manager's native bypass.
+  ;[
+    compileTab.compileTabLogic,
+    analysis,
+    debug,
+    contractVerification,
+    gitPanel,
+    solidityUml,
+    test,
+    filePanel.remixdHandle,
+    filePanel.gitHandle
+  ].forEach((plugin) => installPermissionedCallPluginMethod(
+    plugin,
+    (method) => `use bundled tool capability ${plugin.name}.${method}`
+  ))
+
+  // Mark only the bundled extension instances created by this host. The
+  // Symbol marker cannot be forged by iframe/websocket profile metadata, so a
+  // connector that claims one of these names never inherits native bypass.
+  ;[compileTab, compileTab.compileTabLogic, analysis, debug, test, contractVerification, gitPanel, solidityUml, filePanel.remixdHandle]
+    .forEach((plugin) => markTrustedPluginProfile(plugin.profile))
+
   engine.register([
     compileTab,
     compileTab.compileTabLogic,
@@ -619,7 +673,12 @@ async function run () {
   ])
 
   if (isElectron()) {
-    appManager.activatePlugin('remixd')
+    // Remixd is optional in Electron. Its activation now waits for the local
+    // token endpoint and websocket handshake, so handle an unavailable daemon
+    // instead of creating an unhandled promise rejection during startup.
+    appManager.activatePlugin('remixd').catch((error) => {
+      console.log('remixd activation unavailable:', error && error.message ? error.message : error)
+    })
   }
 
   try {
@@ -692,7 +751,7 @@ async function run () {
   }
 
   // Load and start the service who manager layout and frame
-  const framingService = new FramingService(sidePanel, menuicons, mainview, this._components.resizeFeature)
+  const framingService = new FramingService(sidePanel, menuicons, mainview, this._components.resizeFeature, aiPanel)
 
   if (params.embed) framingService.embed()
   framingService.start(params)

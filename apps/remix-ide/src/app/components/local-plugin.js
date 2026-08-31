@@ -21,6 +21,8 @@
 const yo = require('yo-yo')
 const modalDialog = require('../ui/modaldialog')
 const pluginSecurity = loadPluginSecurity()
+const { localPluginProfileHash } = require('../../lib/plugin-profile-security')
+const { isNativePluginName } = require('../../lib/plugin-trust-security')
 
 const defaultProfile = {
   methods: [],
@@ -28,8 +30,11 @@ const defaultProfile = {
   type: 'iframe'
 }
 
-function assertSafePluginUrl (url) {
-  const validation = pluginSecurity.validateLocalPluginUrl(url)
+function assertSafePluginUrl (url, transport = 'iframe') {
+  // Keep the shared validator's historical second (allowlist) argument empty;
+  // pass transport explicitly so a malformed array/object type cannot be
+  // mistaken for a legacy allowlist and silently treated as an iframe.
+  const validation = pluginSecurity.validateLocalPluginUrl(url, undefined, transport)
   if (!validation.ok) {
     const reason = (validation.errors && validation.errors[0]) || 'Plugin URL failed validation.'
     throw new Error(reason)
@@ -45,29 +50,36 @@ function loadPluginSecurity () {
     console.debug('[localPlugin] remix-lib pluginSecurity unavailable; using local fallback', error)
   }
   return {
-    validateLocalPluginUrl: function (url) {
+    validateLocalPluginUrl: function (url, remoteAllowlistOrTransport, explicitTransport) {
+      const transport = typeof remoteAllowlistOrTransport === 'string' ? remoteAllowlistOrTransport : (explicitTransport || 'iframe')
+      if (transport !== 'iframe' && transport !== 'ws') {
+        return { ok: false, errors: ['Local plugin connection type must be iframe or ws.'], warnings: [] }
+      }
       let parsed
       try {
-        parsed = new URL(url, typeof window !== 'undefined' ? window.location.href : 'http://localhost')
+        parsed = new URL(url)
       } catch (error) {
         return { ok: false, errors: [`Plugin URL is not a valid URL: ${url}`], warnings: [] }
       }
-      if (['http:', 'https:'].indexOf(parsed.protocol) < 0) {
+      const allowedProtocols = transport === 'ws' ? ['ws:', 'wss:'] : ['http:', 'https:']
+      if (allowedProtocols.indexOf(parsed.protocol) < 0) {
+        if (transport === 'ws') return { ok: false, errors: ['Local WebSocket plugin URL must use ws(s).'], warnings: [] }
         return { ok: false, errors: [`Plugin URL must use http(s); got "${parsed.protocol}"`], warnings: [] }
       }
-      const host = parsed.hostname
+      const host = parsed.hostname.replace(/^\[(.*)\]$/, '$1')
       const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1'
-      const isApprovedRemote = parsed.protocol === 'https:' && host.endsWith('.example.com')
       if (parsed.protocol === 'http:' && !isLocal) {
         return { ok: false, errors: ['HTTP local plugin URLs are only allowed for localhost.'], warnings: [] }
       }
-      if (!isLocal && !isApprovedRemote) {
-        return { ok: false, errors: ['Remote plugin URL must be approved before activation.'], warnings: [] }
+      if (parsed.protocol === 'https:' && !isLocal) {
+        return { ok: false, errors: ['Remote plugin URLs are disabled. Use localhost, 127.0.0.1, or ::1.'], warnings: [] }
+      }
+      if ((parsed.protocol === 'ws:' || parsed.protocol === 'wss:') && !isLocal) {
+        return { ok: false, errors: ['Remote WebSocket plugin URLs are disabled. Use localhost, 127.0.0.1, or ::1.'], warnings: [] }
       }
       const warnings = []
       if (isLocal) warnings.push('Only connect local plugins you trust. They can interact with your workspace.')
-      if (isApprovedRemote) warnings.push('Approved remote plugin URL — review permissions before enabling.')
-      return { ok: true, errors: [], warnings }
+      return { ok: true, normalizedUrl: parsed.toString(), errors: [], warnings }
     },
     summarizePluginPermissions: function (methods) {
       return (methods || []).map((method) => `${method}: custom plugin API access`)
@@ -132,13 +144,15 @@ module.exports = class LocalPlugin {
       methods: [],
       location: 'sidePanel',
       type: 'iframe',
-      ...this.profile,
-      hash: `local-${this.profile.name}`
+      ...this.profile
     }
     if (!profile.location) throw new Error('Plugin should have a location')
     if (!profile.name) throw new Error('Plugin should have a name')
+    if (isNativePluginName(profile.name)) throw new Error(`Plugin name "${profile.name}" is reserved by TronIDE.`)
     if (!profile.url) throw new Error('Plugin should have an URL')
-    const validation = assertSafePluginUrl(profile.url)
+    const validation = assertSafePluginUrl(profile.url, profile.type)
+    profile.url = validation.normalizedUrl || profile.url
+    profile.hash = localPluginProfileHash(profile)
     profile.securityWarnings = validation.warnings
     profile.permissionSummary = pluginSecurity.summarizePluginPermissions(profile.methods || [])
     localStorage.setItem('plugins/local', JSON.stringify(profile))
@@ -206,7 +220,7 @@ module.exports = class LocalPlugin {
       <div class="form-group">
         <label for="plugin-url">Url <small>(required)</small></label>
         <input class="form-control" oninput="${e => this.updateUrl(e)}" value="${url}" id="plugin-url" data-id="localPluginUrl" placeholder="ex: https://localhost:8000">
-        <small class="form-text text-muted">Local plugins must use localhost/127.0.0.1 or an approved HTTPS plugin host. Requested APIs are summarized before activation.</small>
+        <small class="form-text text-muted">Local plugins must use localhost, 127.0.0.1, or ::1. Use http(s) for iframe and ws(s) for Websocket; secure TronIDE pages require secure local endpoints. Remote plugin URLs are not supported.</small>
       </div>
       <h6>Type of connection <small>(required)</small></h6>
       <div class="form-check form-group">
@@ -224,3 +238,4 @@ module.exports = class LocalPlugin {
 }
 
 module.exports.assertSafePluginUrl = assertSafePluginUrl
+module.exports.profileHash = localPluginProfileHash

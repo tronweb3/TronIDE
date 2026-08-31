@@ -72,14 +72,25 @@ class InjectedProvider {
 
   async signMessage (message, account, _passphrase, cb) {
     try {
+      const provider = this.executionContext.web3()
+      const expectedAccount = account && String(account).trim()
+      const accountBefore = provider && provider.defaultAddress && provider.defaultAddress.base58
+      if (!accountBefore || (expectedAccount && String(accountBefore).toLowerCase() !== expectedAccount.toLowerCase())) {
+        throw walletProviderAdapter.createWalletError(walletProviderAdapter.WALLET_ERROR_CODES.WALLET_ACCOUNT_CHANGED)
+      }
       // The signing popup can hang forever against a dead/zombie bridge; bound it
       // so the callback always fires (timeout -> catch -> cb(error)) and the
       // confirmation dialog isn't left stuck with no answer.
       const signedData = await walletProviderAdapter.withWalletTimeout(
-        this.executionContext.web3().trx.signMessageV2(message),
+        provider.trx.signMessageV2(message),
         walletProviderAdapter.WALLET_SIGN_TIMEOUT_MS,
         walletProviderAdapter.WALLET_ERROR_CODES.WALLET_SIGN_TIMEOUT
       )
+      const providerAfter = this.executionContext.web3()
+      const accountAfter = providerAfter && providerAfter.defaultAddress && providerAfter.defaultAddress.base58
+      if (providerAfter !== provider || !accountAfter || (expectedAccount && String(accountAfter).toLowerCase() !== expectedAccount.toLowerCase()) || String(accountAfter).toLowerCase() !== String(accountBefore).toLowerCase()) {
+        throw walletProviderAdapter.createWalletError(walletProviderAdapter.WALLET_ERROR_CODES.WALLET_ACCOUNT_CHANGED)
+      }
       const messageHash = '0x' + hashPersonalMessage(Buffer.from(message)).toString('hex')
       cb(null, messageHash, signedData)
     } catch (error) {

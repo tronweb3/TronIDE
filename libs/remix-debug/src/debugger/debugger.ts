@@ -33,9 +33,17 @@ export class Debugger {
   breakPointManager
   step_manager // eslint-disable-line camelcase
   vmDebuggerLogic
+  _sessionGeneration
+  _codeManagerForSession
+  _codeChangedHandler
+  _stepManagerForSession
+  _stepChangedHandler
+  _unloading
 
   constructor (options) {
     this.event = new EventManager()
+    this._sessionGeneration = 0
+    this._unloading = false
     this.offsetToLineColumnConverter = options.offsetToLineColumnConverter
     /*
       Returns a compilation result for a given address or the last one available if none are found
@@ -66,7 +74,7 @@ export class Debugger {
     })
 
     this.breakPointManager.event.register('breakpointStep', (step) => {
-      this.step_manager.jumpTo(step)
+      if (this.step_manager) this.step_manager.jumpTo(step)
     })
 
     this.debugger.setBreakpointManager(this.breakPointManager)
@@ -89,28 +97,25 @@ export class Debugger {
       const compilationResultForAddress = await this.compilationResult(address)
       if (!compilationResultForAddress) return
 
-      this.debugger.callTree.sourceLocationTracker.getValidSourceLocationFromVMTraceIndex(address, index, compilationResultForAddress.data.contracts).then(async (rawLocation) => {
-        if (compilationResultForAddress && compilationResultForAddress.data) {
-          const generatedSources = this.debugger.callTree.sourceLocationTracker.getGeneratedSourcesFromAddress(address)
-          const astSources = Object.assign({}, compilationResultForAddress.data.sources)
-          const sources = Object.assign({}, compilationResultForAddress.source.sources)
-          if (generatedSources) {
-            for (const genSource of generatedSources) {
-              astSources[genSource.name] = { id: genSource.id, ast: genSource.ast }
-              sources[genSource.name] = { content: genSource.contents }
-            }
-          }
-          var lineColumnPos = await this.offsetToLineColumnConverter.offsetToLineColumn(rawLocation, rawLocation.file, sources, astSources)
-          this.event.trigger('newSourceLocation', [lineColumnPos, rawLocation, generatedSources, address])
-        } else {
-          this.event.trigger('newSourceLocation', [null])
+      const rawLocation = await this.debugger.callTree.sourceLocationTracker.getValidSourceLocationFromVMTraceIndex(address, index, compilationResultForAddress.data.contracts, compilationResultForAddress.data.sources)
+      if (!rawLocation || rawLocation.file === -1) {
+        return this.event.trigger('newSourceLocation', [null])
+      }
+      if (compilationResultForAddress && compilationResultForAddress.data) {
+        const generatedSources = this.debugger.callTree.sourceLocationTracker.getGeneratedSourcesFromAddress(address) || []
+        const astSources = Object.assign({}, compilationResultForAddress.data.sources)
+        const sources = Object.assign({}, compilationResultForAddress.source.sources)
+        for (const genSource of generatedSources) {
+          astSources[genSource.name] = { id: genSource.id, ast: genSource.ast }
+          sources[genSource.name] = { content: genSource.contents }
         }
-      }).catch((_error) => {
+        const lineColumnPos = await this.offsetToLineColumnConverter.offsetToLineColumn(rawLocation, rawLocation.file, sources, astSources)
+        this.event.trigger('newSourceLocation', [lineColumnPos, rawLocation, generatedSources, address])
+      } else {
         this.event.trigger('newSourceLocation', [null])
-      })
-      // })
+      }
     } catch (error) {
-      return console.log(error)
+      this.event.trigger('newSourceLocation', [null])
     }
   }
 
@@ -118,58 +123,62 @@ export class Debugger {
     this.debugger.web3 = web3
   }
 
-  debug (blockNumber, txNumber, tx, loadingCb): Promise<void> {
+  async debug (blockNumber, txNumber, tx, loadingCb) {
     const web3 = this.debugger.web3
 
-    return new Promise((resolve, reject) => {
-      if (this.debugger.traceManager.isLoading) {
-        return resolve()
-      }
+    if (this.debugger.traceManager.isLoading) {
+      throw new Error('Trace is already loading')
+    }
 
-      if (tx) {
-        if (!tx.to) {
-          tx.to = contractCreationToken('0')
-        }
-        this.debugTx(tx, loadingCb)
-        return resolve()
-      }
+    if (tx) return this.debugTx({ ...tx, to: tx.to || contractCreationToken('0') }, loadingCb)
 
+    if (!web3 || !web3.eth) throw new Error('web3 not loaded')
+    if (typeof txNumber !== 'string') throw new Error('transaction identifier is required')
+
+    const transaction = await new Promise((resolve, reject) => {
       try {
-        if (txNumber.indexOf('0x') !== -1) {
-          return web3.eth.getTransaction(txNumber, (_error, tx) => {
-            if (_error) return reject(_error)
-            if (!tx) return reject(new Error('cannot find transaction ' + txNumber))
-            this.debugTx(tx, loadingCb)
-            return resolve()
-          })
-        }
-        web3.eth.getTransactionFromBlock(blockNumber, txNumber, (_error, tx) => {
+        const callback = (_error, resolvedTx) => {
           if (_error) return reject(_error)
-          if (!tx) return reject(new Error('cannot find transaction ' + blockNumber + ' ' + txNumber))
-          this.debugTx(tx, loadingCb)
-          return resolve()
-        })
-      } catch (e) {
-        return reject(e.message)
+          if (!resolvedTx) return reject(new Error('cannot find transaction ' + (txNumber.indexOf('0x') !== -1 ? txNumber : blockNumber + ' ' + txNumber)))
+          resolve(resolvedTx)
+        }
+        if (txNumber.indexOf('0x') !== -1) {
+          web3.eth.getTransaction(txNumber, callback)
+        } else {
+          web3.eth.getTransactionFromBlock(blockNumber, txNumber, callback)
+        }
+      } catch (error) {
+        reject(error)
       }
     })
+    return this.debugTx(transaction, loadingCb)
   }
 
-  debugTx (tx, loadingCb) {
+  async debugTx (tx, loadingCb) {
+    this._clearSessionListeners()
+    const generation = ++this._sessionGeneration
     this.step_manager = new DebuggerStepManager(this.debugger, this.debugger.traceManager)
+    this._stepManagerForSession = this.step_manager
 
-    this.debugger.codeManager.event.register('changed', this, (code, address, instIndex) => {
+    this._codeManagerForSession = this.debugger.codeManager
+    this._codeChangedHandler = (code, address, instIndex) => {
+      if (generation !== this._sessionGeneration || !this.step_manager || !this.vmDebuggerLogic) return
       if (!this.debugger.solidityProxy.contracts) return
-      this.debugger.callTree.sourceLocationTracker.getValidSourceLocationFromVMTraceIndex(address, this.step_manager.currentStepIndex, this.debugger.solidityProxy.contracts).then((sourceLocation) => {
+      this.debugger.callTree.sourceLocationTracker.getValidSourceLocationFromVMTraceIndex(address, this.step_manager.currentStepIndex, this.debugger.solidityProxy.contracts, this.debugger.solidityProxy.sources).then((sourceLocation) => {
+        if (generation !== this._sessionGeneration || !this.vmDebuggerLogic) return
         this.vmDebuggerLogic.event.trigger('sourceLocationChanged', [sourceLocation])
+      }).catch(() => {
+        // Code resolution can fail for an unknown or precompiled address.
       })
-    })
+    }
+    this._codeManagerForSession.event.register('changed', this, this._codeChangedHandler)
 
     this.vmDebuggerLogic = new VmDebuggerLogic(this.debugger, tx, this.step_manager, this.debugger.traceManager, this.debugger.codeManager, this.debugger.solidityProxy, this.debugger.callTree)
     this.vmDebuggerLogic.start()
 
-    this.step_manager.event.register('stepChanged', this, (stepIndex) => {
-      if (typeof stepIndex !== 'number' || stepIndex >= this.step_manager.traceLength) {
+    this._stepChangedHandler = (stepIndex) => {
+      if (generation !== this._sessionGeneration || !this.step_manager) return
+      if (typeof stepIndex !== 'number' || stepIndex < 0 || stepIndex >= this.step_manager.traceLength) {
         return this.event.trigger('endDebug')
       }
 
@@ -178,14 +187,41 @@ export class Debugger {
       this.vmDebuggerLogic.event.trigger('indexChanged', [stepIndex])
       this.vmDebuggerLogic.debugger.event.trigger('indexChanged', [stepIndex])
       this.registerAndHighlightCodeItem(stepIndex)
-    })
+    }
+    this._stepManagerForSession.event.register('stepChanged', this, this._stepChangedHandler)
 
-    loadingCb()
-    this.debugger.debug(tx)
+    if (loadingCb) loadingCb()
+    try {
+      return await this.debugger.debug(tx)
+    } catch (error) {
+      if (generation === this._sessionGeneration) this._clearSessionListeners()
+      throw error
+    }
+  }
+
+  _clearSessionListeners () {
+    if (this._codeManagerForSession && this._codeChangedHandler) {
+      this._codeManagerForSession.event.unregister('changed', this, this._codeChangedHandler)
+    }
+    if (this._stepManagerForSession && this._stepChangedHandler) {
+      this._stepManagerForSession.event.unregister('stepChanged', this, this._stepChangedHandler)
+    }
+    if (this.vmDebuggerLogic) this.vmDebuggerLogic.dispose()
+    if (this._stepManagerForSession) this._stepManagerForSession.dispose()
+    this._codeManagerForSession = null
+    this._codeChangedHandler = null
+    this._stepManagerForSession = null
+    this._stepChangedHandler = null
+    this.vmDebuggerLogic = null
   }
 
   unload () {
+    if (this._unloading) return
+    this._unloading = true
+    ++this._sessionGeneration
+    this._clearSessionListeners()
     this.debugger.unLoad()
     this.event.trigger('debuggerUnloaded')
+    this._unloading = false
   }
 }

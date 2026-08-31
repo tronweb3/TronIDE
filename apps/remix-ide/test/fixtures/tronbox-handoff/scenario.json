@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "environment": "javascript-vm-tron",
+  "compilerVersion": "0.8.20",
+  "transactions": [
+    {
+      "timestamp": 100,
+      "record": {
+        "type": "constructor",
+        "contractName": "Storage",
+        "parameters": [],
+        "from": "TFixtureSender"
+      }
+    },
+    {
+      "timestamp": 200,
+      "record": {
+        "type": "function",
+        "name": "store",
+        "to": "created{100}",
+        "parameters": ["42"],
+        "from": "TFixtureSender"
+      }
+    }
+  ]
+}

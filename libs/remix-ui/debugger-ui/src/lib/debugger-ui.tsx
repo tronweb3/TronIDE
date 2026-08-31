@@ -17,7 +17,7 @@
  * limitations under the License.
  */
 
-import React, { useState, useEffect } from 'react' // eslint-disable-line
+import React, { useState, useEffect, useRef } from 'react' // eslint-disable-line
 import TxBrowser from './tx-browser/tx-browser' // eslint-disable-line
 import StepManager from './step-manager/step-manager' // eslint-disable-line
 import VmDebugger from './vm-debugger/vm-debugger' // eslint-disable-line
@@ -38,6 +38,7 @@ const isValidHash = (hash) => {
 }
 export const DebuggerUI = (props: DebuggerUIProps) => {
   const debuggerModule = props.debuggerAPI
+  const debuggerRef = useRef(null)
   const [state, setState] = useState({
     isActive: false,
     statusMessage: '',
@@ -58,7 +59,7 @@ export const DebuggerUI = (props: DebuggerUIProps) => {
   })
 
   useEffect(() => {
-    return unLoad()
+    return () => unLoad()
   }, [])
 
   debuggerModule.onDebugRequested((hash) => {
@@ -111,36 +112,41 @@ export const DebuggerUI = (props: DebuggerUIProps) => {
       'newSourceLocation',
       async (lineColumnPos, rawLocation, generatedSources, address) => {
         if (!lineColumnPos) return
-        const contracts = await debuggerModule.fetchContractAndCompile(
-          address || currentReceipt.contractAddress || currentReceipt.to,
-          currentReceipt
-        )
-        if (contracts) {
-          let path = contracts.getSourceName(rawLocation.file)
-          if (!path) {
-            // check in generated sources
-            for (const source of generatedSources) {
-              if (source.id === rawLocation.file) {
-                path = `browser/.debugger/generated-sources/${source.name}`
-                let content
-                try {
-                  content = await debuggerModule.getFile(path)
-                } catch (e) {
-                  const message =
-                    "Unable to fetch generated sources, the file probably doesn't exist yet."
-                  console.log(message, ' ', e)
+        if (!rawLocation || !currentReceipt) return
+        try {
+          const contracts = await debuggerModule.fetchContractAndCompile(
+            address || currentReceipt.contractAddress || currentReceipt.to,
+            currentReceipt
+          )
+          if (contracts) {
+            let path = contracts.getSourceName(rawLocation.file)
+            if (!path) {
+              // check in generated sources
+              for (const source of generatedSources || []) {
+                if (source.id === rawLocation.file) {
+                  path = `browser/.debugger/generated-sources/${source.name}`
+                  let content
+                  try {
+                    content = await debuggerModule.getFile(path)
+                  } catch (e) {
+                    const message =
+                      "Unable to fetch generated sources, the file probably doesn't exist yet."
+                    console.log(message, ' ', e)
+                  }
+                  if (content !== source.contents) {
+                    await debuggerModule.setFile(path, source.contents)
+                  }
+                  break
                 }
-                if (content !== source.contents) {
-                  await debuggerModule.setFile(path, source.contents)
-                }
-                break
               }
             }
+            if (path) {
+              await debuggerModule.discardHighlight()
+              await debuggerModule.highlight(lineColumnPos, path)
+            }
           }
-          if (path) {
-            await debuggerModule.discardHighlight()
-            await debuggerModule.highlight(lineColumnPos, path)
-          }
+        } catch (error) {
+          console.error('Unable to highlight debugger source location', error)
         }
       }
     )
@@ -167,7 +173,11 @@ export const DebuggerUI = (props: DebuggerUIProps) => {
   }
 
   const unLoad = () => {
-    if (state.debugger) state.debugger.unload()
+    if (debuggerRef.current) {
+      const activeDebugger = debuggerRef.current
+      debuggerRef.current = null
+      activeDebugger.unload()
+    }
     setState((prevState) => {
       return {
         ...prevState,
@@ -250,6 +260,14 @@ export const DebuggerUI = (props: DebuggerUIProps) => {
       console.log(e.message)
       return
     }
+    if (!currentReceipt) {
+      setState((prevState) => ({
+        ...prevState,
+        debugging: false,
+        validationError: 'Transaction receipt not found.'
+      }))
+      return
+    }
 
     const debuggerInstance = new Debugger({
       web3,
@@ -285,6 +303,7 @@ export const DebuggerUI = (props: DebuggerUIProps) => {
             validationError: ''
           }
         })
+        debuggerRef.current = debuggerInstance
       })
       .catch((error) => {
         if (JSON.stringify(error) !== '{}') {

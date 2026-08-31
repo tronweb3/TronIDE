@@ -7,21 +7,16 @@
 'use strict'
 
 /**
- * Tab-scoped GitHub credential store.
+ * Tab-scoped TronIDE BFF session store.
  *
- * The GitHub access token obtained from the OAuth popup (or a pasted PAT) is
- * mirrored to sessionStorage so a normal refresh keeps the connection. It is
- * deliberately never written to localStorage or the config store: closing the
- * tab still clears it, and another tab does not inherit it.
- *
- * Every reader of the connect token goes through getToken()/getLogin(); the
- * header (and any other live consumer) subscribes via onChange() and/or the
- * existing `tronideGithubConnectionChanged` window event, which setToken/
- * clearToken keep dispatching so nothing else has to change.
+ * The browser stores only an opaque, origin-bound TronIDE session handle. The
+ * GitHub access token is encrypted in the server-side BFF and is never returned
+ * to this module, web storage, frontend state, or browser request headers.
  */
 
-const TOKEN_KEY = 'tronide.github.token'
+const SESSION_KEY = 'tronide.github.session'
 const USER_KEY = 'tronide.github.user'
+const LEGACY_TOKEN_KEY = 'tronide.github.token'
 
 function readSession (key) {
   try {
@@ -40,30 +35,35 @@ function writeSession (key, value) {
     if (value) window.sessionStorage.setItem(key, value)
     else window.sessionStorage.removeItem(key)
   } catch (error) {
-    // Privacy modes can deny web storage. The in-memory copy still keeps the
-    // current page usable; only refresh continuity is lost in that case.
     console.debug(`[githubAuth] failed to persist ${key} for this tab`, error)
   }
 }
 
-// Module-level singleton state is authoritative while the page is running and
-// is hydrated from this tab's session after a refresh.
-let _token = readSession(TOKEN_KEY)
-let _login = _token ? readSession(USER_KEY) : ''
+// Never migrate a legacy GitHub token into the BFF session slot. Remove it on
+// module load so an upgrade immediately closes the old credential channel.
+writeSession(LEGACY_TOKEN_KEY, '')
+try {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    window.localStorage.removeItem(LEGACY_TOKEN_KEY)
+    window.localStorage.removeItem(USER_KEY)
+    window.localStorage.removeItem(SESSION_KEY)
+  }
+} catch (error) {
+  console.debug('[githubAuth] failed to scrub legacy persistent GitHub state', error)
+}
+let _session = readSession(SESSION_KEY)
+let _login = _session ? readSession(USER_KEY) : ''
+if (!_session) writeSession(USER_KEY, '')
 const _listeners = new Set()
 
 function notify () {
-  // 1) Local subscribers (e.g. components that imported this module directly).
   for (const cb of Array.from(_listeners)) {
     try {
-      cb({ connected: !!_token, login: _login })
+      cb({ connected: !!_session, login: _login })
     } catch (error) {
-      // A broken listener must not break the connect/disconnect flow or starve
-      // the other listeners — surface it but keep going (no silent failure).
       console.debug('[githubAuth] onChange listener threw', error)
     }
   }
-  // 2) The existing cross-component signal the header already listens for.
   try {
     if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
       window.dispatchEvent(new CustomEvent('tronideGithubConnectionChanged'))
@@ -73,67 +73,58 @@ function notify () {
   }
 }
 
-/**
- * @returns {string} the current tab-session token, '' when not connected.
- */
-export function getToken () {
-  return _token
+/** @returns {string} opaque TronIDE BFF session handle, or ''. */
+export function getSession () {
+  return _session
 }
 
-/**
- * @returns {string} the connected GitHub login, '' when unknown/not connected.
- */
+/** @returns {boolean} whether this tab has a BFF session handle. */
+export function isConnected () {
+  return !!_session
+}
+
+/** @returns {string} verified GitHub login, or ''. */
 export function getLogin () {
   return _login
 }
 
 /**
- * Store the connected token (and optional login) for this tab and notify listeners.
- * @param {string} token the GitHub access token
- * @param {string} [login] the GitHub login, if already known
- */
-export function setToken (token, login) {
-  _token = String(token || '').trim()
-  if (login !== undefined) _login = String(login || '').trim()
-  writeSession(TOKEN_KEY, _token)
-  writeSession(USER_KEY, _token ? _login : '')
-  notify()
-}
-
-/**
- * Update just the connected login (e.g. once the /user lookup resolves) and
- * notify listeners. No-op effect on the token.
+ * Store the opaque BFF session and verified login for this tab.
+ * @param {string} session
  * @param {string} [login]
  */
+export function setSession (session, login) {
+  _session = String(session || '').trim()
+  if (login !== undefined) _login = String(login || '').trim()
+  writeSession(SESSION_KEY, _session)
+  writeSession(USER_KEY, _session ? _login : '')
+  writeSession(LEGACY_TOKEN_KEY, '')
+  notify()
+}
+
+/** @param {string} [login] */
 export function setLogin (login) {
   _login = String(login || '').trim()
-  writeSession(USER_KEY, _token ? _login : '')
+  writeSession(USER_KEY, _session ? _login : '')
   notify()
 }
 
-/**
- * Clear the token and login from memory and this tab, then notify listeners.
- */
-export function clearToken () {
-  _token = ''
+/** Clear the local BFF session handle and identity. */
+export function clearSession () {
+  _session = ''
   _login = ''
-  writeSession(TOKEN_KEY, '')
+  writeSession(SESSION_KEY, '')
   writeSession(USER_KEY, '')
+  writeSession(LEGACY_TOKEN_KEY, '')
   notify()
 }
 
-/**
- * Subscribe to connect/disconnect changes.
- * @param {(state: { connected: boolean, login: string }) => void} cb
- */
+/** @param {(state: { connected: boolean, login: string }) => void} cb */
 export function onChange (cb) {
   if (typeof cb === 'function') _listeners.add(cb)
 }
 
-/**
- * Unsubscribe a previously-registered listener.
- * @param {Function} cb
- */
+/** @param {Function} cb */
 export function offChange (cb) {
   _listeners.delete(cb)
 }

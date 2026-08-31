@@ -22,7 +22,9 @@ import EventEmitter from 'events'
 
 class ModalFooterOKClick extends EventEmitter {
   command (this: NightwatchBrowser): NightwatchBrowser {
-    this.api.waitForElementVisible('#modal-footer-ok').perform((client, done) => {
+    // Some forms are taller than the headless viewport, so the footer can be
+    // present but reported as not visible even though a DOM click is valid.
+    this.api.waitForElementPresent('#modal-footer-ok').perform((client, done) => {
       this.api.execute(function () {
         const elem = document.querySelector('#modal-footer-ok') as HTMLElement
 

@@ -19,6 +19,8 @@
 
 'use strict'
 
+const { decodeUrlParameter } = require('./url-param-security')
+
 // Extract a bare gist id from a raw param that may be a canonical gist.github.com
 // URL or a plain id. Do not search for an id-shaped substring: doing so lets
 // attacker-controlled prefixes/suffixes and query values pass validation.
@@ -29,7 +31,9 @@
 //   id   -> the matched bare gist id
 function normalizeGistId (raw) {
   if (raw === undefined || raw === null || raw === '') return ''
-  const value = String(raw).trim()
+  const decoded = decodeUrlParameter(String(raw), 4096)
+  if (decoded === null) return null
+  const value = decoded.trim()
   const idPattern = /^[0-9A-Fa-f]{20,40}$/
   if (idPattern.test(value)) return value
 

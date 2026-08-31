@@ -31,8 +31,40 @@ import * as pathModule from 'path'
 function absolutePath (path: string, sharedFolder:string): string {
   path = normalizePath(path)
   path = pathModule.resolve(sharedFolder, path)
-  if (!isSubDirectory(pathModule.resolve(process.cwd(), sharedFolder), path)) throw new Error('Cannot read/write to path outside shared folder.')
+  const sharedRoot = pathModule.resolve(process.cwd(), sharedFolder)
+  if (!isSubDirectory(sharedRoot, path)) throw new Error('Cannot read/write to path outside shared folder.')
+  assertNoSymlinkComponents(sharedRoot, path)
   return path
+}
+
+/**
+ * Keep the lexical path check above from being bypassed by a symlink in an
+ * existing parent directory. Missing leaf components are allowed (writes and
+ * mkdir create them), but every component that already exists must be a real
+ * directory/file inside the shared tree.
+ */
+function assertNoSymlinkComponents (sharedRoot: string, target: string): void {
+  let rootStat
+  try {
+    rootStat = fs.lstatSync(sharedRoot)
+  } catch (error) {
+    throw new Error('Shared folder is not available.')
+  }
+  if (rootStat.isSymbolicLink()) throw new Error('Symbolic links are not allowed in the shared folder.')
+
+  const relative = pathModule.relative(sharedRoot, target)
+  let current = sharedRoot
+  for (const component of relative ? relative.split(pathModule.sep) : []) {
+    current = pathModule.join(current, component)
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        throw new Error('Symbolic links are not allowed in the shared folder.')
+      }
+    } catch (error) {
+      if (error && error.code === 'ENOENT') break
+      throw error
+    }
+  }
 }
 
 /**

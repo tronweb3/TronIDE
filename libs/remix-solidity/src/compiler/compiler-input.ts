@@ -20,6 +20,7 @@
 'use strict'
 
 import { CompilerInput, Source, CompilerInputOptions } from './types'
+import { normalizeEvmVersion } from './evm-version'
 
 export default (sources: Source, opts: CompilerInputOptions): string => {
   const o: CompilerInput = {
@@ -39,8 +40,16 @@ export default (sources: Source, opts: CompilerInputOptions): string => {
       }
     }
   }
-  if (opts.evmVersion) {
+  // `tron` is TronIDE's logical TVM target, not a value understood by the
+  // Solidity Standard JSON `settings.evmVersion` field. Tron solc already
+  // applies its TVM-compatible defaults and rejects the literal `tron` with
+  // "Invalid EVM version requested". Keep the target in the higher-level
+  // compiler state, but omit it from the input sent to solc.
+  if (opts.evmVersion && normalizeEvmVersion(opts.evmVersion) !== 'tron') {
     o.settings.evmVersion = opts.evmVersion
+  }
+  if (Array.isArray(opts.remappings) && opts.remappings.length > 0) {
+    o.settings.remappings = opts.remappings
   }
   if (opts.language) {
     o.language = opts.language

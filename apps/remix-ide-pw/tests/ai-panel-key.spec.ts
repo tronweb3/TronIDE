@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test'
-import { gotoHome, treeItem, ensureFilePanel, getEditorText } from './helpers'
+import { test, expect, Page } from '@playwright/test'
+import { gotoHome, treeItem, ensureFilePanel, getEditorText, toolResultSummary, dismissWelcomeModal } from './helpers'
 
 // TC-AI-002 (v2.3.2): the AI key field's format hint is advisory and must not
 // misfire. A valid-shaped key pasted WITH surrounding whitespace (the classic
@@ -10,11 +10,244 @@ import { gotoHome, treeItem, ensureFilePanel, getEditorText } from './helpers'
 
 const FAKE_VALID_SHAPE = 'sk-ant-api03-' + 'a'.repeat(77) // 90 chars, charset-safe, obviously fake
 
+async function setChatState (page: Page, state: unknown) {
+  await page.evaluate(async (nextState) => {
+    const input = document.querySelector('.textarea-wrapper textarea') as any
+    const reactKey = input && Object.keys(input).find((key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$'))
+    let fiber = reactKey ? input[reactKey] : null
+    for (let depth = 0; fiber && depth < 100; depth++, fiber = fiber.return) {
+      if (fiber.stateNode && typeof fiber.stateNode.executeAiTool === 'function') {
+        await new Promise<void>((resolve) => fiber.stateNode.setState(nextState, resolve))
+        return
+      }
+    }
+    throw new Error('Unable to locate the Chat component instance')
+  }, state)
+}
+
 test.describe('AI panel API key input', () => {
+  test('TC-AI-BOA-001: Bank of AI is default and loads its compatible models only on demand', { tag: '@gate' }, async ({ page }) => {
+    let authorization = ''
+    let chatKey = ''
+    await page.route('https://api.bankofai.io/v1/models', async (route) => {
+      authorization = route.request().headers().authorization || ''
+      return route.fulfill({
+        status: 200,
+        headers: { 'access-control-allow-origin': '*' },
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            { id: 'claude-sonnet-bank', name: 'Claude Sonnet Bank', supported_endpoint_types: ['anthropic'] },
+            { id: 'openai-only-bank', name: 'OpenAI Only', supported_endpoint_types: ['openai'] }
+          ]
+        })
+      })
+    })
+    await page.route('https://api.bankofai.io/v1/messages', async (route) => {
+      chatKey = route.request().headers()['x-api-key'] || ''
+      return route.fulfill({
+        status: 200,
+        headers: { 'access-control-allow-origin': '*' },
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'bank-chat', type: 'message', role: 'assistant', model: 'claude-sonnet-bank',
+          content: [{ type: 'text', text: 'BANK-CHAT-OK' }], stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 }
+        })
+      })
+    })
+
+    await gotoHome(page)
+    await expect(page.locator('[data-id="aiModelVendorSelect"]')).toContainText('Bank of AI')
+    await expect(page.locator('[data-id="bankOfAIEndpointTypeSelect"]')).toContainText('Anthropic-compatible')
+    await expect(page.locator('[data-id="aiBaseUrlInput"]')).toHaveValue('')
+    await expect(page.locator('[data-id="bankOfAIProviderNotice"]')).toContainText('multi-model gateway')
+    await expect(page.getByRole('link', { name: 'Get a Bank of AI API Key' })).toHaveAttribute('href', /source=tronide/)
+    await expect(page.locator('[data-id="bankOfAILoadModels"]')).toBeDisabled()
+
+    await page.locator('[data-id="aiApiKeyInput"]').fill('bank-test-key')
+    await expect(page.locator('[data-id="bankOfAILoadModels"]')).toBeEnabled()
+    await page.locator('[data-id="bankOfAILoadModels"]').click()
+    await expect(page.locator('[data-id="bankOfAILoadModels"]')).toContainText('Load available models')
+    await expect(page.getByText('1 models loaded in memory.')).toBeVisible()
+    await expect(page.locator('[data-id="aiModelSelect"]')).toContainText('Claude Sonnet Bank')
+    expect(authorization).toBe('Bearer bank-test-key')
+
+    await page.locator('.textarea-wrapper textarea').fill('reply through Bank of AI')
+    await page.locator('.textarea-wrapper textarea').press('Enter')
+    await expect(page.getByText('BANK-CHAT-OK').first()).toBeVisible({ timeout: 15_000 })
+    expect(chatKey).toBe('bank-test-key')
+    await page.locator('.ai-topset-wrapper .ant-collapse-header').click()
+    await page.locator('[data-id="aiLocalMetricsDetails"] summary').click()
+    await expect(page.locator('[data-id="bankOfAILocalMetrics"]')).toContainText('requests 1 · succeeded 1 · failed 0')
+  })
+
+  test('TC-AI-BOA-003: a legacy custom-gateway key never reaches Bank model discovery', { tag: '@gate' }, async ({ page }) => {
+    let officialModelRequests = 0
+    await page.route('https://api.bankofai.io/v1/models', async (route) => {
+      officialModelRequests++
+      return route.fulfill({ status: 500, body: 'must not be requested' })
+    })
+
+    await gotoHome(page)
+    await page.locator('[data-id="aiModelVendorSelect"]').click()
+    await page.locator('.ant-select-item-option').filter({ hasText: /^Anthropic$/ }).click()
+    await page.locator('[data-id="aiBaseUrlInput"]').fill('https://gateway.example/v1')
+    await page.locator('[data-id="aiApiKeyInput"]').fill('legacy-custom-gateway-key')
+
+    await page.locator('[data-id="aiModelVendorSelect"]').click()
+    await page.locator('.ant-select-item-option').filter({ hasText: /^Bank of AI$/ }).click()
+    await expect(page.locator('[data-id="aiBaseUrlInput"]')).toHaveValue('https://gateway.example/v1')
+    await expect(page.locator('[data-id="aiApiKeyInput"]')).toHaveValue('legacy-custom-gateway-key')
+    await expect(page.locator('[data-id="bankOfAILoadModels"]')).toBeDisabled()
+    await expect(page.locator('[data-id="bankOfAIModelLoadHelp"]')).toContainText('disabled for custom gateways')
+    expect(officialModelRequests).toBe(0)
+  })
+
+  test('TC-AI-BOA-004: API keys never follow request URL edits to a different origin', { tag: '@gate' }, async ({ page }) => {
+    await gotoHome(page)
+    const keyInput = page.locator('[data-id="aiApiKeyInput"]')
+    const urlInput = page.locator('[data-id="aiBaseUrlInput"]')
+
+    await keyInput.fill('bank-official-key')
+    await urlInput.click()
+    await urlInput.pressSequentially('https://gateway.example/v1')
+    await expect(keyInput).toHaveValue('')
+
+    await keyInput.fill('gateway-only-key')
+    await urlInput.fill('https://other-gateway.example/v1')
+    await expect(keyInput).toHaveValue('')
+
+    // Returning to an exact provider + origin recalls only the key that the
+    // user entered there; it never resurrects the official key on an
+    // intermediate origin created while typing the URL.
+    await urlInput.fill('https://gateway.example/another-path')
+    await expect(keyInput).toHaveValue('gateway-only-key')
+    await urlInput.fill('')
+    await expect(keyInput).toHaveValue('bank-official-key')
+  })
+
+  test('TC-AI-BOA-002: Anthropic-compatible plain chat decodes streamed and non-streamed Bank replies', { tag: '@gate' }, async ({ page }) => {
+    let requests = 0
+    await page.route('https://api.bankofai.io/v1/messages', async (route) => {
+      requests++
+      const request = route.request().postDataJSON()
+      const headers = { 'access-control-allow-origin': '*' }
+      if (request.stream) {
+        const events = [
+          ['message_start', { type: 'message_start', message: { id: 'bank-stream', type: 'message', role: 'assistant', content: [], model: request.model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } }],
+          ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+          ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'BANK-STREAM-OK' } }],
+          ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+          ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } }],
+          ['message_stop', { type: 'message_stop' }]
+        ]
+        return route.fulfill({
+          status: 200,
+          headers: { ...headers, 'content-type': 'text/event-stream' },
+          body: events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join('')
+        })
+      }
+      return route.fulfill({
+        status: 200,
+        headers,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'bank-json', type: 'message', role: 'assistant', model: request.model,
+          content: [{ type: 'text', text: 'BANK-NONSTREAM-OK' }], stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 }
+        })
+      })
+    })
+
+    await gotoHome(page)
+    await page.locator('[data-id="aiWorkspaceActionsToggle"]').click({ force: true })
+    await page.locator('[data-id="aiApiKeyInput"]').fill('bank-test-key')
+
+    await page.locator('.textarea-wrapper textarea').fill('stream through Bank of AI')
+    await page.locator('.textarea-wrapper textarea').press('Enter')
+    await expect(page.getByText('BANK-STREAM-OK').first()).toBeVisible({ timeout: 15_000 })
+
+    // Sending a message collapses the settings panel. Re-open it and click the
+    // visible Ant checkbox label rather than its hidden native input.
+    const streamingLabel = page.locator('label.ant-checkbox-wrapper').filter({ hasText: 'Stream responses' })
+    if (!await streamingLabel.isVisible()) await page.locator('.ai-topset-wrapper .ant-collapse-header').click()
+    await expect(streamingLabel).toBeVisible()
+    await streamingLabel.click()
+    await expect(page.locator('[data-id="aiStreamingToggle"]')).not.toBeChecked()
+    await page.locator('.textarea-wrapper textarea').fill('reply without streaming')
+    await page.locator('.textarea-wrapper textarea').press('Enter')
+    await expect(page.getByText('BANK-NONSTREAM-OK').first()).toBeVisible({ timeout: 15_000 })
+    expect(requests).toBe(2)
+  })
+
+  test('TC-AI-TASK-RESUME-001: Continue after refresh keeps the task id and bounded entry context', { tag: '@gate' }, async ({ page }) => {
+    const GW = 'https://tron-resume.mock'
+    const address = 'TResumeExampleAddress123'
+    let requestBody = ''
+    await page.route(GW + '/**', async (route) => {
+      if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } })
+      requestBody = route.request().postData() || ''
+      return route.fulfill({
+        status: 200,
+        headers: { 'access-control-allow-origin': '*' },
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 'resume', type: 'message', role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: 'RESTORED-TASK-OK' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } })
+      })
+    })
+
+    await gotoHome(page)
+    await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('resume-test-key')
+    const now = Date.now()
+    const task = {
+      schemaVersion: 1,
+      taskId: 'task-persisted-resume',
+      goal: 'Continue preparing verification material',
+      source: 'deploy:deploy-next-verification',
+      workspace: 'default_workspace',
+      branch: null,
+      entry: { schemaVersion: 1, entryId: 'deploy-next-verification', source: 'deploy', context: { contractAddress: address, contractName: 'Storage', network: 'Nile' } },
+      status: 'waiting_for_user',
+      createdAt: now - 1000,
+      updatedAt: now
+    }
+    const record = {
+      schemaVersion: 1,
+      task,
+      steps: [{ stepId: 'persisted-step', taskId: task.taskId, toolName: 'check_verification', status: 'waiting_for_user', result: { ok: false, code: 'NOT_READY', summary: 'Waiting for the deployment context.', retryable: false, artifacts: [] } }],
+      artifacts: [],
+      workflowResult: null,
+      events: [{ type: 'step.finished', taskId: task.taskId, stepId: 'persisted-step', toolName: 'check_verification', status: 'waiting_for_user', at: now, result: { ok: false, code: 'NOT_READY', summary: 'Waiting for the deployment context.', retryable: false, artifacts: [] } }],
+      updatedAt: now
+    }
+    await setChatState(page, { aiTaskHistory: [record], activeKey: [] })
+
+    await page.locator('[data-id="aiTaskContinue"]').click()
+    await expect(page.locator('.textarea-wrapper textarea')).toHaveValue(task.goal)
+    await page.locator('.textarea-wrapper textarea').press('Enter')
+    await expect(page.getByText('RESTORED-TASK-OK').first()).toBeVisible({ timeout: 15_000 })
+
+    expect(requestBody).toContain(address)
+    expect(requestBody).toContain('Deployment context')
+    const activeTaskId = await page.evaluate(() => {
+      const input = document.querySelector('.textarea-wrapper textarea') as any
+      const reactKey = input && Object.keys(input).find((key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$'))
+      let fiber = reactKey ? input[reactKey] : null
+      for (let depth = 0; fiber && depth < 100; depth++, fiber = fiber.return) {
+        if (fiber.stateNode && typeof fiber.stateNode.executeAiTool === 'function') return fiber.stateNode._activeAiTask?.taskId || null
+      }
+      return null
+    })
+    expect(activeTaskId).toBe(task.taskId)
+  })
+
   test('TC-AI-002: padded key passes, short key hints, empty field is not an error', { tag: '@gate' }, async ({ page }) => {
     await gotoHome(page)
     const input = page.locator('[data-id="aiApiKeyInput"]')
     await input.waitFor({ state: 'visible', timeout: 15_000 })
+    // An untouched key field is an empty state, not a format error.
+    await expect(page.locator('[data-id="aiApiKeyHint"]')).toHaveCount(0)
 
     // An obviously-short paste raises the advisory hint.
     await input.fill('sk-short')
@@ -48,7 +281,7 @@ test.describe('AI panel API key input', () => {
       if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors })
       apiKeyHeader = req.headers()['x-api-key'] || ''
       hitUrl = req.url()
-      // Anthropic-shaped non-stream message response (the default vendor).
+      // Anthropic-shaped non-stream response (Bank of AI defaults to this API format).
       return route.fulfill({
         status: 200,
         headers: cors,
@@ -64,7 +297,7 @@ test.describe('AI panel API key input', () => {
 
     await gotoHome(page)
 
-    // Default vendor (Anthropic) with workspace actions on runs the
+    // Default Bank of AI provider with Anthropic-compatible workspace actions runs the
     // non-streaming tool loop, so the mock can answer with a single JSON body.
 
     // A short gateway key alone raises the format hint…
@@ -72,8 +305,11 @@ test.describe('AI panel API key input', () => {
     await keyInput.fill('sk-gw-shortkey-123')
     await expect(page.locator('[data-id="aiApiKeyHint"]')).toBeVisible()
 
-    // …and setting a request URL suppresses it (gateway keys are arbitrary).
+    // …and setting a request URL clears the origin-bound key. Re-entering the
+    // same short key for the custom gateway suppresses the official-format hint.
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await expect(keyInput).toHaveValue('')
+    await keyInput.fill('sk-gw-shortkey-123')
     await expect(page.locator('[data-id="aiApiKeyHint"]')).toHaveCount(0)
     await expect(page.locator('[data-id="aiBaseUrlHint"]')).toHaveCount(0)
 
@@ -126,8 +362,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
 
     // Ask for the file; the mocked model responds with a create_file tool call.
     await page.locator('.textarea-wrapper textarea').fill('please create the AiDemo contract')
@@ -137,6 +373,15 @@ test.describe('AI panel API key input', () => {
     const confirmModal = page.locator('.ant-modal-confirm')
     await expect(confirmModal).toBeVisible({ timeout: 15_000 })
     await expect(confirmModal).toContainText(FILE)
+    await expect(confirmModal).toContainText('Workspace/branch write lock: held by this task')
+    const heldLock = await page.evaluate(() => {
+      const raw = localStorage.getItem('tronide.ai.write-lock.v1')
+      return raw ? JSON.parse(raw) : null
+    })
+    expect(heldLock?.taskId).toMatch(/^task-/)
+    expect(heldLock?.toolName).toBe('create_file')
+    expect(heldLock?.context?.workspace).toBeTruthy()
+    expect(calls).toBe(1)
     await confirmModal.locator('.ant-btn-primary').click()
 
     // The loop finishes with the model's follow-up text…
@@ -146,6 +391,7 @@ test.describe('AI panel API key input', () => {
     expect(secondBody).toContain('Created ' + FILE)
     // …and the file really exists in the workspace tree.
     await expect(page.locator(`[data-id="treeViewLitreeViewItem${FILE}"]`)).toBeAttached({ timeout: 15_000 })
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('tronide.ai.write-lock.v1'))).toBeNull()
   })
 
   // TC-AI-004b (v2.3.2): "open X" opens the file in the editor via open_file —
@@ -171,8 +417,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('open the ballot contract')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -208,7 +454,7 @@ test.describe('AI panel API key input', () => {
         const sent = JSON.parse(req.postData() || '{}')
         const toolMsg = (sent.messages || []).find((m) => Array.isArray(m.content) && m.content.some((c) => c.type === 'tool_result'))
         const block = toolMsg && toolMsg.content.find((c) => c.type === 'tool_result')
-        toolResult = block ? String(block.content) : ''
+        toolResult = block ? toolResultSummary(block.content) : ''
       } catch (e) { toolResult = 'PARSE_ERROR' }
       return route.fulfill({
         status: 200, headers: cors, contentType: 'application/json',
@@ -217,8 +463,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('what is in this workspace?')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -253,7 +499,7 @@ test.describe('AI panel API key input', () => {
         const sent = JSON.parse(req.postData() || '{}')
         const toolMsg = (sent.messages || []).find((m) => Array.isArray(m.content) && m.content.some((c) => c.type === 'tool_result'))
         const block = toolMsg && toolMsg.content.find((c) => c.type === 'tool_result')
-        toolResult = block ? String(block.content) : ''
+        toolResult = block ? toolResultSummary(block.content) : ''
       } catch (e) { toolResult = 'PARSE_ERROR' }
       return route.fulfill({
         status: 200, headers: cors, contentType: 'application/json',
@@ -269,8 +515,8 @@ test.describe('AI panel API key input', () => {
     await f.click()
     await page.locator('#input').waitFor({ timeout: 10_000 })
 
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('explain the code I have open')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -302,8 +548,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('what tools do you have')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -337,8 +583,8 @@ test.describe('AI panel API key input', () => {
     // The file explorer is the default left panel; the compiler is not shown.
     await expect(page.locator('[data-id="compilerContainerCompileBtn"]')).toBeHidden()
 
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('compile the storage contract')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -367,15 +613,15 @@ test.describe('AI panel API key input', () => {
         const sent = JSON.parse(req.postData() || '{}')
         const msg = (sent.messages || []).find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
-        toolResult = block ? String(block.content) : ''
+        toolResult = block ? toolResultSummary(block.content) : ''
       } catch (e) { toolResult = 'PARSE_ERROR' }
       return route.fulfill({ status: 200, headers: cors, contentType: 'application/json',
         body: JSON.stringify({ ...common, content: [{ type: 'text', text: 'COMPILE-DONE' }], stop_reason: 'end_turn' }) })
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('compile contracts/Storage.sol')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -403,8 +649,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('compile the storage contract')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -432,8 +678,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('think hard about something')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -452,29 +698,41 @@ test.describe('AI panel API key input', () => {
   // from the user's own submitted messages.
   test('TC-AI-010: ArrowUp/Down recall previously-sent questions', { tag: '@gate' }, async ({ page }) => {
     const GW = 'https://tron-pw-gateway.mock'
+    let replies = 0
     // Answer instantly so each submit completes and becomes history.
     await page.route(GW + '/**', async (route) => {
       const req = route.request()
       const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' }
       if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors })
+      replies++
       return route.fulfill({
-        status: 200, headers: cors, contentType: 'application/json',
-        body: JSON.stringify({ id: 'm', type: 'message', role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } })
+        status: 200,
+        headers: cors,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: `m-${replies}`,
+          type: 'message',
+          role: 'assistant',
+          model: 'claude-opus-4-8',
+          content: [{ type: 'text', text: `HISTORY-OK-${replies}` }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 }
+        })
       })
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
 
     const box = page.locator('.textarea-wrapper textarea')
     // Send two questions so there is a history to recall.
     await box.fill('first question')
     await box.press('Enter')
-    await expect(box).toHaveValue('', { timeout: 10_000 })
+    await expect(page.getByText('HISTORY-OK-1').first()).toBeVisible({ timeout: 15_000 })
     await box.fill('second question')
     await box.press('Enter')
-    await expect(box).toHaveValue('', { timeout: 10_000 })
+    await expect(page.getByText('HISTORY-OK-2').first()).toBeVisible({ timeout: 15_000 })
 
     // Type a draft, then ArrowUp recalls the newest, then the older.
     await box.fill('draft in progress')
@@ -509,8 +767,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('hello?')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -541,8 +799,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
 
     const box = page.locator('.textarea-wrapper textarea')
     // Build one history entry so ArrowUp WOULD recall if unguarded.
@@ -589,7 +847,7 @@ test.describe('AI panel API key input', () => {
     await box.fill('what does my code do?')
     await box.press('Enter')
 
-    await expect(page.locator('#chat-wrapper-id').getByText(/TRON IDE AI Assistant.*set the API Key/i).first())
+    await expect(page.locator('#chat-wrapper-id').getByText(/TRON IDE AI Assistant.*(?:set|add).*API key/i).first())
       .toBeVisible({ timeout: 10_000 })
     await expect(page.locator('#chat-wrapper-id').getByText(/Read current file error/i)).toHaveCount(0)
   })
@@ -599,6 +857,8 @@ test.describe('AI panel API key input', () => {
   test('TC-AI-015: revealed API key re-masks on blur', { tag: '@gate' }, async ({ page }) => {
     await gotoHome(page)
     const input = page.locator('[data-id="aiApiKeyInput"]')
+    await expect(page.locator('[data-id="aiKeySecurityNotice"]')).toContainText('API key stays in memory only and clears on panel close or reload')
+    await expect(page.locator('[data-id="aiKeySecurityNotice"]')).toContainText('low-limit, non-production key')
     await input.fill('sk-some-secret-key-123')
     await expect(input).toHaveAttribute('type', 'password')
 
@@ -610,7 +870,26 @@ test.describe('AI panel API key input', () => {
     await expect(input).toHaveAttribute('type', 'password')
   })
 
-  // TC-AI-016 (v2.3.2): with Anthropic + workspace actions (both defaults) the
+  test('TC-AI-015b: API key clears on reload and when the AI panel closes', { tag: '@gate' }, async ({ page }) => {
+    await gotoHome(page)
+    const input = page.locator('[data-id="aiApiKeyInput"]')
+    await input.fill('release-test-key-placeholder')
+
+    await page.reload()
+    await dismissWelcomeModal(page)
+    await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+    await expect(input).toHaveValue('')
+
+    await input.fill('release-test-key-placeholder')
+    const toggle = page.getByRole('button', { name: 'Toggle AI Panel' })
+    await toggle.click()
+    await expect(page.locator('[data-id="remixIdeAiPanel"]')).toBeHidden()
+    await toggle.click()
+    await expect(page.locator('[data-id="remixIdeAiPanel"]')).toBeVisible()
+    await expect(input).toHaveValue('')
+  })
+
+  // TC-AI-016 (v2.3.2): with the default tool-capable provider + workspace actions the
   // reply is the non-streaming tool loop, so the streaming checkbox is inert —
   // it must LOOK inert (disabled + note) instead of silently ignored, and come
   // back alive when workspace actions are turned off.
@@ -618,11 +897,11 @@ test.describe('AI panel API key input', () => {
     await gotoHome(page)
     const streaming = page.locator('[data-id="aiStreamingToggle"]')
     await expect(streaming).toBeDisabled()
-    await expect(page.getByText(/not used while workspace actions are on/i)).toBeVisible()
+    await expect(page.getByText(/unavailable with workspace actions/i)).toBeVisible()
 
     await page.locator('[data-id="aiWorkspaceActionsToggle"]').click({ force: true })
     await expect(streaming).toBeEnabled()
-    await expect(page.getByText(/not used while workspace actions are on/i)).toHaveCount(0)
+    await expect(page.getByText(/unavailable with workspace actions/i)).toHaveCount(0)
   })
 
   // TC-AI-017 (v2.3.2): Esc while the create_file confirmation is open belongs
@@ -649,8 +928,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('create the esc test contract')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -664,7 +943,7 @@ test.describe('AI panel API key input', () => {
 
     // the write was rejected and fed back, the LOOP survived to the next turn…
     await expect(page.getByText('REJECTION-UNDERSTOOD').first()).toBeVisible({ timeout: 15_000 })
-    expect(secondBody).toContain('User rejected the write')
+    expect(secondBody).toContain('User rejected create_file')
     // …and nothing was aborted
     await expect(page.locator('#chat-wrapper-id').getByText('⏹ Stopped.')).toHaveCount(0)
     await expect(page.locator(`[data-id="treeViewLitreeViewItemcontracts/EscTest.sol"]`)).toHaveCount(0)
@@ -684,8 +963,8 @@ test.describe('AI panel API key input', () => {
     await gotoHome(page)
     // turn OFF workspace actions → Anthropic goes through the streaming path
     await page.locator('[data-id="aiWorkspaceActionsToggle"]').click({ force: true })
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('stream something long')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -725,8 +1004,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
     await page.locator('.textarea-wrapper textarea').fill('switch the compiler to 9.9.9')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 
@@ -762,8 +1041,8 @@ test.describe('AI panel API key input', () => {
     })
 
     await gotoHome(page)
-    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-stopbtn-123')
     await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+    await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-stopbtn-123')
     await page.locator('.textarea-wrapper textarea').fill('ping')
     await page.locator('.textarea-wrapper textarea').press('Enter')
 

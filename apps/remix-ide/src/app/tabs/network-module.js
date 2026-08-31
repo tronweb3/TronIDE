@@ -20,11 +20,14 @@
 import { Plugin } from '@remixproject/engine'
 import * as packageJson from '../../../../../package.json'
 import { Web3 } from 'web3'
+const { withUserPermission } = require('../ui/permission-security')
 
 export const profile = {
   name: 'network',
   description: 'Manage the network (mainnet, ropsten, goerli...) and the provider (web3, vm, injected)',
   methods: ['getNetworkProvider', 'getEndpoint', 'detectNetwork', 'addNetwork', 'removeNetwork'],
+  events: ['providerChanged'],
+  permission: true,
   version: packageJson.version,
   kind: 'network'
 }
@@ -40,6 +43,12 @@ export class NetworkModule extends Plugin {
     // TODO: See with remix-lib to make sementic coherent
     this.blockchain.event.register('contextChanged', (provider) => {
       this.emit('providerChanged', provider)
+    })
+  }
+
+  callPluginMethod (key, args) {
+    return withUserPermission(this, key, `use network capability ${key}`, () => {
+      return super.callPluginMethod(key, args)
     })
   }
 

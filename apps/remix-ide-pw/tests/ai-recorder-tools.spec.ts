@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
-import { dismissWelcomeModal } from './helpers'
+import { dismissWelcomeModal, toolResultSummary, useBuiltinCompiler } from './helpers'
 
 // save_recording / replay_recording: snapshot the auto-recorded deploy flow to
 // scenario.json, then re-execute it. Deterministic on the JS VM: compile +
@@ -15,8 +15,8 @@ async function openHome (page: Page) {
   await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
 }
 async function setKeyAndGateway (page: Page) {
-  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
   await page.locator('[data-id="aiBaseUrlInput"]').fill(GW)
+  await page.locator('[data-id="aiApiKeyInput"]').fill('sk-gw-shortkey-123')
 }
 async function ask (page: Page, q: string) {
   await page.locator('.textarea-wrapper textarea').fill(q)
@@ -31,13 +31,14 @@ async function compileStorageOnVM (page: Page) {
   }
   await f.click()
   await page.locator('#icon-panel div[plugin="solidity"]').click()
+  await useBuiltinCompiler(page)
   await page.locator('[data-id="compilerContainerCompileBtn"]').click()
   await expect(page.locator('[data-id="compiledContracts"]')).toContainText('Storage', { timeout: 60_000 })
   await page.locator('#icon-panel div[plugin="udapp"]').click()
   await page.locator('#selectExEnvOptions').waitFor({ timeout: 15_000 })
   const vmVal = await page.evaluate(() => {
     const sel = document.querySelector('#selectExEnvOptions') as HTMLSelectElement
-    const opt = [...sel.options].find((o) => /javascript vm/i.test(o.textContent || ''))
+    const opt = Array.from(sel.options).find((o) => /javascript vm/i.test(o.textContent || ''))
     return opt ? opt.value : null
   })
   if (vmVal) await page.selectOption('#selectExEnvOptions', vmVal)
@@ -192,7 +193,7 @@ test.describe('AI recorder tools (save / replay)', () => {
         if (Array.isArray(sent.tools)) cap.toolNames = sent.tools.map((t: any) => t.name)
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
-        if (block) cap.results.push(String(block.content))
+        if (block) cap.results.push(toolResultSummary(block.content))
       } catch (e) { /* first turn */ }
       const common = { id: 'm' + calls, type: 'message', role: 'assistant', model: 'claude-opus-4-8', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }
       const step = plan[calls]
@@ -273,7 +274,7 @@ test.describe('AI recorder tools (save / replay)', () => {
         const sent = JSON.parse(req.postData() || '{}')
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
-        if (block) { const s = String(block.content); cap.results.push(s); const m = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/); if (m) deployedAddr = m[1] }
+        if (block) { const s = toolResultSummary(block.content); cap.results.push(s); const m = s.match(/at (0x[0-9a-fA-F]{40}|T[1-9A-HJ-NP-Za-km-z]{33})/); if (m) deployedAddr = m[1] }
       } catch (e) { /* first turn */ }
       const common = { id: 'm' + calls, type: 'message', role: 'assistant', model: 'claude-opus-4-8', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }
       const step = plan[calls]
@@ -316,6 +317,7 @@ test.describe('AI recorder tools (save / replay)', () => {
     await page.locator('#input').waitFor({ timeout: 10_000 })
     await page.evaluate((src) => { const el = document.getElementById('input') as any; el.editor.session.setValue(src) }, source)
     await page.locator('#icon-panel div[plugin="solidity"]').click()
+    await useBuiltinCompiler(page)
     await page.locator('[data-id="compilerContainerCompileBtn"]').click()
     await expect(page.locator('[data-id="compiledContracts"]')).toContainText('Guard', { timeout: 60_000 })
     await page.locator('#icon-panel div[plugin="udapp"]').click()
@@ -363,7 +365,7 @@ test.describe('AI recorder tools (save / replay)', () => {
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
         if (block) {
-          cap.results.push(String(block.content))
+          cap.results.push(toolResultSummary(block.content))
           if (cap.results.length === 1) await failSavedExistsChecks(page, 'scenario.json')
         }
       } catch (e) { /* first turn */ }
@@ -422,7 +424,7 @@ test.describe('AI recorder tools (save / replay)', () => {
         const sent = JSON.parse(req.postData() || '{}')
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
-        if (block) cap.results.push(String(block.content))
+        if (block) cap.results.push(toolResultSummary(block.content))
       } catch (e) { /* first turn */ }
       const common = { id: 'm' + calls, type: 'message', role: 'assistant', model: 'claude-opus-4-8', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }
       const step = plan[calls]
@@ -488,7 +490,7 @@ test.describe('AI recorder tools (save / replay)', () => {
         const sent = JSON.parse(req.postData() || '{}')
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
-        if (block) cap.results.push(String(block.content))
+        if (block) cap.results.push(toolResultSummary(block.content))
       } catch (e) { /* first turn */ }
       const common = { id: 'm' + calls, type: 'message', role: 'assistant', model: 'claude-opus-4-8', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }
       const step = plan[calls]
@@ -532,7 +534,7 @@ test.describe('AI recorder tools (save / replay)', () => {
 
     await expect(page.getByText('SAVE-WORKSPACE-DRIFT-DONE').first()).toBeVisible({ timeout: 60_000 })
     expect(cap.results[1]).toMatch(/workspace changed from .*recording was not written/i)
-    expect(cap.results[2]).toMatch(/Nothing to undo.*no AI file change/i)
+    expect(cap.results[2]).toMatch(/Workspace, branch, network, or account changed while the task write lock was held/i)
     await expect(page.locator('select[data-id="workspacesSelect"]')).toHaveValue(targetWorkspace, { timeout: 15_000 })
     expect(await readSavedInWorkspace(page, sourceWorkspace, 'scenario.json')).toBe('SHARED-ORIGINAL-SCENARIO')
     expect(await readSavedInWorkspace(page, targetWorkspace, 'scenario.json')).toBe('SHARED-ORIGINAL-SCENARIO')
@@ -557,7 +559,7 @@ test.describe('AI recorder tools (save / replay)', () => {
         const sent = JSON.parse(req.postData() || '{}')
         const msg = [...(sent.messages || [])].reverse().find((m: any) => Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'))
         const block = msg && msg.content.find((c: any) => c.type === 'tool_result')
-        if (block) cap.results.push(String(block.content))
+        if (block) cap.results.push(toolResultSummary(block.content))
       } catch (e) { /* first turn */ }
       const common = { id: 'm' + calls, type: 'message', role: 'assistant', model: 'claude-opus-4-8', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }
       const step = plan[calls]

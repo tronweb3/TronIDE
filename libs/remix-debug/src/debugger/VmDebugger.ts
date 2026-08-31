@@ -40,6 +40,9 @@ export class VmDebuggerLogic {
   address
   traceLength
   addresses
+  _subscriptions
+  _disposed
+  storageUpdateGeneration
 
   constructor (_debugger, tx, _stepManager, _traceManager, _codeManager, _solidityProxy, _callTree) {
     this.event = new EventManager()
@@ -54,9 +57,33 @@ export class VmDebuggerLogic {
 
     this.debuggerSolidityState = new DebuggerSolidityState(tx, _stepManager, _traceManager, _codeManager, _solidityProxy)
     this.debuggerSolidityLocals = new DebuggerSolidityLocals(tx, _stepManager, _traceManager, _callTree)
+    this._subscriptions = []
+    this._disposed = false
+    this.storageUpdateGeneration = 0
+  }
+
+  _register (eventManager, eventName, handler) {
+    eventManager.register(eventName, this, handler)
+    this._subscriptions.push({ eventManager, eventName, handler })
+  }
+
+  isCurrentStorageUpdate (index, generation) {
+    return !this._disposed && generation === this.storageUpdateGeneration && this.stepManager.currentStepIndex === index
+  }
+
+  dispose () {
+    this._disposed = true
+    this.storageUpdateGeneration++
+    for (const subscription of this._subscriptions) {
+      subscription.eventManager.unregister(subscription.eventName, this, subscription.handler)
+    }
+    this._subscriptions = []
+    this.debuggerSolidityState.reset()
+    this.debuggerSolidityLocals.dispose()
   }
 
   start () {
+    this._disposed = false
     this.listenToEvents()
     this.listenToCodeManagerEvents()
     this.listenToTraceManagerEvents()
@@ -68,23 +95,23 @@ export class VmDebuggerLogic {
   }
 
   listenToEvents () {
-    this.debugger.event.register('traceUnloaded', () => {
+    this._register(this.debugger.event, 'traceUnloaded', () => {
       this.event.trigger('traceUnloaded')
     })
 
-    this.debugger.event.register('newTraceLoaded', () => {
+    this._register(this.debugger.event, 'newTraceLoaded', () => {
       this.event.trigger('newTraceLoaded')
     })
   }
 
   listenToCodeManagerEvents () {
-    this._codeManager.event.register('changed', (code, address, index, nextIndexes, returnInstructionIndexes, outOfGasInstructionIndexes) => {
+    this._register(this._codeManager.event, 'changed', (code, address, index, nextIndexes, returnInstructionIndexes, outOfGasInstructionIndexes) => {
       this.event.trigger('codeManagerChanged', [code, address, index, nextIndexes, returnInstructionIndexes, outOfGasInstructionIndexes])
     })
   }
 
   listenToTraceManagerEvents () {
-    this.event.register('indexChanged', this, (index) => {
+    this._register(this.event, 'indexChanged', (index) => {
       if (index < 0) return
       if (this.stepManager.currentStepIndex !== index) return
 
@@ -135,12 +162,12 @@ export class VmDebuggerLogic {
         var storageViewer = new StorageViewer({ stepIndex: this.stepManager.currentStepIndex, tx: this.tx, address: address }, this.storageResolver, this._traceManager)
 
         storageViewer.storageRange().then((storage) => {
-          if (this.stepManager.currentStepIndex === index) {
+          if (!this._disposed && this.stepManager.currentStepIndex === index) {
             var header = storageViewer.isComplete(address) ? '[Completely Loaded]' : '[Partially Loaded]'
             this.event.trigger('traceManagerStorageUpdate', [storage, header])
           }
         }).catch((_error) => {
-          this.event.trigger('traceManagerStorageUpdate', [{}])
+          if (!this._disposed && this.stepManager.currentStepIndex === index) this.event.trigger('traceManagerStorageUpdate', [{}])
         })
       } catch (error) {
         this.event.trigger('traceManagerStorageUpdate', [{}])
@@ -196,7 +223,8 @@ export class VmDebuggerLogic {
     this.address = []
     this.traceLength = 0
 
-    this.debugger.event.register('newTraceLoaded', (length) => {
+    this._register(this.debugger.event, 'newTraceLoaded', (length) => {
+      this.storageUpdateGeneration++
       const addresses = this._traceManager.getAddresses()
       this.event.trigger('traceAddressesUpdate', [addresses])
       this.addresses = addresses
@@ -208,37 +236,49 @@ export class VmDebuggerLogic {
       })
     })
 
-    this.debugger.event.register('indexChanged', this, async (index) => {
+    this._register(this.debugger.event, 'indexChanged', async (index) => {
       if (index < 0) return
       if (this.stepManager.currentStepIndex !== index) return
       if (!this.storageResolver) return
+      const generation = ++this.storageUpdateGeneration
       // Clean up storage update
       if (index === this.traceLength - 1) {
+        if (!this.isCurrentStorageUpdate(index, generation)) return
         return this.event.trigger('traceStorageUpdate', [{}])
       }
       var storageJSON = {}
-      for (var k in this.addresses) {
-        var address = this.addresses[k]
-        var storageViewer = new StorageViewer({ stepIndex: this.stepManager.currentStepIndex, tx: this.tx, address: address }, this.storageResolver, this._traceManager)
-        try {
-          storageJSON[address] = await storageViewer.storageRange()
-        } catch (e) {
-          console.error(e)
+      const addresses: string[] = Array.from(new Set<string>(this.addresses || []))
+      let nextAddress = 0
+      const readAddress = async () => {
+        while (nextAddress < addresses.length) {
+          if (!this.isCurrentStorageUpdate(index, generation)) return
+          const address = addresses[nextAddress++]
+          try {
+            const storageViewer = new StorageViewer({ stepIndex: index, tx: this.tx, address }, this.storageResolver, this._traceManager)
+            const storage = await storageViewer.storageRange()
+            if (!this.isCurrentStorageUpdate(index, generation)) return
+            storageJSON[address] = storage
+          } catch (e) {
+            if (this.isCurrentStorageUpdate(index, generation)) console.error(e)
+          }
         }
       }
+      const workerCount = Math.min(4, addresses.length)
+      await Promise.all(Array.from({ length: workerCount }, () => readAddress()))
+      if (!this.isCurrentStorageUpdate(index, generation)) return
       this.event.trigger('traceStorageUpdate', [storageJSON])
     })
   }
 
   listenToNewChanges () {
-    this.debugger.event.register('newTraceLoaded', this, () => {
+    this._register(this.debugger.event, 'newTraceLoaded', () => {
       this.storageResolver = new StorageResolver({ web3: this.debugger.web3 })
       this.debuggerSolidityState.storageResolver = this.storageResolver
       this.debuggerSolidityLocals.storageResolver = this.storageResolver
       this.event.trigger('newTrace', [])
     })
 
-    this.debugger.callTree.event.register('callTreeReady', () => {
+    this._register(this.debugger.callTree.event, 'callTreeReady', () => {
       if (this.debugger.callTree.reducedTrace.length) {
         return this.event.trigger('newCallTree', [])
       }
@@ -246,36 +286,36 @@ export class VmDebuggerLogic {
   }
 
   listenToSolidityStateEvents () {
-    this.event.register('indexChanged', this.debuggerSolidityState.init.bind(this.debuggerSolidityState))
-    this.debuggerSolidityState.event.register('solidityState', (state) => {
+    this._register(this.event, 'indexChanged', this.debuggerSolidityState.init.bind(this.debuggerSolidityState))
+    this._register(this.debuggerSolidityState.event, 'solidityState', (state) => {
       this.event.trigger('solidityState', [state])
     })
-    this.debuggerSolidityState.event.register('solidityStateMessage', (message) => {
+    this._register(this.debuggerSolidityState.event, 'solidityStateMessage', (message) => {
       this.event.trigger('solidityStateMessage', [message])
     })
-    this.debuggerSolidityState.event.register('solidityStateUpdating', () => {
+    this._register(this.debuggerSolidityState.event, 'solidityStateUpdating', () => {
       this.event.trigger('solidityStateUpdating', [])
     })
-    this.event.register('traceUnloaded', this.debuggerSolidityState.reset.bind(this.debuggerSolidityState))
-    this.event.register('newTraceLoaded', this.debuggerSolidityState.reset.bind(this.debuggerSolidityState))
+    this._register(this.event, 'traceUnloaded', this.debuggerSolidityState.reset.bind(this.debuggerSolidityState))
+    this._register(this.event, 'newTraceLoaded', this.debuggerSolidityState.reset.bind(this.debuggerSolidityState))
   }
 
   listenToSolidityLocalsEvents () {
-    this.event.register('sourceLocationChanged', this.debuggerSolidityLocals.init.bind(this.debuggerSolidityLocals))
-    this.event.register('solidityLocalsLoadMore', this.debuggerSolidityLocals.decodeMore.bind(this.debuggerSolidityLocals))
-    this.debuggerSolidityLocals.event.register('solidityLocalsLoadMoreCompleted', (locals) => {
+    this._register(this.event, 'sourceLocationChanged', this.debuggerSolidityLocals.init.bind(this.debuggerSolidityLocals))
+    this._register(this.event, 'solidityLocalsLoadMore', this.debuggerSolidityLocals.decodeMore.bind(this.debuggerSolidityLocals))
+    this._register(this.debuggerSolidityLocals.event, 'solidityLocalsLoadMoreCompleted', (locals) => {
       this.event.trigger('solidityLocalsLoadMoreCompleted', [locals])
     })
-    this.debuggerSolidityLocals.event.register('solidityLocals', (state) => {
+    this._register(this.debuggerSolidityLocals.event, 'solidityLocals', (state) => {
       this.event.trigger('solidityLocals', [state])
     })
-    this.debuggerSolidityLocals.event.register('solidityLocalsMessage', (message) => {
+    this._register(this.debuggerSolidityLocals.event, 'solidityLocalsMessage', (message) => {
       this.event.trigger('solidityLocalsMessage', [message])
     })
-    this.debuggerSolidityLocals.event.register('solidityLocalsUpdating', () => {
+    this._register(this.debuggerSolidityLocals.event, 'solidityLocalsUpdating', () => {
       this.event.trigger('solidityLocalsUpdating', [])
     })
-    this.debuggerSolidityLocals.event.register('traceReturnValueUpdate', (data, header) => {
+    this._register(this.debuggerSolidityLocals.event, 'traceReturnValueUpdate', (data, header) => {
       this.event.trigger('traceReturnValueUpdate', [data, header])
     })
   }

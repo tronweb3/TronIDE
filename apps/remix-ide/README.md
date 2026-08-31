@@ -35,7 +35,7 @@ Quality gates covered by the home parity test include missing-section fallbacks,
 Operational boundaries:
 
 - No new runtime dependencies or environment variables are required for this Home page surface.
-- Clean bootstrap uses the pinned root engines (`node` 20.19.2 and `pnpm` 10.12.4) and the repository postinstall (`build:libs` plus `downloadsolc_assets`). Network access to `https://binaries.soliditylang.org/wasm/soljson-v0.8.20+commit.a1b79de6.js` is required for a fresh checkout.
+- Clean bootstrap uses the pinned root engines (`node` 20.19.2 and `pnpm` 10.12.4). Run `pnpm setup-workspace` after installation to build shared libraries and download the checked compiler asset. Network access to `https://binaries.soliditylang.org/wasm/soljson-v0.8.20+commit.a1b79de6.js` is required for a fresh checkout.
 - Account sign-in is token-only in local builds, GitHub OAuth is deferred until backend resources exist, private GitHub read/write uses user-provided fine-grained browser tokens, and automated verification receipts plus TronScan submit/API credentials are shown only as explicit unavailable or configuration-gated states unless the corresponding real backend is configured. RemixAI model switching, audio input, and history are not duplicated on Home; use the outer AI panel for AI controls.
 - The Home page does not accept free-form security-sensitive input for the new 2.2.0 parity controls. Walkthrough search filters only local walkthrough metadata; workspace creation uses generated local names; the verification plugin only accepts network/address for public lookup and opens TronScan with `noopener` for manual source submission.
 - Workspace status refreshes are debounced and use the existing workspace provider directory traversal. This avoids adding new polling loops, network calls, background jobs, or unbounded external integration work to the Home page.
@@ -64,7 +64,7 @@ Getting TronIDE running on your local machine is straightforward.
     cd tron-remix
     pnpm install
     ```
-    Clean-checkout note: `pnpm install` runs the repository `postinstall`, which builds shared libraries and downloads the Solidity compiler asset used by the IDE. Network access to the Solidity binary host is required for that bootstrap step.
+    Clean-checkout note: `pnpm install` only installs dependencies. Run `pnpm setup-workspace` to build shared libraries and download the Solidity compiler asset used by the IDE. Network access to the Solidity binary host is required for that bootstrap step.
 
 3.  **Build and Run**
     This command will build the production version of the application.

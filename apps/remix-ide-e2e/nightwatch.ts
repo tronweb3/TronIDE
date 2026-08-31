@@ -21,6 +21,11 @@ import * as fs from 'fs'
 
 const crxFile = fs.readFileSync('apps/remix-ide-e2e/src/extensions/chrome/metamask.crx')
 const metamaskExtension = Buffer.from(crxFile).toString('base64')
+const chromeBinary = process.env.CHROME_BIN ? { binary: process.env.CHROME_BIN } : {}
+const directChromeDriver = process.env.DIRECT_CHROMEDRIVER === 'true' ? { default_path_prefix: '' } : {}
+const chromeArgs = process.env.CI
+  ? ['headless=new', 'window-size=2560,1440', 'disable-gpu', 'no-sandbox', 'disable-dev-shm-usage']
+  : ['window-size=2560,1440', 'start-fullscreen']
 
 module.exports = {
   src_folders: ['build/apps/remix-ide-e2e/src/tests'],
@@ -53,12 +58,14 @@ module.exports = {
     },
 
     chrome: {
+      webdriver: directChromeDriver,
       desiredCapabilities: {
         browserName: 'chrome',
         javascriptEnabled: true,
         acceptSslCerts: true,
         'goog:chromeOptions': {
-          args: ['window-size=2560,1440', 'start-fullscreen']
+          args: chromeArgs,
+          ...chromeBinary
         }
       }
     },
@@ -80,7 +87,8 @@ module.exports = {
         javascriptEnabled: true,
         acceptSslCerts: true,
         'goog:chromeOptions': {
-          args: ['headless=new', 'window-size=2560,1440', 'disable-gpu', 'no-sandbox', 'disable-dev-shm-usage']
+          args: ['headless=new', 'window-size=2560,1440', 'disable-gpu', 'no-sandbox', 'disable-dev-shm-usage'],
+          ...chromeBinary
         }
       }
     },
@@ -92,7 +100,8 @@ module.exports = {
         acceptSslCerts: true,
         'goog:chromeOptions': {
           args: ['window-size=2560,1440', 'start-fullscreen'],
-          extensions: [metamaskExtension]
+          extensions: [metamaskExtension],
+          ...chromeBinary
         }
       }
     },

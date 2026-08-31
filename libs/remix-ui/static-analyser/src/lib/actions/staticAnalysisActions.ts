@@ -21,16 +21,18 @@ import React from 'react' //eslint-disable-line
 
 export const compilation = (analysisModule, dispatch) => {
   if (analysisModule) {
+    const onCompilationFinished = (file, source, languageVersion, data) => {
+      // languageVersion is the real solc version now (was the literal
+      // 'soljson') — a positive 'soljson' test would drop every compilation
+      // and leave the analyzer reporting "no compilation" forever.
+      if (!languageVersion || languageVersion.indexOf('vyper') === 0) return
+      dispatch({ type: 'compilationFinished', payload: { file, source, languageVersion, data } })
+    }
     analysisModule.on(
       'solidity',
       'compilationFinished',
-      (file, source, languageVersion, data) => {
-        // languageVersion is the real solc version now (was the literal
-        // 'soljson') — a positive 'soljson' test would drop every compilation
-        // and leave the analyzer reporting "no compilation" forever.
-        if (!languageVersion || languageVersion.indexOf('vyper') === 0) return
-        dispatch({ type: 'compilationFinished', payload: { file, source, languageVersion, data } })
-      }
+      onCompilationFinished
     )
+    return () => analysisModule.off('solidity', 'compilationFinished')
   }
 }

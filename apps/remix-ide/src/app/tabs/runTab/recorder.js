@@ -32,6 +32,7 @@ var confirmDialog = require('../../ui/confirmDialog')
 var tooltip = require('../../ui/tooltip')
 
 var helper = require('../../../lib/helper.js')
+const { isExternalPluginTransaction } = require('../../../blockchain/transaction-network-security')
 const JSZip = require('jszip')
 const tronboxExport = require('./model/tronbox-export')
 
@@ -165,27 +166,84 @@ class RecorderUI extends Plugin {
     * Verification panel relies on.
     */
   _compiledSolcVersion () {
+    let versions = []
+    let fallback = null
     try {
       const last = this.compilersArtefacts && this.compilersArtefacts.__last
       if (!last) return null
       const data = last.getData ? last.getData() : null
       const contracts = (data && data.contracts) || {}
-      // NOTE (ambiguity): a workspace may compile sources under different solc
-      // versions, but tronbox-config pins a single compiler version. We return
-      // the first version reported by the last compilation's metadata, which is
-      // arbitrary when versions differ. Review the pinned version in
-      // tronbox-config.js if the workspace mixes solc versions.
       for (const file of Object.keys(contracts)) {
         for (const name of Object.keys(contracts[file])) {
           const rawMetadata = contracts[file][name] && contracts[file][name].metadata
           if (!rawMetadata) continue
-          const compiler = JSON.parse(rawMetadata).compiler
-          if (compiler && compiler.version) return compiler.version
+          const metadata = typeof rawMetadata === 'string' ? JSON.parse(rawMetadata) : rawMetadata
+          const compiler = metadata && metadata.compiler
+          const match = compiler && typeof compiler.version === 'string' ? /\d+\.\d+\.\d+/.exec(compiler.version) : null
+          if (match && !versions.includes(match[0])) versions.push(match[0])
         }
       }
-      return last.languageversion || null
+      fallback = last.languageversion || null
     } catch (e) {
       return null
+    }
+    if (versions.length > 1) {
+      throw new Error('Cannot export TronBox project: the last compilation contains multiple Solidity compiler versions (' + versions.join(', ') + '). Recompile all contracts with one compiler version before exporting.')
+    }
+    return versions[0] || fallback
+  }
+
+  _tronboxScenarioSource (source, scenario) {
+    const fromFile = source && source !== 'the current recording'
+    return {
+      type: fromFile ? 'workspace-file' : 'current-recording',
+      path: fromFile ? source : null,
+      schemaVersion: Number.isInteger(scenario && scenario.schemaVersion) ? scenario.schemaVersion : null,
+      transactionCount: Array.isArray(scenario && scenario.transactions) ? scenario.transactions.length : 0
+    }
+  }
+
+  async _tronboxNetworkMetadata (scenario, scenarioSource) {
+    const environment = scenario && scenario.environment
+    const recordedNetwork = scenario && scenario.network
+    if (recordedNetwork || environment) {
+      const network = recordedNetwork && typeof recordedNetwork === 'object' ? recordedNetwork : {}
+      const environmentName = typeof environment === 'string' ? environment : ''
+      return {
+        source: 'scenario',
+        provider: environmentName === 'javascript-vm-tron' ? 'vm' : (network.provider || environmentName || 'unknown'),
+        name: network.name || (typeof recordedNetwork === 'string' ? recordedNetwork : (environmentName === 'javascript-vm-tron' ? 'JavaScript VM (Tron)' : null)),
+        id: network.id == null ? null : network.id
+      }
+    }
+    // A saved scenario without network metadata may have been produced under a
+    // different provider, so never substitute the environment currently open
+    // in the IDE. Live Recorder journals are cleared on contextChanged and can
+    // safely use a bounded fresh probe of their current environment.
+    if (scenarioSource && scenarioSource.type === 'workspace-file') {
+      return { source: 'unknown', provider: 'unknown', name: null, id: null }
+    }
+    let provider = 'unknown'
+    try { provider = String(this.blockchain.getProvider() || 'unknown') } catch (e) { provider = 'unknown' }
+    let detected = null
+    if (typeof this.blockchain.detectNetwork === 'function') {
+      detected = await new Promise((resolve) => {
+        let settled = false
+        const finish = (value) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(value)
+        }
+        const timer = setTimeout(() => finish(null), 3000)
+        try { this.blockchain.detectNetwork((error, network) => finish(error ? null : network)) } catch (e) { finish(null) }
+      })
+    }
+    return {
+      source: 'current-environment',
+      provider,
+      name: detected?.name || (provider === 'vm' ? 'JavaScript VM (Tron)' : null),
+      id: detected?.id == null ? null : detected.id
     }
   }
 
@@ -198,6 +256,7 @@ class RecorderUI extends Plugin {
   async exportTronboxProject () {
     try {
       let scenario = this.recorder.getAll()
+      let source = 'the current recording'
       if (!scenario.transactions.length) {
         scenario = null
         const file = this.config.get('currentFile')
@@ -208,7 +267,7 @@ class RecorderUI extends Plugin {
           let raw
           try { raw = await this.fileManager.readFile(file) } catch (e) { raw = null }
           if (raw !== null && raw !== undefined) {
-            try { scenario = JSON.parse(raw) } catch (e) {
+            try { scenario = JSON.parse(raw); source = file } catch (e) {
               return modalDialogCustom.alert('Cannot export ' + file + ': invalid scenario JSON (' + ((e && e.message) || e) + ').')
             }
           }
@@ -219,7 +278,9 @@ class RecorderUI extends Plugin {
       }
 
       tooltip('Preparing the TronBox project ...')
-      const files = await this._buildTronboxFiles(scenario)
+      const scenarioSource = this._tronboxScenarioSource(source, scenario)
+      const network = await this._tronboxNetworkMetadata(scenario, scenarioSource)
+      const files = await this._buildTronboxFiles(scenario, { scenarioSource, network })
       const zip = new JSZip()
       for (const rel of Object.keys(files)) zip.file(rel, files[rel])
       const blob = await zip.generateAsync({ type: 'blob' })
@@ -235,12 +296,26 @@ class RecorderUI extends Plugin {
     * the AI assistant's aiExportTronbox (which writes the files into the
     * workspace), so the two never drift.
     */
-  async _buildTronboxFiles (scenario) {
+  async _buildTronboxFiles (scenario, { scenarioSource, network } = {}) {
     const files = {}
+    const compiledSolcVersion = this._compiledSolcVersion()
+    const scenarioSolcVersion = scenario && scenario.compilerVersion
+    const compiledVersionKnown = typeof compiledSolcVersion === 'string' && /\d+\.\d+\.\d+/.test(compiledSolcVersion)
+    const scenarioVersionKnown = typeof scenarioSolcVersion === 'string' && /\d+\.\d+\.\d+/.test(scenarioSolcVersion)
+    const solcVersion = tronboxExport.normalizeSolcVersion(compiledVersionKnown ? compiledSolcVersion : (scenarioVersionKnown ? scenarioSolcVersion : null))
+    const solcSource = compiledVersionKnown ? 'last-compilation' : (scenarioVersionKnown ? 'scenario' : 'fallback-default')
+    const metadata = tronboxExport.createTronideExportMetadata({
+      tronideVersion: packageJson.version,
+      solcVersion,
+      solcSource,
+      network,
+      scenarioSource: scenarioSource || this._tronboxScenarioSource('the current recording', scenario)
+    })
     files['migrations/1_initial_migration.js'] = tronboxExport.INITIAL_MIGRATION
     files['migrations/2_deploy_contracts.js'] = tronboxExport.scenarioToMigration(scenario)
     files['contracts/Migrations.sol'] = tronboxExport.MIGRATIONS_SOL
-    files['tronbox-config.js'] = tronboxExport.tronboxConfig(this._compiledSolcVersion())
+    files['tronbox-config.js'] = tronboxExport.tronboxConfig(solcVersion)
+    files['tronide-export.json'] = JSON.stringify(metadata, null, 2) + '\n'
     files['README.md'] = tronboxExport.README
     files['sample-env'] = tronboxExport.SAMPLE_ENV
     // workspace sources: contracts/ tree plus root-level .sol files. Other trees
@@ -266,19 +341,62 @@ class RecorderUI extends Plugin {
     * result (never throws) with the written files, pinned solc version, and any
     * caveats parsed out of the generated migration.
     */
-  async aiExportTronbox ({ dir, expectedState, mutationContext: suppliedMutationContext } = {}) {
+  async aiExportTronbox ({ dir, expectedState, mutationContext: suppliedMutationContext, expectedRecording } = {}) {
     try {
-      let scenario = this.recorder.getAll()
-      let source = 'the current recording'
-      if (!scenario || !Array.isArray(scenario.transactions) || !scenario.transactions.length) {
-        const file = this.config.get('currentFile')
-        if (file && file.endsWith('.json')) {
-          let raw
-          try { raw = await this.fileManager.readFile(file) } catch (e) { raw = null }
-          if (raw !== null && raw !== undefined) {
-            try { scenario = JSON.parse(raw); source = file } catch (e) { return { ok: false, message: 'Cannot export ' + file + ': invalid scenario JSON.' } }
+      if (!expectedRecording || typeof expectedRecording !== 'object' ||
+        !['current-recording', 'workspace-file'].includes(expectedRecording.source) ||
+        typeof expectedRecording.scenarioContent !== 'string') {
+        return { ok: false, message: 'The confirmed recording snapshot was not provided — nothing was exported.' }
+      }
+      const recordingSource = expectedRecording.source
+      const approvedScenarioContent = expectedRecording.scenarioContent
+      const approvedScenarioPath = recordingSource === 'workspace-file' ? String(expectedRecording.path || '') : null
+      if (recordingSource === 'current-recording' && !Number.isInteger(expectedRecording.generation)) {
+        return { ok: false, message: 'The confirmed recording version was not provided — nothing was exported.' }
+      }
+      if (recordingSource === 'workspace-file' && (!approvedScenarioPath || !/\.json$/i.test(approvedScenarioPath))) {
+        return { ok: false, message: 'The confirmed scenario file was not provided — nothing was exported.' }
+      }
+
+      const recordingMismatch = async () => {
+        if (recordingSource === 'current-recording') {
+          let currentContent
+          let currentGeneration
+          try {
+            currentGeneration = this.recorder.getJournalGeneration()
+            currentContent = JSON.stringify(this.recorder.getAll())
+          } catch (e) {
+            return 'Could not verify the current recording after export confirmation — nothing was exported.'
           }
+          if (currentGeneration !== expectedRecording.generation || currentContent !== approvedScenarioContent) {
+            return 'The confirmed recording changed while the export was running — nothing was exported. Review the recording and confirm again.'
+          }
+          return null
         }
+        let currentFile
+        let raw
+        try {
+          currentFile = this.config.get('currentFile')
+          raw = await this.fileManager.readFile(approvedScenarioPath)
+        } catch (e) {
+          return 'Could not re-read ' + approvedScenarioPath + ' after export confirmation — nothing was exported.'
+        }
+        if (currentFile !== approvedScenarioPath) {
+          return 'The active scenario file changed while the export was running — nothing was exported. Review it and confirm again.'
+        }
+        if (String(raw ?? '') !== approvedScenarioContent) {
+          return approvedScenarioPath + ' changed while the export was running — nothing was exported. Review it and confirm again.'
+        }
+        return null
+      }
+
+      const initialRecordingMismatch = await recordingMismatch()
+      if (initialRecordingMismatch) return { ok: false, message: initialRecordingMismatch }
+
+      let scenario
+      let source = recordingSource === 'workspace-file' ? approvedScenarioPath : 'the current recording'
+      try { scenario = JSON.parse(approvedScenarioContent) } catch (e) {
+        return { ok: false, message: recordingSource === 'workspace-file' ? 'Cannot export ' + approvedScenarioPath + ': invalid scenario JSON.' : 'The confirmed recording snapshot is invalid — nothing was exported.' }
       }
       if (!scenario || !Array.isArray(scenario.transactions) || !scenario.transactions.length) {
         return { ok: false, message: 'Nothing to export — deploy or call a contract first (that records it), or open a scenario.json.' }
@@ -312,7 +430,12 @@ class RecorderUI extends Plugin {
           return { ok: false, message: 'The workspace or Git branch changed after the export was confirmed — nothing was exported.' }
         }
       }
-      const files = await this._buildTronboxFiles(scenario)
+      const scenarioSource = this._tronboxScenarioSource(source, scenario)
+      const network = await this._tronboxNetworkMetadata(scenario, scenarioSource)
+      const files = await this._buildTronboxFiles(scenario, { scenarioSource, network })
+      const postBuildRecordingMismatch = await recordingMismatch()
+      if (postBuildRecordingMismatch) return { ok: false, message: postBuildRecordingMismatch }
+      const metadata = JSON.parse(files['tronide-export.json'])
       // A re-export must not ship residue: files a previous export left under
       // outDir that this file set no longer generates (a renamed/deleted
       // contract) would make `tronbox compile` build stale sources. Snapshot
@@ -369,8 +492,12 @@ class RecorderUI extends Plugin {
         stateUnknown,
         message
       })
+      const beforeExportRecordingMismatch = await recordingMismatch()
+      if (beforeExportRecordingMismatch) return partialResult(beforeExportRecordingMismatch)
       for (const f of previous) {
         if (target.has(f.path)) continue
+        const beforeDeleteRecordingMismatch = await recordingMismatch()
+        if (beforeDeleteRecordingMismatch) return partialResult(beforeDeleteRecordingMismatch)
         // The directory-wide snapshot above can become stale while earlier
         // provider calls are awaited. Re-check this exact file immediately
         // before deleting it so a concurrent user edit is never removed.
@@ -381,6 +508,8 @@ class RecorderUI extends Plugin {
         if (!current.exists || current.content !== f.content) {
           return partialResult(f.path + ' changed while the export was running — export stopped without deleting that user change.')
         }
+        const beforeRemoveRecordingMismatch = await recordingMismatch()
+        if (beforeRemoveRecordingMismatch) return partialResult(beforeRemoveRecordingMismatch)
         try {
           await this.fileManager.remove(f.path, mutationContext)
           removedStale.push(f.path)
@@ -403,6 +532,8 @@ class RecorderUI extends Plugin {
       }
       for (const rel of Object.keys(files)) {
         const p = outDir + '/' + rel
+        const beforeWriteRecordingMismatch = await recordingMismatch()
+        if (beforeWriteRecordingMismatch) return partialResult(beforeWriteRecordingMismatch)
         const before = previousByPath.has(p)
           ? { exists: true, content: previousByPath.get(p) }
           : { exists: false, content: null }
@@ -415,6 +546,8 @@ class RecorderUI extends Plugin {
         if (current.exists !== before.exists || (current.exists && current.content !== before.content)) {
           return partialResult(p + ' changed while the export was running — export stopped without overwriting that user change.')
         }
+        const beforeWriteCallRecordingMismatch = await recordingMismatch()
+        if (beforeWriteCallRecordingMismatch) return partialResult(beforeWriteCallRecordingMismatch)
         try { await this.fileManager.writeFile(p, files[rel], mutationContext) } catch (e) {
           // A provider may reject after it already truncated/wrote the file.
           // Capture that exact post-error state as a touched path; the chat can
@@ -435,27 +568,75 @@ class RecorderUI extends Plugin {
         written.push(p)
         writtenContents.push({ path: p, exists: true, content: files[rel] })
       }
+      const finalRecordingMismatch = await recordingMismatch()
+      if (finalRecordingMismatch) return partialResult(finalRecordingMismatch)
       // Caveats are surfaced by scenarioToMigration inside the migration text, so
       // parse them from there (single source) rather than re-deriving.
       const mig = files['migrations/2_deploy_contracts.js'] || ''
       const notes = []
       if (/\bTODO\b/.test(mig)) notes.push('some recorded steps reverted and are fenced as TODO in the migration — review them before running.')
       if (/different sender accounts/.test(mig)) notes.push('the recording used multiple sender accounts; the migration runs with the single account in tronbox-config.js.')
-      return { ok: true, dir: outDir, files: written, writtenContents, previous, removedStale, replacedExisting: hadDir, solcVersion: this._compiledSolcVersion(), txCount: scenario.transactions.length, source, notes }
+      return { ok: true, dir: outDir, files: written, writtenContents, previous, removedStale, replacedExisting: hadDir, solcVersion: metadata.solc.version, network: metadata.network, scenarioSource: metadata.scenarioSource, metadataPath: outDir + '/tronide-export.json', txCount: scenario.transactions.length, source, notes }
     } catch (e) {
       return { ok: false, message: (e && e.message) || String(e) }
     }
   }
 
   /**
-    * AI assistant: how many transactions the LIVE recording journal holds right
-    * now. Read-only — lets the chat warn before actions that clear the journal
-    * (replay) and describe save/export confirmations with a real count.
+    * AI assistant: capture the exact approved recording input before a write
+    * confirmation. The content/generation pair is consumed by aiExportTronbox
+    * as a compare-and-swap guard, so an export cannot silently switch to a
+    * newer journal or scenario file after the user approves it.
     */
-  aiRecordingInfo () {
-    let txCount = 0
-    try { txCount = (this.recorder.getAll().transactions || []).length } catch (e) { txCount = 0 }
-    return { ok: true, txCount }
+  async aiRecordingInfo () {
+    let liveScenario
+    try { liveScenario = this.recorder.getAll() } catch (e) { liveScenario = null }
+    const liveTransactions = liveScenario && Array.isArray(liveScenario.transactions) ? liveScenario.transactions : []
+    if (liveTransactions.length) {
+      try {
+        return {
+          ok: true,
+          txCount: liveTransactions.length,
+          recordingSnapshot: {
+            source: 'current-recording',
+            generation: this.recorder.getJournalGeneration(),
+            scenarioContent: JSON.stringify(liveScenario),
+            transactionCount: liveTransactions.length
+          }
+        }
+      } catch (e) {
+        return { ok: false, txCount: liveTransactions.length, message: 'Could not snapshot the live recording safely.' }
+      }
+    }
+
+    let file
+    try { file = this.config.get('currentFile') } catch (e) { file = null }
+    if (file && /\.json$/i.test(file)) {
+      let raw
+      try { raw = await this.fileManager.readFile(file) } catch (e) { raw = null }
+      if (raw !== null && raw !== undefined) {
+        const scenarioContent = String(raw)
+        let txCount = 0
+        try {
+          const scenario = JSON.parse(scenarioContent)
+          txCount = Array.isArray(scenario && scenario.transactions) ? scenario.transactions.length : 0
+        } catch (e) {
+          // Keep the exact bytes in the snapshot so export reports the actual
+          // invalid JSON after confirmation instead of falling back elsewhere.
+        }
+        return {
+          ok: true,
+          txCount,
+          recordingSnapshot: {
+            source: 'workspace-file',
+            path: file,
+            scenarioContent,
+            transactionCount: txCount
+          }
+        }
+      }
+    }
+    return { ok: true, txCount: 0, recordingSnapshot: null }
   }
 
   /**
@@ -669,7 +850,9 @@ class RecorderUI extends Plugin {
     * and only one replay may run at a time, so a "failed" report can't be
     * followed by a double-execution of the same recorded transactions.
     */
-  async aiRunScenario ({ path } = {}) {
+  async aiRunScenario (options = {}) {
+    const { path, scenarioContent, expectedState, mutationContext } = options
+    const externalPluginTransaction = isExternalPluginTransaction(options)
     const p = String(path || 'scenario.json').trim().replace(/^\/+/, '')
     if (!p || p.split('/').some((s) => s === '' || s === '.' || s === '..')) return { ok: false, message: 'Invalid path.' }
     // data._replay is true for the whole life of ANY batch (panel- or
@@ -679,7 +862,25 @@ class RecorderUI extends Plugin {
       return { ok: false, message: 'A replay is already running — wait for it to finish (or for its timeout abort) before starting another. Re-running now would execute the recorded transactions twice.' }
     }
     let raw
-    try { raw = await this.fileManager.readFile(p) } catch (e) { return { ok: false, message: 'No such scenario file: ' + p } }
+    if (scenarioContent !== undefined) {
+      // Chat passes the exact bytes shown/approved before the confirmation
+      // modal. Re-check both the workspace generation and the file content so
+      // a cross-plugin race cannot execute a different scenario at `p`.
+      if (typeof scenarioContent !== 'string' || !expectedState || expectedState.content !== scenarioContent || !mutationContext || typeof mutationContext.workspace !== 'string' || typeof mutationContext.generation !== 'number') {
+        return { ok: false, message: 'The approved scenario snapshot is incomplete — nothing was sent.' }
+      }
+      let currentContext
+      try { currentContext = await this.fileManager.captureWorkspaceMutationContext(p) } catch (e) { currentContext = null }
+      if (!currentContext || currentContext.workspace !== mutationContext.workspace || currentContext.generation !== mutationContext.generation) {
+        return { ok: false, message: 'The workspace or Git branch changed after replay approval — nothing was sent.' }
+      }
+      let currentContent
+      try { currentContent = String(await this.fileManager.readFile(p)) } catch (e) { return { ok: false, message: 'Could not re-check the approved scenario file — nothing was sent.' } }
+      if (currentContent !== scenarioContent) return { ok: false, message: p + ' changed after replay approval — nothing was sent.' }
+      raw = scenarioContent
+    } else {
+      try { raw = await this.fileManager.readFile(p) } catch (e) { return { ok: false, message: 'No such scenario file: ' + p } }
+    }
     let txCount = 0
     try { txCount = ((JSON.parse(raw) || {}).transactions || []).length } catch (e) { return { ok: false, message: p + ' is not valid scenario JSON.' } }
     if (!txCount) return { ok: false, message: p + ' has no transactions to replay.' }
@@ -717,7 +918,11 @@ class RecorderUI extends Plugin {
       // resolve here (replayEnded is the terminal signal).
       const onContract = (error, abi, address, contractName) => { if (!error && address) last = { contract: contractName || null, address } }
       try {
-        this.recorder.runScenario(raw, continueCb, promptCb, alertCb, confirmationCb, () => {}, onContract)
+        // Pass only the unforgeable provenance bit into the model. It marks
+        // every replayed record so Blockchain.runTx rechecks the live network
+        // immediately before each individual transaction is committed.
+        this.recorder.runScenario(raw, continueCb, promptCb, alertCb, confirmationCb, () => {}, onContract,
+          externalPluginTransaction ? options : null)
       } catch (e) {
         // The batch never started — the replayEnded listener must not linger.
         try { this.recorder.event.unregister('replayEnded', onEnded) } catch (e2) { /* best-effort */ }

@@ -37,4 +37,4 @@ const LoadingDialogueItemRender = ({ gptv }) => {
   );
 };
 
-export default LoadingDialogueItemRender;
+export default React.memo(LoadingDialogueItemRender);

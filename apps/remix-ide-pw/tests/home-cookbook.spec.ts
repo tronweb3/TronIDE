@@ -1,6 +1,9 @@
 import { test, expect, Page } from '@playwright/test'
 import { dismissWelcomeModal } from './helpers'
 
+const NILE_GENESIS = '0000000000000000d698d4192c56cb6be724a558448e2684802de4d6cd8690dc'
+const NILE_ACCOUNT = 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb'
+
 // TRON Cookbook recipe cards (v2.3.2): each card click must give visible
 // feedback and must not double-fire toasts. These run in a fresh browser with
 // NO TronLink injected, which is the case the user hit ("no reaction" /
@@ -17,6 +20,47 @@ async function openHomeCookbook (page: Page) {
 }
 
 const toast = (page: Page) => page.locator('[data-shared="tooltipPopup"]')
+
+async function injectReadyNileWallet (page: Page) {
+  await page.addInitScript(({ account, genesis }) => {
+    const fullNode = { host: 'https://nile.trongrid.io', headers: {}, request: async () => ({}) }
+    const trx = new Proxy({
+      getBlock: async () => ({ blockID: genesis }),
+      getNodeInfo: async () => ({}),
+      getAccount: async () => ({ balance: 10_000_000 }),
+      getBalance: async () => 10_000_000
+    }, { get: (target, property) => property in target ? (target as any)[property] : (async () => undefined) })
+    ;(window as any).tronWeb = new Proxy({
+      ready: true,
+      defaultAddress: { base58: account, hex: '410000000000000000000000000000000000000000' },
+      fullNode,
+      solidityNode: { host: fullNode.host },
+      eventServer: { host: fullNode.host },
+      trx
+    }, { get: (target, property) => property in target ? (target as any)[property] : (() => undefined) })
+    ;(trx as any).tronWeb = (window as any).tronWeb
+    ;(window as any).tronLink = {
+      ready: true,
+      tronWeb: (window as any).tronWeb,
+      request: async () => [account],
+      on: () => {},
+      removeListener: () => {}
+    }
+  }, { account: NILE_ACCOUNT, genesis: NILE_GENESIS })
+}
+
+async function rebindInjectedWallet (page: Page) {
+  await page.evaluate(() => {
+    const scope = window as any
+    const current = scope.tronWeb
+    const next = new Proxy({ ...current }, {
+      get: (target, property) => property in target ? (target as any)[property] : (() => undefined)
+    })
+    current.trx.tronWeb = next
+    scope.tronWeb = next
+    scope.tronLink = { ...scope.tronLink, tronWeb: next }
+  })
+}
 
 test.describe('Home TRON Cookbook recipes', () => {
   // TC-CB-001: TronLink readiness gives visible feedback (a toast), not just a
@@ -45,9 +89,30 @@ test.describe('Home TRON Cookbook recipes', () => {
     await expect(toast(page)).toHaveCount(1)
   })
 
-  // TC-CB-003: keep the implementation available while its entry point is temporarily hidden.
-  test('TC-CB-003: GitHub token safety recipe is hidden', { tag: '@gate' }, async ({ page }) => {
+  // TC-CB-003: GitHub token safety gives visible feedback (a toast) — success
+  // used to only add a silent bell notification, and the async clipboard
+  // rejection was never caught, so the click looked like a no-op.
+  test('TC-CB-003: GitHub token safety shows a visible toast', { tag: '@gate' }, async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (e) => errors.push(String(e)))
     await openHomeCookbook(page)
-    await expect(page.locator('[data-id="landingRecipeGithubToken"]')).toHaveCount(0)
+    await page.locator('[data-id="landingRecipeGithubToken"]').click()
+    // either the "copied" confirmation or the checklist fallback — a toast shows
+    await expect(toast(page).filter({ hasText: /checklist|copied|GitHub token/i }).first()).toBeVisible({ timeout: 10_000 })
+    expect(errors).toEqual([])
+  })
+
+  test('TC-CB-004: Nile deploy checklist requires a fresh connected Nile environment', { tag: '@gate' }, async ({ page }) => {
+    await injectReadyNileWallet(page)
+    await openHomeCookbook(page)
+    // Match TronLink's normal post-startup provider re-injection so the
+    // environment probe is fresh instead of reusing startup detection state.
+    await rebindInjectedWallet(page)
+    await page.locator('[data-id="landingRecipeNileDeploy"]').click()
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('tronide.home.notifications') || '[]').length), { timeout: 15_000 }).toBeGreaterThan(0)
+    const notification = await page.evaluate(() => JSON.parse(localStorage.getItem('tronide.home.notifications') || '[]')[0])
+    expect(notification).toMatchObject({ title: 'Nile deploy checklist' })
+    expect(notification.message).toMatch(/Nile ready/i)
+    expect(notification.message).not.toMatch(/environment not ready|network required/i)
   })
 })

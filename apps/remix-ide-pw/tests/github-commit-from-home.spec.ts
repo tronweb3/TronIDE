@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { dismissWelcomeModal } from './helpers'
+import { dismissWelcomeModal, seedGithubBffSession } from './helpers'
 
 // Regression: "Commit current file" lives on the Home tab, but switching to the
 // Home tab runs fileManager.unselectCurrentFile() (main-view showApp), clearing
@@ -13,6 +13,10 @@ test.describe('GitHub commit from the Home tab', () => {
     await page.goto('/')
     await dismissWelcomeModal(page)
     await page.locator('[data-id="landingWorkspaceStatus"]').waitFor({ timeout: 30_000 })
+    // Import/Commit are intentionally unavailable until an opaque BFF session
+    // exists. Seed the non-secret test handle before exercising the current-file
+    // fallback that this regression covers.
+    await seedGithubBffSession(page)
 
     // Open a file in the editor. The TRON template card now opens a chooser
     // (template picker) rather than directly seeding a file, so pick a template

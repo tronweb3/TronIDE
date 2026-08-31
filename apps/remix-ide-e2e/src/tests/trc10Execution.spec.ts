@@ -39,7 +39,9 @@ module.exports = {
       .waitForElementPresent('*[data-id="remixIdeSidePanel"]')
       .openFile('contracts/4_Trc10.sol')
       .clickLaunchIcon('solidity')
-      .waitForElementPresent('#compileTabView #versionSelector option[value="soljson-v0.8.6+commit.0e36fba0.js"]', 60000)
+      // TRC10 syntax (`trcToken` / `transferToken`) requires a TRON compiler;
+      // the standard bundled Solidity fallback cannot compile this fixture.
+      .setSolidityCompilerVersion('soljson-v0.8.6+commit.0e36fba0.js')
       .verifyContracts(['Trc10'])
       .clickLaunchIcon('udapp')
       .click('select[id="selectExEnvOptions"] option[value="vm-tron"]')
@@ -48,7 +50,7 @@ module.exports = {
       .createContract('')
       .pause(2000)
       .testFunction('last', {
-        status: 'true Transaction mined and execution succeed'
+        status: 'true Transaction mined and execution succeeded'
       })
       .getLastTransactionHash((hash) => {
         deployHash = hash
@@ -111,7 +113,7 @@ module.exports = {
       .perform((done) => {
         browser.getLastTransactionHash((hash) => {
           browser.testFunction(hash, {
-            status: 'true Transaction mined and execution succeed',
+            status: 'true Transaction mined and execution succeeded',
             tokenId: trc10TokenId,
             tokenValue: trc10TokenAmount
           })

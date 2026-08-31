@@ -8,7 +8,7 @@ type TronRunResult = {
   result: any
 }
 
-function runInTronWithStub (tronWebOverrides, argsOverrides = {}): Promise<TronRunResult> {
+function runInTronWithStub (tronWebOverrides, argsOverrides = {}, apiOverrides = {}, runnerOverrides = {}): Promise<TronRunResult> {
   // Destructure first so overrides for top-level keys (defaultAddress, etc.) win without
   // clobbering the merged transactionBuilder/trx defaults below.
   const {
@@ -52,7 +52,14 @@ function runInTronWithStub (tronWebOverrides, argsOverrides = {}): Promise<TronR
   }
   tronWeb.trx.tronWeb = tronWeb
 
-  const runner = new TxRunnerWeb3(null, () => tronWeb as any, () => 0)
+  const api = {
+    detectNetwork: (callback) => callback(null, { name: 'TRON', id: 'nile' }),
+    ...apiOverrides
+  }
+  const getTronWeb = (runnerOverrides as any).getTronWeb
+    ? () => (runnerOverrides as any).getTronWeb(tronWeb)
+    : () => tronWeb as any
+  const runner = new TxRunnerWeb3(api, getTronWeb, () => 0)
   const args = {
     from: 'TFromAddress',
     to: 'TContractAddress',
@@ -62,7 +69,7 @@ function runInTronWithStub (tronWebOverrides, argsOverrides = {}): Promise<TronR
     tokenValue: '0x0',
     gasLimit: '0x1',
     useCall: false,
-    pendingTransactionSnapshot: { account: 'TFromAddress', network: 'https://nile.trongrid.io' },
+    pendingTransactionSnapshot: { account: 'TFromAddress', network: 'TRON/nile' },
     ...argsOverrides
   }
 
@@ -78,6 +85,23 @@ function runInTronWithStub (tronWebOverrides, argsOverrides = {}): Promise<TronR
 }
 
 tape('txRunnerWeb3 normalizes tron trc10 validation messages', function (t) {
+  t.test('rejects unsafe injected call values before TronWeb builders run', async function (st) {
+    st.plan(2)
+
+    let builderCalled = false
+    const { error } = await runInTronWithStub({
+      transactionBuilder: {
+        triggerSmartContract: async () => {
+          builderCalled = true
+          return { result: { result: true } }
+        }
+      }
+    }, { value: '9007199254740993' })
+
+    st.ok(error && /Transaction value exceeds safe integer range/.test(error.message || String(error)), 'unsafe value is rejected with an actionable precision error')
+    st.equal(builderCalled, false, 'unsafe value never reaches the injected TronWeb builder')
+  })
+
   t.test('returns VM invalid argument wording when tokenId is 0 and tokenValue is positive', async function (st) {
     st.plan(1)
 
@@ -168,7 +192,7 @@ tape('txRunnerWeb3 normalizes tron trc10 validation messages', function (t) {
       }
     })
 
-    st.equal(error.message, 'Wallet disconnected. Please reconnect TronLink.')
+    st.equal(error.message, 'TronLink disconnected. Reconnect to continue.')
     st.equal(signCalled, false)
   })
 
@@ -229,7 +253,7 @@ tape('txRunnerWeb3 normalizes tron trc10 validation messages', function (t) {
 
     st.equal(
       error,
-      'Send transaction failed: Transaction broadcast failed. Please verify the wallet network and try again. . if you use an injected provider, please check it is properly unlocked. '
+      'Send transaction failed: Transaction broadcast failed. Check the wallet network and try again. . if you use an injected provider, please check it is properly unlocked. '
     )
   })
 
@@ -249,9 +273,252 @@ tape('txRunnerWeb3 normalizes tron trc10 validation messages', function (t) {
 
     st.equal(
       error,
-      'Send transaction failed: Wallet account changed. Please reconnect TronLink. . if you use an injected provider, please check it is properly unlocked. '
+      'Send transaction failed: TronLink account changed. Reconnect to continue. . if you use an injected provider, please check it is properly unlocked. '
     )
     st.equal(signCalled, false)
+  })
+
+  t.test('fails closed before building when network detection returns stale Nile cache', async function (st) {
+    st.plan(3)
+
+    let builderCalled = false
+    const { error } = await runInTronWithStub({
+      transactionBuilder: {
+        triggerSmartContract: async () => {
+          builderCalled = true
+          return { result: { result: true }, transaction: {} }
+        }
+      }
+    }, {}, {
+      // Equivalent to Nile being cached during detector backoff after the
+      // wallet has switched nodes: a stale allowlisted label is not proof that
+      // the transaction will still land on Nile.
+      detectNetwork: (callback) => callback(null, { name: 'TRON', id: 'nile', stale: true })
+    })
+
+    st.ok(error && /Wallet network could not be verified/.test(error), 'stale cache reports a clear verification error')
+    st.equal(builderCalled, false, 'no transaction is built from stale network evidence')
+    st.notOk(/Wallet network changed/.test(error), 'the message distinguishes an unverifiable network from a verified switch')
+  })
+
+  t.test('fails closed when the wallet account changes during network detection', async function (st) {
+    st.plan(2)
+
+    const defaultAddress = { base58: 'TFromAddress' }
+    let builderCalled = false
+    const { error } = await runInTronWithStub({
+      defaultAddress,
+      transactionBuilder: {
+        triggerSmartContract: async () => {
+          builderCalled = true
+          return { result: { result: true }, transaction: {} }
+        }
+      }
+    }, {}, {
+      detectNetwork: (callback) => {
+        defaultAddress.base58 = 'TOtherAccount'
+        callback(null, { name: 'TRON', id: 'nile' })
+      }
+    })
+
+    st.ok(error && /TronLink account changed/.test(error), 'account drift during the async probe is rejected')
+    st.equal(builderCalled, false, 'account drift is rejected before a transaction is built')
+  })
+
+  t.test('accepts a confirmed contract call receipt without contract_address', async function (st) {
+    st.plan(2)
+
+    let observed = null
+    const { error, result } = await runInTronWithStub({
+      trx: {
+        getUnconfirmedTransactionInfo: async () => ({
+          id: '0x123',
+          blockNumber: 12,
+          receipt: { result: 'SUCCESS' }
+        })
+      }
+    })
+
+    observed = result
+    st.equal(error, null, 'a normal contract call does not require contract_address')
+    st.equal(observed.receipt.contractAddress, null, 'missing contract_address remains explicit for a call')
+  })
+
+  t.test('rejects a nested TRON failed receipt instead of reporting success', async function (st) {
+    st.plan(2)
+
+    const { error, result } = await runInTronWithStub({
+      trx: {
+        getUnconfirmedTransactionInfo: async () => ({
+          id: '0x123',
+          blockNumber: 12,
+          receipt: { result: 'FAILED' }
+        })
+      }
+    })
+
+    st.equal(error, 'FAILED', 'receipt.result drives the final transaction error')
+    st.equal(result.receipt.status, false, 'the failed receipt is retained for transaction logging')
+  })
+
+  t.test('keeps fresh custom-network transactions available to the native UI', async function (st) {
+    st.plan(1)
+
+    const { error } = await runInTronWithStub({}, {
+      pendingTransactionSnapshot: { account: 'TFromAddress', network: 'Custom/Unknown' }
+    }, {
+      detectNetwork: (callback) => callback(null, { name: 'Custom', id: 'Unknown' })
+    })
+
+    st.equal(error, null, 'a fresh custom network uses its full-node endpoint as the stable fingerprint')
+  })
+
+  t.test('fails closed before signing when the builder outlives a switch to an unknown network', async function (st) {
+    st.plan(4)
+
+    let probes = 0
+    let builderCalled = false
+    let signCalled = false
+    const { error } = await runInTronWithStub({
+      transactionBuilder: {
+        triggerSmartContract: async () => {
+          builderCalled = true
+          return { result: { result: true }, transaction: {} }
+        }
+      },
+      trx: {
+        sign: async () => {
+          signCalled = true
+          return {}
+        }
+      }
+    }, {}, {
+      detectNetwork: (callback) => {
+        probes++
+        callback(null, probes === 1
+          ? { name: 'TRON', id: 'nile' }
+          : { name: 'Unknown', id: 'Unknown' })
+      }
+    })
+
+    st.equal(builderCalled, true, 'the builder ran under the verified initial network')
+    st.equal(probes, 2, 'network is checked again after the async builder')
+    st.ok(error && /Wallet network could not be verified/.test(error), 'unknown network is reported as unverifiable')
+    st.equal(signCalled, false, 'an unknown post-build network never opens a signing request')
+  })
+
+  t.test('fails closed when TronLink replaces the injected provider during the builder request', async function (st) {
+    st.plan(2)
+
+    let providerReads = 0
+    let signCalled = false
+    const { error } = await runInTronWithStub({
+      trx: {
+        sign: async () => {
+          signCalled = true
+          return {}
+        }
+      }
+    }, {}, {}, {
+      getTronWeb: (original) => {
+        providerReads++
+        return providerReads < 3 ? original : { ...original }
+      }
+    })
+
+    st.ok(error && /Wallet provider changed/.test(error), 'provider identity drift has an actionable error')
+    st.equal(signCalled, false, 'a transaction built by the replaced provider is never signed')
+  })
+
+  t.test('fails closed before broadcast when the post-sign network probe errors', async function (st) {
+    st.plan(4)
+
+    let probes = 0
+    let signCalled = false
+    let broadcastCalled = false
+    const { error } = await runInTronWithStub({
+      trx: {
+        sign: async (transaction) => {
+          signCalled = true
+          return { ...transaction, signature: ['0xsignature'] }
+        },
+        sendRawTransaction: async () => {
+          broadcastCalled = true
+          return { result: true }
+        }
+      }
+    }, {}, {
+      detectNetwork: (callback) => {
+        probes++
+        if (probes < 3) callback(null, { name: 'TRON', id: 'nile' })
+        else callback(new Error('genesis probe failed'), { name: 'TRON', id: 'nile', stale: true })
+      }
+    })
+
+    st.equal(signCalled, true, 'the transaction was signed only after two fresh checks')
+    st.equal(probes, 3, 'network is checked again after signing')
+    st.ok(error && /Wallet network could not be verified/.test(error), 'the callback probe error is preserved as a verification failure')
+    st.equal(broadcastCalled, false, 'a signed transaction is not broadcast without fresh network proof')
+  })
+
+  t.test('does not sign a contract call when the account changes while triggerSmartContract is pending', async function (st) {
+    st.plan(2)
+
+    const defaultAddress = { base58: 'TFromAddress' }
+    let signCalled = false
+    const { error } = await runInTronWithStub({
+      defaultAddress,
+      transactionBuilder: {
+        triggerSmartContract: async () => {
+          await Promise.resolve()
+          defaultAddress.base58 = 'TOtherAccount'
+          return { result: { result: true }, transaction: {} }
+        }
+      },
+      trx: {
+        sign: async () => {
+          signCalled = true
+          return {}
+        }
+      }
+    })
+
+    st.equal(
+      error,
+      'Send transaction failed: TronLink account changed. Reconnect to continue. . if you use an injected provider, please check it is properly unlocked. '
+    )
+    st.equal(signCalled, false, 'stale builder result never opens a signature request')
+  })
+
+  t.test('does not sign a deployment when the account changes while createSmartContract is pending', async function (st) {
+    st.plan(2)
+
+    const defaultAddress = { base58: 'TFromAddress' }
+    let signCalled = false
+    const { error } = await runInTronWithStub({
+      defaultAddress,
+      transactionBuilder: {
+        createSmartContract: async () => {
+          await Promise.resolve()
+          defaultAddress.base58 = 'TOtherAccount'
+          return { result: true, transaction: {} }
+        }
+      },
+      trx: {
+        sign: async () => {
+          signCalled = true
+          return {}
+        }
+      }
+    }, {
+      to: null
+    })
+
+    st.equal(
+      error,
+      'Send transaction failed: TronLink account changed. Reconnect to continue. . if you use an injected provider, please check it is properly unlocked. '
+    )
+    st.equal(signCalled, false, 'stale deployment builder result never opens a signature request')
   })
 
   t.test('blocks broadcast when account changes while wallet signature is pending', async function (st) {
@@ -273,9 +540,59 @@ tape('txRunnerWeb3 normalizes tron trc10 validation messages', function (t) {
 
     st.equal(
       error,
-      'Send transaction failed: Wallet account changed. Please reconnect TronLink. . if you use an injected provider, please check it is properly unlocked. '
+      'Send transaction failed: TronLink account changed. Reconnect to continue. . if you use an injected provider, please check it is properly unlocked. '
     )
     st.equal(broadcastCalled, false)
+  })
+
+  t.test('fails closed before building when an AI transaction is cancelled', async function (st) {
+    st.plan(3)
+
+    let builderCalled = false
+    let signCalled = false
+    const { error } = await runInTronWithStub({
+      transactionBuilder: {
+        triggerSmartContract: async () => {
+          builderCalled = true
+          return { result: { result: true }, transaction: {} }
+        }
+      },
+      trx: {
+        sign: async () => {
+          signCalled = true
+          return {}
+        }
+      }
+    }, {
+      cancelState: { isCancelled: () => true }
+    })
+
+    st.equal(error && error.message, 'Transaction stopped before signing or broadcast.')
+    st.equal(builderCalled, false, 'cancelled work does not call the transaction builder')
+    st.equal(signCalled, false, 'cancelled work does not open the wallet signature prompt')
+  })
+
+  t.test('does not broadcast a signed AI transaction after cancellation', async function (st) {
+    st.plan(3)
+
+    const cancelState = { cancelled: false, isCancelled () { return this.cancelled } }
+    let broadcastCalled = false
+    const { error } = await runInTronWithStub({
+      trx: {
+        sign: async (transaction) => {
+          cancelState.cancelled = true
+          return { ...transaction, signature: ['0xsignature'] }
+        },
+        sendRawTransaction: async () => {
+          broadcastCalled = true
+          return { result: true }
+        }
+      }
+    }, { cancelState })
+
+    st.equal(error, 'Send transaction failed: Transaction stopped before signing or broadcast. . if you use an injected provider, please check it is properly unlocked. ')
+    st.equal(broadcastCalled, false, 'cancellation after signing prevents broadcast')
+    st.equal(cancelState.cancelled, true, 'the test models cancellation while sign is pending')
   })
 })
 

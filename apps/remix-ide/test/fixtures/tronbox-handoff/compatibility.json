@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "tronboxPackage": "tronbox",
+  "tronboxVersion": "4.8.0",
+  "nodeVersion": "20.19.2",
+  "solcVersion": "0.8.20",
+  "fixture": "scenario.json",
+  "metadataFixture": "tronide-export.json",
+  "metadataSchema": "../../../src/app/tabs/runTab/model/tronide-export.schema.json",
+  "requiredGates": [
+    "export_matches_fixture",
+    "metadata_schema",
+    "migration_syntax",
+    "migration_dry_run",
+    "tronbox_compile"
+  ]
+}

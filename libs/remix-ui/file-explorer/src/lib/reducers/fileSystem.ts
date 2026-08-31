@@ -266,15 +266,15 @@ const resolveDirectory = (provider, path: string, files, content) => {
 
   const prevFiles = _.get(files, _path)
 
-  files = _.set(files, _path, {
+  const nextNode = {
     isDirectory: true,
     path,
     name: extractNameFromKey(path).indexOf('gist-') === 0 ? extractNameFromKey(path).split('-')[1] : extractNameFromKey(path),
     type: extractNameFromKey(path).indexOf('gist-') === 0 ? 'gist' : 'folder',
     child: { ...content[pathArr[pathArr.length - 1]], ...(prevFiles ? prevFiles.child : {}) }
-  })
+  }
 
-  return files
+  return setAtPath(files, _path as string[], nextNode)
 }
 
 const removePath = (root, path: string, pathName, files) => {
@@ -286,17 +286,26 @@ const removePath = (root, path: string, pathName, files) => {
   }, [])
   const prevFiles = _.get(files, _path)
   if (prevFiles) {
-    prevFiles.child && prevFiles.child[pathName] && delete prevFiles.child[pathName]
-    files = _.set(files, _path, {
+    const child = { ...(prevFiles.child || {}) }
+    delete child[pathName]
+    return setAtPath(files, _path as string[], {
       isDirectory: true,
       path,
       name: extractNameFromKey(path).indexOf('gist-') === 0 ? extractNameFromKey(path).split('-')[1] : extractNameFromKey(path),
       type: extractNameFromKey(path).indexOf('gist-') === 0 ? 'gist' : 'folder',
-      child: prevFiles ? prevFiles.child : {}
+      child
     })
   }
 
   return files
+}
+
+const setAtPath = (value, path: string[], nextValue) => {
+  if (path.length === 0) return nextValue
+  const [key, ...rest] = path
+  const container = Array.isArray(value) ? value.slice() : { ...(value || {}) }
+  container[key] = setAtPath(value && value[key], rest, nextValue)
+  return container
 }
 
 const addInputField = (provider, path: string, files, content) => {
@@ -312,8 +321,9 @@ const removeInputField = (provider, path: string, files) => {
   const root = provider.workspace || provider.type || ''
 
   if (path === root) {
-    delete files[root][path + '/' + 'blank']
-    return files
+    const rootFiles = { ...(files[root] || {}) }
+    delete rootFiles[path + '/' + 'blank']
+    return { ...files, [root]: rootFiles }
   }
   return removePath(root, path, path + '/' + 'blank', files)
 }
@@ -330,9 +340,9 @@ const fileRemoved = (provider, path: string, removedPath: string, files) => {
   const root = provider.workspace || provider.type || ''
 
   if (path === root) {
-    delete files[root][removedPath]
-
-    return files
+    const rootFiles = { ...(files[root] || {}) }
+    delete rootFiles[removedPath]
+    return { ...files, [root]: rootFiles }
   }
   return removePath(root, path, extractNameFromKey(removedPath), files)
 }
@@ -354,14 +364,14 @@ const fileRenamed = (provider, path: string, removePath: string, files, content)
   }, [])
   const prevFiles = _.get(files, _path)
 
-  delete prevFiles.child[extractNameFromKey(removePath)]
-  files = _.set(files, _path, {
+  if (!prevFiles) return files
+  const child = { ...(prevFiles.child || {}) }
+  delete child[extractNameFromKey(removePath)]
+  return setAtPath(files, _path as string[], {
     isDirectory: true,
     path,
     name: extractNameFromKey(path).indexOf('gist-') === 0 ? extractNameFromKey(path).split('-')[1] : extractNameFromKey(path),
     type: extractNameFromKey(path).indexOf('gist-') === 0 ? 'gist' : 'folder',
-    child: { ...content[pathArr[pathArr.length - 1]], ...prevFiles.child }
+    child: { ...content[pathArr[pathArr.length - 1]], ...child }
   })
-
-  return files
 }

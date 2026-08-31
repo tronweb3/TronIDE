@@ -97,11 +97,11 @@ export class Ethdebugger {
   }
 
   async sourceLocationFromVMTraceIndex (address, stepIndex) {
-    return this.callTree.sourceLocationTracker.getSourceLocationFromVMTraceIndex(address, stepIndex, this.solidityProxy.contracts)
+    return this.callTree.sourceLocationTracker.getSourceLocationFromVMTraceIndex(address, stepIndex, this.solidityProxy.contracts, this.solidityProxy.sources)
   }
 
   async getValidSourceLocationFromVMTraceIndex (address, stepIndex) {
-    return this.callTree.sourceLocationTracker.getValidSourceLocationFromVMTraceIndex(address, stepIndex, this.solidityProxy.contracts)
+    return this.callTree.sourceLocationTracker.getValidSourceLocationFromVMTraceIndex(address, stepIndex, this.solidityProxy.contracts, this.solidityProxy.sources)
   }
 
   async sourceLocationFromInstructionIndex (address, instIndex, callback) {
@@ -170,22 +170,26 @@ export class Ethdebugger {
     this.event.trigger('traceUnloaded')
   }
 
-  debug (tx) {
+  async debug (tx) {
     if (this.traceManager.isLoading) {
-      return
+      throw new Error('Trace is already loading')
     }
-    tx.to = tx.to || contractCreationToken('0')
+    if (!tx) throw new Error('Transaction is required')
+    tx = { ...tx, to: tx.to || contractCreationToken('0') }
     this.tx = tx
 
-    this.traceManager.resolveTrace(tx).then(async (result) => {
+    try {
+      await this.traceManager.resolveTrace(tx)
       this.setCompilationResult(await this.compilationResult(tx.to))
+      this.storageResolver = new StorageResolver({ web3: this.traceManager.web3 })
       this.event.trigger('newTraceLoaded', [this.traceManager.trace])
       if (this.breakpointManager && this.breakpointManager.hasBreakpoint()) {
-        this.breakpointManager.jumpNextBreakpoint(false)
+        await this.breakpointManager.jumpNextBreakpoint(false)
       }
-      this.storageResolver = new StorageResolver({ web3: this.traceManager.web3 })
-    }).catch((error) => {
-      this.statusMessage = error ? error.message : 'Trace not loaded'
-    })
+      return this.traceManager.trace
+    } catch (error) {
+      this.statusMessage = error && error.message ? error.message : 'Trace not loaded'
+      throw error instanceof Error ? error : new Error(String(error))
+    }
   }
 }

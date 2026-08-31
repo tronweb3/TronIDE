@@ -24,6 +24,23 @@ import UsageIntroductionModal from './components/UsageIntroductionModal';
 // inline-`//` request) can reuse the same lightweight completion helper without
 // reaching into internal service paths.
 export { complete } from './services/toolsApi';
+export {
+  AI_TASK_ENTRY_SCHEMA_VERSION,
+  HOME_AI_TASK_ENTRIES,
+  DEPLOYMENT_NEXT_STEP_ENTRIES,
+  createAITaskEntry,
+  getAITaskEntry,
+  getAITaskEntryReadinessIssue,
+  getNileEnvironmentReadinessIssue,
+  sanitizeAITaskEntryContext
+} from './services/aiTaskEntries';
+export {
+  AI_GOLDEN_WORKFLOW_SCHEMA_VERSION,
+  AI_GOLDEN_WORKFLOWS,
+  createGoldenWorkflowResult,
+  getGoldenWorkflow,
+  getGoldenWorkflowForEntry
+} from './services/aiGoldenWorkflows';
 
 const defaultGPTV='gpt-4';
 class CodeReader extends Component{

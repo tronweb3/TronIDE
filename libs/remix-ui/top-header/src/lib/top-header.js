@@ -17,10 +17,12 @@
 import React, { useEffect, useRef, useState } from 'react' // eslint-disable-line
 import './top-header.css'
 import { BasicLogo } from './svgLogo'
-import { Tooltip, message } from 'antd'
+import Tooltip from 'antd/lib/tooltip'
+import message from 'antd/lib/message'
 import JSZip from 'jszip'
 import * as githubAuth from '../../../../../apps/remix-ide/src/lib/github-auth'
 import { disconnectGithub } from '../../../../../apps/remix-ide/src/lib/github-connection'
+import { RELEASE_NOTES_URL } from '../../../../../apps/remix-ide/src/lib/release-notes-link'
 
 const LOCALHOST_WORKSPACE = ' - connect to localhost - '
 const NO_WORKSPACE = ' - none - '
@@ -31,23 +33,23 @@ const WALLET_ERROR_MESSAGES = {
   // is correct for both (unlock it, then approve) is the honest UX. Returned by
   // normalizeTronLinkErrorMessage for code 4001 / reject keywords, so its own
   // "unlock" wording never causes a re-map (the 4001 branch matches first).
-  WALLET_CONNECTION_REJECTED: "TronLink didn't connect. Make sure it's unlocked, then approve the connection request and try again.",
-  WALLET_LOCKED: "TronLink returned no account. Make sure it's unlocked with at least one account, then reload and try again.",
+  WALLET_CONNECTION_REJECTED: 'TronLink did not connect. Unlock it, approve this site, and try again.',
+  WALLET_LOCKED: 'No TronLink account is available. Unlock an account, then reload.',
   // Covers both a locked wallet and an unauthorized site — the page cannot
   // tell them apart (TronLink reports ready=false with no address in both).
-  WALLET_UNAUTHORIZED: 'Please unlock TronLink and approve the connection to this site',
-  WALLET_REQUEST_TIMEOUT: 'Wallet request timed out. Please try again',
-  WALLET_UNAVAILABLE: 'TronLink is not available in this browser',
-  WALLET_DISCONNECTED: 'Wallet disconnected. Please reconnect TronLink',
-  WALLET_CAPABILITY_MISSING: 'TronLink cannot request accounts. Please update TronLink',
-  WALLET_UNKNOWN_ERROR: 'TronLink connection failed. Please try again',
+  WALLET_UNAUTHORIZED: 'Unlock TronLink and approve this site.',
+  WALLET_REQUEST_TIMEOUT: 'TronLink timed out. Try again.',
+  WALLET_UNAVAILABLE: 'TronLink is not available in this browser.',
+  WALLET_DISCONNECTED: 'TronLink disconnected. Reconnect to continue.',
+  WALLET_CAPABILITY_MISSING: 'TronLink cannot request accounts. Update the extension.',
+  WALLET_UNKNOWN_ERROR: 'TronLink connection failed. Try again.',
   // Used only for a STALE/dead bridge (extension removed/disabled, objects
   // linger until reload) — i.e. a request that timed out rather than resolved.
   // A resolved-but-empty request is split into rejected vs locked at the call
   // site instead. NOTE: keep this clear of words normalizeTronLinkErrorMessage
   // matches (reject/declin/denied/cancel/unlock/locked/unauthorized/...), or it
   // gets rewritten back into one of the canned messages.
-  WALLET_NO_ACCOUNT: 'TronLink returned no account. If you removed, disabled, or switched TronLink, reload the page and try again.'
+  WALLET_NO_ACCOUNT: 'No TronLink account is available. If the extension changed or was disabled, reload the page.'
 }
 
 const WALLET_STATUS_POLL_INTERVAL = 3000
@@ -63,6 +65,15 @@ const setWalletManuallyDisconnected = (flag) => {
     else window.sessionStorage.removeItem(WALLET_MANUAL_DISCONNECT_KEY)
   } catch (error) {
     console.debug('[topHeader] failed to persist wallet disconnect flag', error)
+  }
+}
+
+const readWalletManuallyDisconnected = () => {
+  try {
+    return typeof window !== 'undefined' && window.sessionStorage &&
+      window.sessionStorage.getItem(WALLET_MANUAL_DISCONNECT_KEY) === '1'
+  } catch (error) {
+    return false
   }
 }
 // TronLink's tron_requestAccounts never settles when the user dismisses the
@@ -127,6 +138,8 @@ export const TopHeader = ({ plugin, _deps }) => {
   const [walletState, setWalletState] = useState({ status: 'disconnected', account: '', network: '', message: 'Connect Wallet' })
   const [githubState, setGithubState] = useState({ connected: false, login: '' })
   const [walletConnectInFlight, setWalletConnectInFlight] = useState(false)
+  const [walletConnectPrompt, setWalletConnectPrompt] = useState(null)
+  const [walletConnectSecondsRemaining, setWalletConnectSecondsRemaining] = useState(0)
   const [walletMenuOpen, setWalletMenuOpen] = useState(false)
   const [githubMenuOpen, setGithubMenuOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
@@ -140,13 +153,17 @@ export const TopHeader = ({ plugin, _deps }) => {
   const walletRefreshIdRef = useRef(0)
   const walletNetworkCacheRef = useRef({ provider: null, key: '', label: '' })
   const walletNetworkCacheEpochRef = useRef(0)
-  const walletManuallyDisconnectedRef = useRef(false)
+  // Read the persisted intent during the first render. Initializing this to
+  // false briefly re-adopted a cached TronLink account after reload even though
+  // the user had explicitly disconnected in this tab.
+  const walletManuallyDisconnectedRef = useRef(readWalletManuallyDisconnected())
   // An explicit provider-side disconnect/revoke is authoritative even when
   // TronLink leaves defaultAddress cached. Keep both injected identities so a
   // genuine reconnect/account event or replacement of either object clears it.
   const walletProviderDisconnectedRef = useRef(null)
   const walletWasConnectedRef = useRef(false)
   const walletListenerCleanupRef = useRef(null)
+  const walletListenerProviderRef = useRef(null)
   // Liveness tracking for the injected bridge. walletProbedProviderRef holds the
   // tronLink instance most recently probed; walletBridgeDeadRef is set when a
   // probe proves the bridge is a stale zombie so the poll cannot re-promote the
@@ -161,6 +178,17 @@ export const TopHeader = ({ plugin, _deps }) => {
   const walletMenuRef = useRef(null)
   const githubMenuRef = useRef(null)
   const notificationsRef = useRef(null)
+  const homeNavigationTimersRef = useRef([])
+  const headerMountedRef = useRef(false)
+
+  useEffect(() => {
+    headerMountedRef.current = true
+    return () => {
+      headerMountedRef.current = false
+      homeNavigationTimersRef.current.forEach((timerId) => window.clearTimeout(timerId))
+      homeNavigationTimersRef.current = []
+    }
+  }, [])
 
   useEffect(() => {
     async function fetchVersion () {
@@ -171,23 +199,40 @@ export const TopHeader = ({ plugin, _deps }) => {
   }, [])
 
   useEffect(() => {
-    plugin?.events?.on('aiPluginClosed', (profile) => {
+    if (!plugin?.events?.on) return undefined
+    const onAiPluginClosed = (profile) => {
       setAiPluginClosed(profile)
-    })
-  }, [])
+    }
+    plugin.events.on('aiPluginClosed', onAiPluginClosed)
+    return () => {
+      if (plugin.events.removeListener) plugin.events.removeListener('aiPluginClosed', onAiPluginClosed)
+      else if (plugin.events.off) plugin.events.off('aiPluginClosed', onAiPluginClosed)
+    }
+  }, [plugin])
 
   useEffect(() => {
     walletStateRef.current = walletState
   }, [walletState])
 
   useEffect(() => {
+    if (!walletConnectPrompt || walletConnectPrompt.status !== 'waiting') {
+      setWalletConnectSecondsRemaining(0)
+      return undefined
+    }
+    const updateCountdown = () => {
+      setWalletConnectSecondsRemaining(Math.max(0, Math.ceil((walletConnectPrompt.deadline - Date.now()) / 1000)))
+    }
+    updateCountdown()
+    const intervalId = window.setInterval(updateCountdown, 1000)
+    return () => window.clearInterval(intervalId)
+  }, [walletConnectPrompt])
+
+  useEffect(() => {
     // Reflect the GitHub connection (made on the Home panel) in the header
-    // button — mirrors the wallet header. The token lives in this tab's session
-    // (lib/github-auth); read it from there and subscribe to its onChange.
-    // setToken/clearToken also dispatch 'tronideGithubConnectionChanged', so we
-    // keep that listener (plus focus) for any consumer that relies on the event.
-    // A refresh rehydrates the tab-session token; closing the tab forgets it.
-    const readGithub = () => ({ connected: !!githubAuth.getToken(), login: githubAuth.getLogin() })
+    // button — mirrors the wallet header. Only an opaque BFF session handle
+    // lives in this tab; GitHub's access token remains encrypted server-side.
+    // Keep the existing event plus the direct store subscription in sync.
+    const readGithub = () => ({ connected: githubAuth.isConnected(), login: githubAuth.getLogin() })
     const refresh = () => setGithubState(readGithub())
     refresh()
     githubAuth.onChange(refresh)
@@ -265,22 +310,41 @@ export const TopHeader = ({ plugin, _deps }) => {
     plugin.call('tabs', 'focus', 'home')
   }
 
-  const onReleaseNotes = async () => {
-    await plugin.appManager.activatePlugin('releaseNotes')
-    plugin.call('tabs', 'focus', 'releaseNotes')
+  const cancelHomeNavigationTimers = () => {
+    homeNavigationTimersRef.current.forEach((timerId) => window.clearTimeout(timerId))
+    homeNavigationTimersRef.current = []
+  }
+
+  const scheduleHomeNavigation = (callback, delay) => {
+    const timerId = window.setTimeout(() => {
+      homeNavigationTimersRef.current = homeNavigationTimersRef.current.filter((id) => id !== timerId)
+      if (headerMountedRef.current) callback()
+    }, delay)
+    homeNavigationTimersRef.current.push(timerId)
   }
 
   const connectGithub = async () => {
-    await onHome()
-    window.setTimeout(() => {
-      const advancedToggle = document.querySelector('[data-id="landingAdvancedToolsToggle"]')
-      const advancedContent = document.querySelector('[data-id="landingAdvancedToolsContent"]')
+    cancelHomeNavigationTimers()
+    try {
+      await onHome()
+    } catch (error) {
+      message.error(error && error.message ? error.message : 'Unable to open Home.')
+      return
+    }
+    if (!headerMountedRef.current) return
+    scheduleHomeNavigation(() => {
+      const home = document.querySelector('[data-id="landingPageHomeContainer"]')
+      if (!home) return
+      const advancedToggle = home.querySelector('[data-id="landingAdvancedToolsToggle"]')
+      const advancedContent = home.querySelector('[data-id="landingAdvancedToolsContent"]')
       if (!advancedContent && advancedToggle && typeof advancedToggle.click === 'function') advancedToggle.click()
     }, 80)
-    window.setTimeout(() => {
-      const target = document.querySelector('[data-id="landingGithubTokenPanel"]')
+    scheduleHomeNavigation(() => {
+      const home = document.querySelector('[data-id="landingPageHomeContainer"]')
+      if (!home) return
+      const target = home.querySelector('[data-id="landingGithubTokenPanel"]')
       if (target && target.scrollIntoView) target.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      const connectButton = document.querySelector('[data-id="landingGithubOAuthConnect"]')
+      const connectButton = home.querySelector('[data-id="landingGithubOAuthConnect"]')
       if (connectButton && typeof connectButton.click === 'function') connectButton.click()
     }, 180)
   }
@@ -296,7 +360,7 @@ export const TopHeader = ({ plugin, _deps }) => {
   const onGithubDisconnect = () => {
     disconnectGithub()
     setGithubMenuOpen(false)
-    // githubAuth.clearToken() (inside disconnectGithub) notifies our own
+    // githubAuth.clearSession() (inside disconnectGithub) notifies our own
     // subscriber, but set state here too so the label flips without waiting.
     setGithubState({ connected: false, login: '' })
   }
@@ -306,9 +370,19 @@ export const TopHeader = ({ plugin, _deps }) => {
     gtag('event', 'click', { event_category: 'ai_user_action', event_label: 'show_ai' })
   }
 
-  const toggleSidePanel = () => {
+  const toggleSidePanel = async () => {
     const panel = document.getElementById('side-panel')
-    if (panel) panel.style.display = panel.style.display === 'none' ? '' : 'none'
+    if (!panel) return
+    const shouldShow = panel.style.display === 'none'
+    if (shouldShow && window.matchMedia('(max-width: 768px)').matches) {
+      const aiPanel = document.getElementById('ai-panel')
+      if (aiPanel && aiPanel.style.display !== 'none') await plugin.call('aiPanel', 'conceal')
+    }
+    panel.style.display = shouldShow ? '' : 'none'
+    const resizeHandle = panel.nextElementSibling
+    if (resizeHandle && window.matchMedia('(max-width: 768px)').matches) {
+      resizeHandle.style.display = shouldShow ? 'block' : 'none'
+    }
   }
 
   const toggleBottomPanel = () => {
@@ -358,11 +432,11 @@ export const TopHeader = ({ plugin, _deps }) => {
   }
 
   const createWorkspace = async () => {
-    const workspaceName = window.prompt('Create workspace', `workspace_${Date.now()}`)
-    if (!workspaceName) return
+    setWorkspaceMenuOpen(false)
     await runWorkspaceAction(async () => {
-      await plugin.call('filePanel', 'createWorkspace', workspaceName.trim())
-      setWorkspaceMenuOpen(false)
+      await plugin.appManager.activatePlugin('filePanel')
+      if (_deps && _deps.verticalIcons) _deps.verticalIcons.select('filePanel')
+      await plugin.call('filePanel', 'openCreateWorkspaceDialog')
     })
   }
 
@@ -395,10 +469,22 @@ export const TopHeader = ({ plugin, _deps }) => {
     await runWorkspaceAction(async () => {
       const zip = new JSZip()
       const fileProviders = _deps && _deps.fileProviders
-      const browserProvider = fileProviders && fileProviders.browser
-      if (!browserProvider) throw new Error('File provider is not ready')
-      await browserProvider.copyFolderToJson('/', ({ path, content }) => {
-        zip.file(`tronideBackup${path}`, content)
+      const workspaceProvider = fileProviders && fileProviders.workspace
+      const activeWorkspace = workspaceProvider && typeof workspaceProvider.getWorkspace === 'function'
+        ? workspaceProvider.getWorkspace()
+        : ''
+      if (!workspaceProvider || typeof workspaceProvider.copyFolderToJson !== 'function' || !activeWorkspace || currentWorkspace === LOCALHOST_WORKSPACE || currentWorkspace === NO_WORKSPACE) {
+        throw new Error('Backups are available only for an active browser workspace.')
+      }
+      if (activeWorkspace !== currentWorkspace) {
+        throw new Error('The workspace state changed. Refresh the workspace menu and try again.')
+      }
+      await workspaceProvider.copyFolderToJson('/', ({ path, content }) => {
+        if (typeof content === 'string' && content.startsWith('data:') && content.includes(';base64,')) {
+          zip.file(`tronideBackup${path}`, content.slice(content.indexOf(';base64,') + 8), { base64: true })
+        } else {
+          zip.file(`tronideBackup${path}`, content)
+        }
       })
       const blob = await zip.generateAsync({ type: 'blob' })
       saveAs(blob, 'tronideBackup.zip')
@@ -643,7 +729,7 @@ export const TopHeader = ({ plugin, _deps }) => {
     if (!account) {
       clearWalletNetworkCache()
       if (refreshId === walletRefreshIdRef.current) {
-        const disconnectedMessage = reason === 'disconnect' ? WALLET_ERROR_MESSAGES.WALLET_DISCONNECTED : 'Please unlock TronLink and try again'
+        const disconnectedMessage = reason === 'disconnect' ? WALLET_ERROR_MESSAGES.WALLET_DISCONNECTED : 'Unlock TronLink and try again.'
         setWalletState({ status: reason === 'disconnect' ? 'disconnected' : 'error', account: '', network: '', message: disconnectedMessage })
       }
       return
@@ -783,12 +869,20 @@ export const TopHeader = ({ plugin, _deps }) => {
       attachWalletEmitterListener(emitter, 'disconnect', onWalletDisconnected, removers)
     })
 
+    walletListenerProviderRef.current = injected
     walletListenerCleanupRef.current = () => {
       removers.forEach((remove) => {
         try { remove() } catch (error) { console.debug('[topHeader] wallet listener cleanup failed', error) }
       })
+      if (isSameInjectedWallet(walletListenerProviderRef.current, injected)) walletListenerProviderRef.current = null
       walletListenerCleanupRef.current = null
     }
+  }
+
+  const ensureWalletProviderListeners = () => {
+    const injected = getInjectedWallet()
+    if (!isSameInjectedWallet(walletListenerProviderRef.current, injected)) bindWalletProviderListeners()
+    return injected
   }
 
   const disconnectWallet = async () => {
@@ -799,6 +893,7 @@ export const TopHeader = ({ plugin, _deps }) => {
     walletWasConnectedRef.current = false
     clearWalletNetworkCache()
     setWalletMenuOpen(false)
+    setWalletConnectPrompt(null)
     setWalletState({ status: 'disconnected', account: '', network: '', message: 'Connect Wallet' })
     try {
       const injected = getInjectedWallet()
@@ -818,7 +913,7 @@ export const TopHeader = ({ plugin, _deps }) => {
   }
 
   const renderWalletLabel = () => {
-    if (walletConnectInFlight) return 'Connecting Wallet…'
+    if (walletConnectInFlight) return 'Waiting for TronLink…'
     if (walletState.status === 'connected') return `${shortenTronAddress(walletState.account)} · ${walletState.network}`
     // On error keep the button compact ("Connect Wallet") — the failure reason is
     // surfaced via the toast (message.error) on click, not crammed into the label.
@@ -835,18 +930,19 @@ export const TopHeader = ({ plugin, _deps }) => {
     const injected = getInjectedWallet()
     if (!injected.tronLink || !injected.tronWeb) {
       setWalletState({ status: 'error', account: '', network: '', message: 'TronLink is not installed' })
+      setWalletConnectPrompt({
+        status: 'error',
+        title: 'TronLink is unavailable',
+        message: 'Install or enable the TronLink extension, then try again.'
+      })
       // Surface an explicit popup — the inline label is truncated by the button
       // width, so a silent error here reads as "nothing happened" to the user.
-      message.error('TronLink is not installed. Please install the TronLink extension to connect your wallet.')
+      message.error('TronLink is not installed. Install or enable the extension, then try again.')
       return
     }
     walletConnectInFlightRef.current = true
     setWalletConnectInFlight(true)
-    setWalletState({ status: 'connecting', account: '', network: '', message: 'Connecting Wallet…' })
-    // Cleared in the finally. Set to an antd message-closer while a first-time
-    // approval is pending so the user always has visible feedback even if the
-    // TronLink request hangs (it can, especially the first one after a reload).
-    let closeConnectHint = () => {}
+    setWalletState({ status: 'connecting', account: '', network: '', message: 'Waiting for TronLink…' })
     try {
       if (!injected.tronLink.request) throw Object.assign(new Error(WALLET_ERROR_MESSAGES.WALLET_CAPABILITY_MISSING), { code: 'WALLET_CAPABILITY_MISSING' })
       // If an account is already cached, a live bridge answers in well under the
@@ -855,14 +951,21 @@ export const TopHeader = ({ plugin, _deps }) => {
       // cached account a genuine first-time approval popup may need user time,
       // so keep the full timeout there.
       const hadCachedAccount = !!getInjectedWalletAccount()
-      // First-time connect (no cached account) shows a TronLink approval popup —
-      // surface an immediate hint so a hung/slow request still reads as "go act in
-      // TronLink", not "nothing happened". A cached-account reconnect is silent
-      // (no popup), so skip the hint there.
-      if (!hadCachedAccount) closeConnectHint = message.loading('Approve the connection request in TronLink…', 0)
+      const timeoutMs = hadCachedAccount ? WALLET_LIVENESS_TIMEOUT_MS : WALLET_CONNECT_TIMEOUT_MS
+      // A persistent, actionable card is harder to miss than the old loading
+      // toast and stays readable for the entire wallet wait. It also exposes the
+      // real timeout instead of leaving users to guess whether the request froze.
+      setWalletConnectPrompt({
+        status: 'waiting',
+        title: hadCachedAccount ? 'Checking TronLink' : 'Open TronLink',
+        message: hadCachedAccount
+          ? 'Confirm that the extension is unlocked and responding.'
+          : 'Approve this site in the TronLink popup.',
+        deadline: Date.now() + timeoutMs
+      })
       let requestResult
       try {
-        requestResult = await requestTronAccountsWithTimeout(injected.tronLink, hadCachedAccount ? WALLET_LIVENESS_TIMEOUT_MS : WALLET_CONNECT_TIMEOUT_MS)
+        requestResult = await requestTronAccountsWithTimeout(injected.tronLink, timeoutMs)
       } catch (error) {
         if (hadCachedAccount && error && error.code === 'WALLET_REQUEST_TIMEOUT') {
           // Cached account but the bridge never answered → zombie provider.
@@ -913,14 +1016,19 @@ export const TopHeader = ({ plugin, _deps }) => {
       // clear any dead mark and treat this instance as already probed.
       noteWalletProviderAlive(injected.tronLink)
       setWalletState({ status: 'connected', account, network, message: 'Connected' })
+      setWalletConnectPrompt(null)
     } catch (error) {
       const walletMessage = normalizeTronLinkErrorMessage(error)
       setWalletState({ status: 'error', account: '', network: '', message: walletMessage })
+      setWalletConnectPrompt({
+        status: 'error',
+        title: 'TronLink needs attention',
+        message: walletMessage
+      })
       // Give visible feedback on rejection/timeout too — otherwise the only cue
       // is the truncated inline label and the user assumes the click did nothing.
       message.error(walletMessage)
     } finally {
-      closeConnectHint()
       walletConnectInFlightRef.current = false
       setWalletConnectInFlight(false)
     }
@@ -943,12 +1051,24 @@ export const TopHeader = ({ plugin, _deps }) => {
       })
     }
 
-    const onFocusRefresh = () => scheduleWalletStateRefresh('focus')
+    const refreshFromCurrentProvider = (reason = 'refresh') => {
+      if (walletManuallyDisconnectedRef.current) return
+      ensureWalletProviderListeners()
+      const hasUnreflectedAccount = walletStateRef.current.status !== 'connected' && !!getInjectedWalletAccount()
+      scheduleWalletStateRefresh(hasUnreflectedAccount ? 'connect' : reason)
+    }
+    const onFocusRefresh = () => refreshFromCurrentProvider('focus')
+    const onProviderAvailable = () => refreshFromCurrentProvider('connect')
     window.addEventListener('message', onWalletMessage)
     window.addEventListener('focus', onFocusRefresh)
+    // TronLink can inject after the application mounts (extension startup,
+    // unlock, or MV3 service-worker restart). Bind immediately when its
+    // availability event is emitted; the poll below remains the fallback for
+    // providers that do not emit it.
+    window.addEventListener('tronLink#initialized', onProviderAvailable)
     const intervalId = window.setInterval(() => {
       if (walletManuallyDisconnectedRef.current) return
-      const injected = getInjectedWallet()
+      const injected = ensureWalletProviderListeners()
       if (isSameInjectedWallet(walletProviderDisconnectedRef.current, injected)) return
       const recoverable = walletWasConnectedRef.current || walletStateRef.current.status === 'connected'
       // Promote the header when the provider already holds an account it hasn't
@@ -964,25 +1084,42 @@ export const TopHeader = ({ plugin, _deps }) => {
       if (walletListenerCleanupRef.current) walletListenerCleanupRef.current()
       window.removeEventListener('message', onWalletMessage)
       window.removeEventListener('focus', onFocusRefresh)
+      window.removeEventListener('tronLink#initialized', onProviderAvailable)
       window.clearInterval(intervalId)
     }
   }, [])
 
+  useEffect(() => {
+    try {
+      window.dispatchEvent(new CustomEvent('tronideWalletConnectionChanged', {
+        detail: { connected: walletState.status === 'connected' && Boolean(walletState.account) }
+      }))
+    } catch (error) {
+      console.debug('[topHeader] wallet state event failed', error)
+    }
+  }, [walletState.status, walletState.account])
+
   return (
     <div className='top-header-wrapper'>
       <div className='d-flex align-items-center'>
-        <div className='homeIcon' onClick={onHome}>
+        <div className='homeIcon' role='button' tabIndex={0} aria-label='Home' onClick={onHome} onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onHome()
+          }
+        }}>
           <BasicLogo />
         </div>
-        <button
-          type='button'
+        <a
           className='header-version'
           data-id='headerVersionBadge'
-          title='View release notes'
-          onClick={onReleaseNotes}
+          href={RELEASE_NOTES_URL}
+          target='_blank'
+          rel='noopener noreferrer'
+          title='Open release notes in a new tab'
         >
           v{version}
-        </button>
+        </a>
       </div>
       <div className='header-workspace-menu' ref={workspaceMenuRef} data-id='headerWorkspaceMenu'>
         <button
@@ -1001,7 +1138,7 @@ export const TopHeader = ({ plugin, _deps }) => {
           <div className='header-workspace-dropdown' role='menu'>
             <div className='workspace-menu-title'>{renderWorkspaceLabel()}</div>
             <button type='button' className='workspace-menu-primary' data-id='headerCreateWorkspace' onClick={createWorkspace} disabled={workspaceBusy}>
-              <i className='fas fa-plus'></i><span>Create a new Workspace</span>
+              <i className='fas fa-plus'></i><span>Create a new workspace</span>
             </button>
             {workspaces.length > 0 && <div className='workspace-menu-section'>Workspaces</div>}
             {workspaces.map((workspaceName) =>
@@ -1043,18 +1180,18 @@ export const TopHeader = ({ plugin, _deps }) => {
         </div>
         <div className='header-help-actions d-flex align-items-center' data-id='headerHelpActions'>
           <Tooltip title='Release Notes'>
-            <button className='settings-icon-wrapper' data-id='headerReleaseNotes' aria-label='Release Notes' onClick={onReleaseNotes}>
+            <a className='settings-icon-wrapper' data-id='headerReleaseNotes' aria-label='Open Release Notes in a new tab' href={RELEASE_NOTES_URL} target='_blank' rel='noopener noreferrer'>
               <i className='fas fa-bullhorn' aria-hidden='true'></i>
-            </button>
+            </a>
           </Tooltip>
           <Tooltip title='Report an issue / Feedback'>
             <button className='settings-icon-wrapper' data-id='headerReportIssue' aria-label='Report an issue on GitHub' onClick={() => { try { window.open('https://github.com/tronweb3/TronIDE/issues', '_blank', 'noopener,noreferrer') } catch (e) { console.debug('[topHeader] open issues failed', e) } }}>
-              <i className='fas fa-comment-dots' aria-hidden='true'></i>
+              <i className='fas fa-bug' aria-hidden='true'></i>
             </button>
           </Tooltip>
         </div>
         <div className='header-actions'>
-          <div className='header-github-action' ref={githubMenuRef} hidden>
+          <div className='header-github-action' ref={githubMenuRef}>
             <button
               className='header-action-btn'
               data-id='headerGithubConnect'
@@ -1090,9 +1227,32 @@ export const TopHeader = ({ plugin, _deps }) => {
               aria-expanded={walletState.status === 'connected' ? walletMenuOpen : undefined}
               onClick={walletState.status === 'connected' ? () => setWalletMenuOpen(!walletMenuOpen) : connectWallet}
             >
-              <span className='header-action-icon'>↔</span>
+              <i className='fas fa-wallet header-action-icon' aria-hidden='true'></i>
               <span>{renderWalletLabel()}</span>
             </button>
+            {walletConnectPrompt && walletState.status !== 'connected' &&
+              <div
+                className={`header-wallet-connect-prompt ${walletConnectPrompt.status === 'error' ? 'is-error' : ''}`}
+                data-id='headerWalletConnectPrompt'
+                role={walletConnectPrompt.status === 'error' ? 'alert' : 'status'}
+                aria-live='polite'
+              >
+                <div className='wallet-connect-prompt-heading'>
+                  <i className='fas fa-wallet' aria-hidden='true'></i>
+                  <strong>{walletConnectPrompt.title}</strong>
+                </div>
+                <div className='wallet-connect-prompt-message'>{walletConnectPrompt.message}</div>
+                {walletConnectPrompt.status === 'waiting'
+                  ? <div className='wallet-connect-prompt-countdown' data-id='headerWalletConnectCountdown'>
+                    {walletConnectSecondsRemaining}s remaining
+                  </div>
+                  : <div className='wallet-connect-prompt-actions'>
+                    <button type='button' data-id='headerWalletConnectRetry' onClick={connectWallet}>Open TronLink &amp; retry</button>
+                    <button type='button' data-id='headerWalletConnectDismiss' onClick={() => setWalletConnectPrompt(null)}>Dismiss</button>
+                  </div>
+                }
+              </div>
+            }
             {walletMenuOpen && walletState.status === 'connected' &&
               <div className='header-wallet-menu' data-id='headerWalletMenu' role='menu'>
                 <div className='wallet-menu-title'>TronLink Wallet</div>
@@ -1119,7 +1279,12 @@ export const TopHeader = ({ plugin, _deps }) => {
               targetOffset: [0, 0]
             }}
           >
-            <svg onClick={showAiPopup} className={'a-icon ai-show-btn'} aria-hidden="true">
+            <svg onClick={showAiPopup} onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                showAiPopup()
+              }
+            }} className={'a-icon ai-show-btn'} role='button' tabIndex={0} aria-label='Show TRON IDE AI Assistant'>
               <use xlinkHref="#icon-fangda"></use>
             </svg>
           </Tooltip> : null

@@ -26,14 +26,14 @@ Issues labeled **`good first issue`** or **`help wanted`** are good starting poi
 git clone https://github.com/tronweb3/TronIDE.git
 cd TronIDE
 pnpm install --frozen-lockfile
-pnpm build:libs
+pnpm setup-workspace
 ```
 
 ### Git hooks
 
 To maintain high code quality and prevent accidental credential leaks, this repository uses Git hooks for pre-commit checks (including fast local secret scans, API key checks, eval checks, and optional Claude Code AI review).
 
-These hooks are set up automatically when you run `pnpm install` via the `setup-hooks` script. If you need to manually install or reset them, run:
+Install hooks explicitly after dependency installation. If you need to install or reset them, run:
 ```bash
 pnpm run setup-hooks
 ```

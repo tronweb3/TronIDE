@@ -19,6 +19,8 @@
 
 'use strict'
 
+import { ethers } from 'ethers'
+
 export async function solidityLocals (vmtraceIndex, internalTreeCall, stack, memory, storageResolver, calldata, currentSourceLocation, cursor) {
   const scope = internalTreeCall.findScope(vmtraceIndex)
   if (!scope) {
@@ -43,7 +45,10 @@ export async function solidityLocals (vmtraceIndex, internalTreeCall, stack, mem
       // 在使用 variable.type 之前检查它是否存在且有 decodeFromStack 方法
       if (variable.type && typeof variable.type.decodeFromStack === 'function') {
         try {
-          locals[name] = await variable.type.decodeFromStack(variable.stackDepth, stack, formattedMemory, storageResolver, calldata, cursor, variable)
+          const calldataValue = decodeInputParameterFromCalldata(variable, calldata, vmtraceIndex)
+          locals[name] = calldataValue === null
+            ? await variable.type.decodeFromStack(variable.stackDepth, stack, formattedMemory, storageResolver, calldata, cursor, variable)
+            : calldataValue
         } catch (e) {
           console.error(`Error decoding local variable '${name}':`, e)
           locals[name] = `<decoding failed - ${e.message}>`
@@ -57,6 +62,92 @@ export async function solidityLocals (vmtraceIndex, internalTreeCall, stack, mem
     }
   }
   return locals
+}
+
+function decodeInputParameterFromCalldata (variable, calldata, vmtraceIndex) {
+  if (!variable.decodeFromCalldata ||
+    variable.calldataEntryStep !== vmtraceIndex ||
+    !variable.abi ||
+    variable.parameterIndex === undefined) return null
+  const rawCalldata = Array.isArray(calldata) ? calldata[0] : calldata
+  if (typeof rawCalldata !== 'string' || rawCalldata.length < 10) return null
+
+  try {
+    const iface = new ethers.utils.Interface(variable.abi)
+    const functionFragment = iface.getFunction(rawCalldata.slice(0, 10))
+    if (!functionFragment ||
+      functionFragment.name !== variable.functionName ||
+      functionFragment.inputs.length !== variable.functionParameterCount) return null
+    if (variable.functionSelector &&
+      iface.getSighash(functionFragment).slice(2).toLowerCase() !== variable.functionSelector.toLowerCase()) return null
+
+    const decoded = iface.decodeFunctionData(functionFragment, rawCalldata)
+    const abiInput = functionFragment.inputs[variable.parameterIndex]
+    if (!abiInput || decoded[variable.parameterIndex] === undefined) return null
+    return formatCalldataValue(decoded[variable.parameterIndex], abiInput, variable.type)
+  } catch (error) {
+    return null
+  }
+}
+
+function formatCalldataValue (value, abiType, decoderType) {
+  const typeName = decoderType && decoderType.typeName ? decoderType.typeName : abiType.type
+
+  if (abiType.baseType === 'array' && Array.isArray(value)) {
+    const underlyingType = decoderType && decoderType.underlyingType
+    return {
+      value: value.map(item => formatCalldataValue(item, abiType.arrayChildren, underlyingType)),
+      length: '0x' + value.length.toString(16),
+      type: typeName
+    }
+  }
+
+  if (abiType.baseType === 'tuple' && Array.isArray(value)) {
+    const tuple = {}
+    abiType.components.forEach((component, index) => {
+      const member = decoderType && decoderType.members && decoderType.members[index]
+      tuple[component.name || index] = formatCalldataValue(value[index], component, member && member.type)
+    })
+    return { value: tuple, type: typeName }
+  }
+
+  if (typeName === 'string') {
+    const raw = ethers.utils.hexlify(ethers.utils.toUtf8Bytes(value))
+    return {
+      length: '0x' + ethers.utils.hexDataLength(raw).toString(16),
+      raw,
+      type: typeName,
+      value
+    }
+  }
+
+  if (abiType.baseType === 'bytes') {
+    return {
+      length: '0x' + ethers.utils.hexDataLength(value).toString(16),
+      value,
+      type: typeName
+    }
+  }
+
+  if (decoderType && decoderType.basicType === 'ValueType' && typeof decoderType.decodeValue === 'function') {
+    let encodedValue
+    const integerType = abiType.type.match(/^(u?int)(\d*)$/)
+    if (integerType) {
+      const bitWidth = Number(integerType[2] || 256)
+      const integerValue = ethers.BigNumber.from(value)
+      encodedValue = (integerType[1] === 'int' ? integerValue.toTwos(bitWidth) : integerValue)
+        .toHexString()
+        .replace('0x', '')
+    } else if (ethers.BigNumber.isBigNumber(value)) encodedValue = value.toHexString().replace('0x', '')
+    else if (typeof value === 'boolean') encodedValue = value ? '01' : '00'
+    else encodedValue = String(value).replace('0x', '')
+    return { value: decoderType.decodeValue(encodedValue), type: typeName }
+  }
+
+  return {
+    value: ethers.BigNumber.isBigNumber(value) ? value.toString() : value,
+    type: typeName
+  }
 }
 
 function formatMemory (memory) {

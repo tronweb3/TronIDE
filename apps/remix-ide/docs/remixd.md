@@ -21,8 +21,10 @@ For example, to use remixd with Remix IDE ( and not the alpha version) use this 
 Make sure that if you use https://remix.ethereum.org (secure http) in the remixd command (like in the example above), that you are also pointing your browser to https://remix.ethereum.org and not to http://remix.ethereum.org (plain old insecure http).  Or if you want to use http in the browser use http in the remixd command.
 
 
-The folder is shared using a websocket connection between `Remix IDE`
-and `remixd`.
+The folder is shared using a websocket connection between `TronIDE`
+and `remixd`. In TronIDE 2.3.3 the connection is made to the loopback
+endpoint `ws://127.0.0.1:65520`; the remixd daemon binds to loopback and
+checks the configured IDE origin.
 
 Be sure the user executing `remixd` has read/write permission on the
 folder.
@@ -31,8 +33,17 @@ There is an option to run remixd in read-only mode, use `--read-only` flag.
 
 **Warning!**
 
-`remixd` provides `full read and write access` to the given folder for `any
-application` that can access the `TCP port 65520` on your local host.
+`remixd` provides `full read and write access` to the given folder. Treat the
+shared folder and the local port as a trusted local security boundary: other
+applications running on your computer may be able to access the loopback
+service. Share only the intended folder and use `--read-only` whenever write
+access is not required.
+
+Before opening the websocket, TronIDE obtains a 128-bit session token from the
+local remixd daemon's `/remixd-token` endpoint and includes it in the local
+connection URL. The daemon validates the token and the configured IDE origin
+before accepting the websocket. If the token endpoint, origin check, or
+handshake fails, TronIDE fails closed and does not open the filesystem session.
 
 From `Remix IDE`, in the Plugin Manager you need to activate the remixd plugin.  
 
@@ -56,5 +67,3 @@ Click the File Explorers icon and in the swap panel you should now see the folde
 Click on the `localhost connection` icon:
 
 ![](images/a-remixd-success.png)
-
-

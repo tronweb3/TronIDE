@@ -4,14 +4,15 @@
  * Context: the production target is GitHub Pages, which cannot emit response
  * headers, so the <meta> CSP in index.html is the only CSP a GitHub-Pages
  * visitor receives. The CSP / clickjacking headers are therefore declared in
- * five places that must not drift:
+ * six places that must not drift:
  *   - apps/remix-ide/nginx.conf           (Docker image, response header)
  *   - build.sh `_headers`                 (Cloudflare Pages / Netlify, response header)
  *   - apps/remix-ide/webpack.config.js    (dev-server, response header)
  *   - apps/remix-ide/src/index.html       (<meta> fallback)
  *   - apps/remix-ide/src/webpack.index.html (<meta> fallback)
+ *   - apps/remix-ide/src/release-notes.html (<meta> fallback)
  *
- * The four "response header" sources carry the full policy; the two <meta>
+ * The three response-header sources carry the full policy; the three <meta>
  * sources carry the same policy minus `frame-ancestors`, which browsers ignore
  * in a <meta> tag. These tests pin that contract so a future edit to one source
  * fails CI unless every source is updated together.
@@ -43,8 +44,8 @@ var CSP_DIRECTIVES = [
   "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://use.fontawesome.com https://*.fontawesome.com",
   "font-src 'self' data: https://use.fontawesome.com https://*.fontawesome.com https://cdnjs.cloudflare.com",
   "img-src 'self' data: blob: https:",
-  "connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss:",
-  "frame-src 'self' http://localhost:* https:",
+  "connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss://localhost:* wss://127.0.0.1:*",
+  "frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*",
   "worker-src 'self' blob:",
   "form-action 'self'"
 ]
@@ -61,6 +62,7 @@ function metaCspContent (html) {
 test('every CSP directive is present and identical across all five sources', function (t) {
   var indexHtml = metaCspContent(readIdeSource('index.html'))
   var webpackIndexHtml = metaCspContent(readIdeSource('webpack.index.html'))
+  var releaseNotesHtml = metaCspContent(readIdeSource('release-notes.html'))
   var nginxConfig = readRoot('apps/remix-ide/nginx.conf')
   var buildSh = readRoot('build.sh')
   var webpackConfig = readRoot('apps/remix-ide/webpack.config.js')
@@ -68,6 +70,7 @@ test('every CSP directive is present and identical across all five sources', fun
   // <meta> sources must equal the full policy minus the header-only directive.
   t.equal(indexHtml, META_POLICY, 'index.html <meta> CSP matches the canonical policy (no frame-ancestors)')
   t.equal(webpackIndexHtml, META_POLICY, 'webpack.index.html <meta> CSP matches the canonical policy (no frame-ancestors)')
+  t.equal(releaseNotesHtml, META_POLICY, 'release-notes.html <meta> CSP matches the canonical policy (no frame-ancestors)')
 
   // Response-header sources must carry the full policy, including frame-ancestors.
   t.ok(nginxConfig.indexOf(FULL_POLICY) !== -1, 'nginx.conf carries the full canonical policy incl. frame-ancestors')
@@ -90,6 +93,7 @@ test('every CSP directive is present and identical across all five sources', fun
 test('frame-ancestors is a response-header-only directive (absent from <meta> fallbacks)', function (t) {
   t.equal(metaCspContent(readIdeSource('index.html')).indexOf(FRAME_ANCESTORS), -1, 'index.html <meta> omits frame-ancestors (browsers ignore it there)')
   t.equal(metaCspContent(readIdeSource('webpack.index.html')).indexOf(FRAME_ANCESTORS), -1, 'webpack.index.html <meta> omits frame-ancestors')
+  t.equal(metaCspContent(readIdeSource('release-notes.html')).indexOf(FRAME_ANCESTORS), -1, 'release-notes.html <meta> omits frame-ancestors')
   t.end()
 })
 

@@ -17,25 +17,57 @@
  * limitations under the License.
  */
 
-/* global localStorage, fetch */
+/* global localStorage */
 import { PluginManager } from '@remixproject/engine'
 import { SecureIframePlugin as IframePlugin } from './app/components/secure-iframe-plugin'
 import { EventEmitter } from 'events'
 import QueryParams from './lib/query-params'
 import { filterUrlPluginNames } from './lib/url-param-security'
 import { PermissionHandler } from './app/ui/persmission-handler'
+const { installPermissionedCallPluginMethod, isSafePermissionKey } = require('./app/ui/permission-security')
+const { assertSafeProfileUpdate, clonePluginProfile } = require('./lib/plugin-profile-security')
+const {
+  assertAllowedPluginProfile,
+  isNativePluginName,
+  isTrustedHostPluginProfile,
+  requiredPluginNames
+} = require('./lib/plugin-trust-security')
 const _paq = window._paq = window._paq || []
 
-const requiredModules = [ // services + layout views + system views
-  'manager', 'compilerArtefacts', 'compilerMetadata', 'contextualListener', 'editor', 'offsetToLineColumnConverter', 'network', 'theme',
-  'fileManager', 'contentImport', 'web3Provider', 'scriptRunner', 'fetchAndCompile', 'mainPanel', 'hiddenPanel', 'sidePanel', 'menuicons',
-  'filePanel', 'terminal', 'settings', 'pluginManager', 'tabs', 'udapp', 'dGitProvider', 'aiPanel', 'headerPanel']
+const requiredModules = [...requiredPluginNames] // services + layout views + system views
 
 const dependentModules = ['git', 'hardhat'] // module which shouldn't be manually activated (e.g git is activated by remixd)
 
+// Profiles returned directly to an untrusted connector are capability
+// metadata, not the manager's internal registration records. Keep this an
+// explicit allowlist so new private fields (for example connector URLs or
+// security diagnostics) cannot become public by accident.
+const publicProfileFields = [
+  'name', 'displayName', 'methods', 'events', 'permission', 'description',
+  'documentation', 'version', 'kind', 'canActivate', 'icon', 'maintainedBy',
+  'author', 'repo', 'authorContact', 'location'
+]
+const publicProfileArrayFields = new Set(['methods', 'events', 'canActivate'])
+
+function clonePublicPluginProfile (profile) {
+  if (!profile || typeof profile !== 'object') return profile
+  const result = {}
+  for (const key of publicProfileFields) {
+    if (!Object.prototype.hasOwnProperty.call(profile, key)) continue
+    const value = profile[key]
+    if (publicProfileArrayFields.has(key)) {
+      if (Array.isArray(value)) result[key] = value.filter((entry) => typeof entry === 'string')
+    } else if (key === 'permission') {
+      if (typeof value === 'boolean') result[key] = value
+    } else if (typeof value === 'string') {
+      result[key] = value
+    }
+  }
+  return result
+}
+
 export function isNative (name) {
-  const nativePlugins = ['vyper', 'workshops', 'debugger', 'remixd', 'menuicons', 'solidity', 'hardhat-provider', 'solidityStaticAnalysis', 'solidityUnitTesting', 'contractVerification', 'gitPanel', 'solidityUml']
-  return nativePlugins.includes(name) || requiredModules.includes(name)
+  return isNativePluginName(name)
 }
 
 /**
@@ -49,17 +81,35 @@ export function isNative (name) {
  * @returns {boolean}
  */
 export function canActivate (from, to) {
-  return isNative(from.name) ||
-  (to && from && from.canActivate && from.canActivate.includes(to.name))
+  return isTrustedHostPluginProfile(from) ||
+  Boolean(to && from && from.canActivate && from.canActivate.includes(to.name))
 }
 
 export class RemixAppManager extends PluginManager {
   constructor () {
     super()
+    // Manager lifecycle events carry complete plugin profiles. Mark the
+    // manager as permission-aware so external event subscriptions go through
+    // RemixEngine's event permission gate.
+    this.profile = { ...clonePluginProfile(this.profile), permission: true }
     this.event = new EventEmitter()
-    this.pluginsDirectory = 'https://raw.githubusercontent.com/ethereum/remix-plugins-directory/master/build/metadata.json'
     this.pluginLoader = new PluginLoader()
     this.permissionHandler = new PermissionHandler()
+    this.fullProfileReadRequests = new WeakMap()
+  }
+
+  async getProfile (name) {
+    if (!isSafePermissionKey(name) || !Object.prototype.hasOwnProperty.call(this.profiles, name)) return undefined
+
+    const profile = this.profiles[name]
+    const request = this.currentRequest
+    if (!request || (typeof request === 'object' && this.fullProfileReadRequests.has(request))) return profile
+
+    const callerName = request.from
+    const callerProfile = isSafePermissionKey(callerName) && Object.prototype.hasOwnProperty.call(this.profiles, callerName)
+      ? this.profiles[callerName]
+      : null
+    return isTrustedHostPluginProfile(callerProfile) ? profile : clonePublicPluginProfile(profile)
   }
 
   async canActivatePlugin (from, to) {
@@ -68,7 +118,42 @@ export class RemixAppManager extends PluginManager {
 
   async canDeactivatePlugin (from, to) {
     if (requiredModules.includes(to.name)) return false
-    return isNative(from.name)
+    return isTrustedHostPluginProfile(from)
+  }
+
+  async canUpdateProfile (from, to) {
+    await super.canUpdateProfile(from, to)
+    return assertSafeProfileUpdate(from, to)
+  }
+
+  async updateProfile (profile) {
+    const request = this.currentRequest
+    const scopedRequest = request && typeof request === 'object' ? request : null
+    // PluginManager.updateProfile reads the caller through this.getProfile().
+    // Keep that one request on the full-profile path so websocket handshakes
+    // can resend unchanged identity fields while direct external reads remain
+    // redacted. The manager request queue serializes connector calls, and the
+    // identity check prevents an unrelated request from inheriting this scope.
+    if (scopedRequest) {
+      this.fullProfileReadRequests.set(scopedRequest, (this.fullProfileReadRequests.get(scopedRequest) || 0) + 1)
+    }
+    try {
+      return await super.updateProfile(profile && clonePluginProfile(profile))
+    } finally {
+      if (scopedRequest) {
+        const remaining = (this.fullProfileReadRequests.get(scopedRequest) || 1) - 1
+        if (remaining > 0) this.fullProfileReadRequests.set(scopedRequest, remaining)
+        else this.fullProfileReadRequests.delete(scopedRequest)
+      }
+    }
+  }
+
+  addProfile (profiles) {
+    const cloneAndValidate = (profile) => {
+      const cloned = clonePluginProfile(profile)
+      return assertAllowedPluginProfile(cloned)
+    }
+    return super.addProfile(Array.isArray(profiles) ? profiles.map(cloneAndValidate) : cloneAndValidate(profiles))
   }
 
   async deactivatePlugin (name) {
@@ -82,12 +167,23 @@ export class RemixAppManager extends PluginManager {
   }
 
   async canCall (from, to, method, message) {
-    // Make sure the caller of this methods is the target plugin
-    if (to !== this.currentRequest.from) {
+    const hasOwn = Object.prototype.hasOwnProperty
+    const requestTarget = this.currentRequest && this.currentRequest.from
+    // canCall is itself exposed by the manager. Bind its arguments back to the
+    // permission-aware target that made the nested request, and never accept a
+    // synthetic target/method tuple supplied directly by an external plugin.
+    if (!isSafePermissionKey(from) || !isSafePermissionKey(to) || !isSafePermissionKey(method) ||
+      to !== requestTarget || !hasOwn.call(this.profiles, from) || !hasOwn.call(this.profiles, to)) {
       return false
     }
+
+    const targetProfile = this.profiles[to]
+    if (!targetProfile || !hasOwn.call(targetProfile, 'methods') || !Array.isArray(targetProfile.methods) ||
+      !targetProfile.methods.includes(method)) return false
+
     // skipping native plugins' requests
-    if (isNative(from)) {
+    const callerProfile = this.profiles[from]
+    if (isTrustedHostPluginProfile(callerProfile)) {
       return true
     }
     // ask the user for permission
@@ -126,77 +222,60 @@ export class RemixAppManager extends PluginManager {
   }
 
   async registeredPlugins () {
-    let plugins
-    try {
-      // const res = await fetch(this.pluginsDirectory)
-      // plugins = await res.json()
-      // plugins = plugins.filter((plugin) => {
-      //   if (plugin.targets && Array.isArray(plugin.targets) && plugin.targets.length > 0) {
-      //     return (plugin.targets.includes('remix'))
-      //   }
-      //   return true
-      // })
-      // plugins = plugins.filter(plugin => {
-      //   return [
-      //     'scriptRunner', 'restorebackupzip'
-      //   ].includes(plugin.name)
-      // })
-      plugins = [
-        {
-          name: 'scriptRunner',
-          displayName: 'Script Runner',
-          description: 'Execute script and emit logs',
-          version: '1.0.0-alpha.1',
-          methods: [
-            'execute'
-          ],
-          kind: 'none',
-          icon: '/assets/plugins/scriptRunner/icon.png',
-          location: 'hiddenPanel',
-          // Use the concrete file, not the directory URL. The test host redirects
-          // a slashless HTTPS directory to HTTP, which mixed-content blocking
-          // turns into a plugin activation that never completes.
-          url: '/assets/plugins/scriptRunner/index.html',
-          repo: 'https://github.com/bunsenstraat/remix-script-runner',
-          maintainedBy: 'Remix',
-          authorContact: ''
-        },
-        {
-          name: 'restorebackupzip',
-          displayName: 'Restore Backup Zip',
-          description: 'Use this to restore your TronIDE backup zip files to the new workspaces.',
-          documentation: '',
-          version: '0.1.0',
-          events: [],
-          methods: [],
-          // Keep remembered permissions bound to the bundled plugin content.
-          // The regression test recomputes this from index.html + bundle.js.
-          hash: 'sha256:23dfd39f77246e306a809dd5f5c5bda6cf26fc3f8a9a95c83c29bdda2491140e',
-          icon: '/assets/plugins/restorebackupzip/icon.png',
-          location: 'mainPanel',
-          url: '/assets/plugins/restorebackupzip/index.html',
-          targets: [
-            'remix'
-          ],
-          repo: 'https://github.com/bunsenstraat/restorezip',
-          maintainedBy: '',
-          authorContact: ''
-        }
-      ]
-      localStorage.setItem('plugins-directory', JSON.stringify(plugins))
-    } catch (e) {
-      console.log('getting plugins list from localstorage...')
-      const savedPlugins = localStorage.getItem('plugins-directory')
-      if (savedPlugins) {
-        try {
-          plugins = JSON.parse(savedPlugins)
-        } catch (e) {
-          console.error(e)
-        }
+    const plugins = [
+      {
+        name: 'scriptRunner',
+        displayName: 'Script Runner',
+        description: 'Execute script and emit logs',
+        version: '1.0.0-alpha.1',
+        methods: [
+          'execute'
+        ],
+        kind: 'none',
+        icon: '/assets/plugins/scriptRunner/icon.png',
+        location: 'hiddenPanel',
+        // Use the concrete file, not the directory URL. The test host redirects
+        // a slashless HTTPS directory to HTTP, which mixed-content blocking
+        // turns into a plugin activation that never completes.
+        url: '/assets/plugins/scriptRunner/index.html',
+        repo: 'https://github.com/bunsenstraat/remix-script-runner',
+        maintainedBy: 'Remix',
+        authorContact: ''
+      },
+      {
+        name: 'restorebackupzip',
+        displayName: 'Restore Backup Zip',
+        description: 'Use this to restore your TronIDE backup zip files to the new workspaces.',
+        documentation: '',
+        version: '0.1.0',
+        events: [],
+        methods: [],
+        // Keep remembered permissions bound to the bundled plugin content.
+        // The regression test recomputes this from index.html + bundle.js.
+        hash: 'sha256:b09d52e2a8e4e841b8663b730db3b3647def389b3d613d1f38813cf2f04cb0cb',
+        icon: '/assets/plugins/restorebackupzip/icon.png',
+        location: 'mainPanel',
+        url: '/assets/plugins/restorebackupzip/index.html',
+        targets: [
+          'remix'
+        ],
+        repo: 'https://github.com/bunsenstraat/restorezip',
+        maintainedBy: '',
+        authorContact: ''
       }
-    }
+    ]
     return plugins.map(plugin => {
-      return new IframePlugin(plugin)
+      // Bundled iframe code executes outside this class, but calls arrive at
+      // its connector instance first. Gate that dispatch so an untrusted
+      // plugin cannot turn a trusted utility such as scriptRunner into a
+      // confused deputy that reads files or reaches unrestricted provider
+      // APIs under the host plugin's identity.
+      return installPermissionedCallPluginMethod(
+        new IframePlugin(plugin),
+        (method) => plugin.name === 'scriptRunner' && method === 'execute'
+          ? 'execute script code with access to IDE capabilities'
+          : `use bundled iframe capability ${plugin.name}.${method}`
+      )
     })
   }
 }
@@ -212,7 +291,11 @@ class PluginLoader {
 
   constructor () {
     const queryParams = new QueryParams()
-    this.donotAutoReload = ['remixd', 'git'] // that would be a bad practice to force loading some plugins at page load.
+    // releaseNotes is retained only as a legacy saved-workspace value. The
+    // current Release Notes is a standalone document, so filter any stale
+    // activation left by older versions instead of trying to load a removed
+    // workbench plugin at startup.
+    this.donotAutoReload = ['remixd', 'git', 'releaseNotes'] // that would be a bad practice to force loading some plugins at page load.
     this.loaders = {}
     this.loaders.localStorage = {
       set: (plugin, actives) => {
@@ -222,7 +305,10 @@ class PluginLoader {
       get: () => {
         // Guard against a corrupt 'workspace' value: an unparseable string here
         // throws on the boot path (app.js run()) and white-screens the IDE.
-        try { return JSON.parse(localStorage.getItem('workspace')) } catch (e) { return null }
+        try {
+          const saved = JSON.parse(localStorage.getItem('workspace'))
+          return Array.isArray(saved) ? saved.filter((name) => !this.donotAutoReload.includes(name)) : []
+        } catch (e) { return [] }
       }
     }
 

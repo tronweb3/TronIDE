@@ -40,7 +40,7 @@ module.exports = {
       .waitForElementVisible('*[data-id="landingPageHomeContainer"]', 10000)
       .pause(1500)
       .execute(function () {
-        return window['__fixedWarningMessages'] || []
+        return (window as any).__fixedWarningMessages || []
       }, [], function (result) {
         const messages = result.value as string[]
         const fixedWarningPatterns = [

@@ -30,6 +30,8 @@ export class DebuggerSolidityState {
   solidityProxy
   stateVariablesByAddresses
   tx
+  _decodeTimeout
+  _decodeGeneration
 
   constructor (tx, _stepManager, _traceManager, _codeManager, _solidityProxy) {
     this.event = new EventManager()
@@ -40,10 +42,14 @@ export class DebuggerSolidityState {
     this.solidityProxy = _solidityProxy
     this.stateVariablesByAddresses = {}
     this.tx = tx
+    this._decodeTimeout = null
+    this._decodeGeneration = 0
   }
 
   init (index) {
-    let decodeTimeout = null
+    const generation = ++this._decodeGeneration
+    const stepIndex = index
+    this._clearDecodeTimeout()
     if (index < 0) {
       return this.event.trigger('solidityStateMessage', ['invalid step index'])
     }
@@ -56,50 +62,70 @@ export class DebuggerSolidityState {
     if (!this.storageResolver) {
       return
     }
-    if (decodeTimeout) {
-      window.clearTimeout(decodeTimeout)
-    }
     this.event.trigger('solidityStateUpdating')
-    decodeTimeout = setTimeout(() => {
+    const decodeTimeout = setTimeout(() => {
+      if (this._decodeTimeout === decodeTimeout) this._decodeTimeout = null
+      if (!this._isCurrentDecode(generation, stepIndex)) return
       // necessary due to some states that can crash the debugger
       try {
-        this.decode(index)
+        this.decode(stepIndex, generation)
       } catch (err) {
-        console.dir('====> error')
-        console.dir(err)
+        this.event.trigger('solidityState', [{}])
       }
     }, 500)
+    this._decodeTimeout = decodeTimeout
   }
 
   reset () {
+    ++this._decodeGeneration
+    this._clearDecodeTimeout()
     this.stateVariablesByAddresses = {}
   }
 
-  decode (index) {
+  decode (index, generation = this._decodeGeneration) {
+    if (!this._isCurrentDecode(generation, index)) return
     try {
-      const address = this.traceManager.getCurrentCalledAddressAt(this.stepManager.currentStepIndex)
+      const address = this.traceManager.getCurrentCalledAddressAt(index)
       if (this.stateVariablesByAddresses[address]) {
-        return this.extractStateVariables(this.stateVariablesByAddresses[address], address)
+        return this.extractStateVariables(this.stateVariablesByAddresses[address], address, index, generation)
       }
       this.solidityProxy.extractStateVariablesAt(index).then((stateVars) => {
+        if (!this._isCurrentDecode(generation, index)) return
         this.stateVariablesByAddresses[address] = stateVars
-        this.extractStateVariables(stateVars, address)
+        this.extractStateVariables(stateVars, address, index, generation)
       }).catch((_error) => {
-        this.event.trigger('solidityState', [{}])
+        if (this._isCurrentDecode(generation, index)) this.event.trigger('solidityState', [{}])
       })
     } catch (error) {
-      return this.event.trigger('solidityState', [{}])
+      if (this._isCurrentDecode(generation, index)) return this.event.trigger('solidityState', [{}])
     }
   }
 
-  extractStateVariables (stateVars, address) {
-    const storageViewer = new StorageViewer({ stepIndex: this.stepManager.currentStepIndex, tx: this.tx, address: address }, this.storageResolver, this.traceManager)
+  extractStateVariables (stateVars, address, stepIndex = this.stepManager.currentStepIndex, generation = this._decodeGeneration) {
+    if (!this._isCurrentDecode(generation, stepIndex)) return
+    const storageViewer = new StorageViewer({ stepIndex, tx: this.tx, address: address }, this.storageResolver, this.traceManager)
     decodeState(stateVars, storageViewer).then((result) => {
+      if (!this._isCurrentDecode(generation, stepIndex)) return
       this.event.trigger('solidityStateMessage', [''])
       if (result['error']) {
         return this.event.trigger('solidityStateMessage', [result['error']])
       }
       this.event.trigger('solidityState', [result])
+    }).catch((error) => {
+      if (this._isCurrentDecode(generation, stepIndex)) {
+        this.event.trigger('solidityStateMessage', [error.message || error])
+      }
     })
+  }
+
+  _clearDecodeTimeout () {
+    if (this._decodeTimeout !== null) {
+      clearTimeout(this._decodeTimeout)
+      this._decodeTimeout = null
+    }
+  }
+
+  _isCurrentDecode (generation, stepIndex) {
+    return generation === this._decodeGeneration && stepIndex === this.stepManager.currentStepIndex
   }
 }

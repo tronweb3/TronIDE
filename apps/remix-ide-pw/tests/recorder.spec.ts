@@ -498,8 +498,11 @@ test.describe('Transaction recorder', () => {
     })
     expect(out3).toContain('await deployer.deploy(MathLib);')
     expect(out3).toContain('// await deployer.link(MathLib, Consumer);')
-    expect(out3).toContain('// await deployer.deploy(Consumer);')
-    expect(out3).toContain('callValue=5')
+    // A constructor callValue is now emitted as the explicit TronBox options
+    // object. Keep the reverted fence assertion aligned with the generated
+    // syntax instead of the pre-options deployer form.
+    expect(out3).toContain('// await deployer.deploy(Consumer, { callValue: 5 });')
+    expect(out3).toContain('callValue: 5')
     // no LIVE link or Consumer-deploy lines survive the fence
     expect((out3.match(/^\s*await deployer\.link\(/gm) || []).length).toBe(0)
     expect((out3.match(/^\s*await deployer\.deploy\(Consumer/gm) || []).length).toBe(0)

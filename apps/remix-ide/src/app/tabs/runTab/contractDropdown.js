@@ -28,7 +28,22 @@ const confirmDialog = require('../../ui/confirmDialog')
 const modalDialog = require('../../ui/modaldialog')
 const MultiParamManager = require('../../ui/multiParamManager')
 const helper = require('../../../lib/helper')
+const QueryParams = require('../../../lib/query-params')
 const addTooltip = require('../../ui/tooltip')
+const {
+  abiSignature,
+  createProxyContract,
+  createUpgradeCall,
+  createVersionCall,
+  encodeInitializerCall,
+  getInitializers,
+  isEnabledURLFlag,
+  isModernUpgradeResponse,
+  isUUPSContract,
+  normalizeContractAddress,
+  proxyConstructorArguments,
+  validateConstructorArguments
+} = require('./model/uups-proxy')
 const _paq = window._paq = window._paq || []
 
 class ContractDropdownUI {
@@ -43,6 +58,11 @@ class ContractDropdownUI {
     this.exEnvironment = blockchain.getProvider()
     this.listenToContextChange()
     this.loadType = 'other'
+    this.proxyPreferences = new Map()
+    this.proxyDeploymentInProgress = false
+    const queryParams = (new QueryParams()).get()
+    this.deployProxyRequested = isEnabledURLFlag(queryParams.deployProxy)
+    this.upgradeProxyRequested = isEnabledURLFlag(queryParams.upgradeProxy)
   }
 
   setCompFailsVisible (visible) {
@@ -296,7 +316,142 @@ class ContractDropdownUI {
       selectedContract.bytecodeObject,
       true
     )
-    this.createPanel.appendChild(createConstructorInstance.render())
+    const standardDeployment = createConstructorInstance.render()
+
+    if (!isUUPSContract(selectedContract)) {
+      this.createPanel.appendChild(standardDeployment)
+      return
+    }
+
+    const initializers = getInitializers(selectedContract.abi)
+    const preferenceKey = `${selectedContract.contract.file}:${selectedContract.name}`
+    const defaultMode = this.proxyPreferences.has(preferenceKey)
+      ? this.proxyPreferences.get(preferenceKey)
+      : (this.deployProxyRequested && initializers.length > 0
+        ? 'deploy'
+        : (this.upgradeProxyRequested ? 'upgrade' : 'standard'))
+    const proxyToggle = yo`<input type="checkbox" class="mr-2" data-id="uupsDeployProxyToggle">`
+    const upgradeToggle = yo`<input type="checkbox" class="mr-2" data-id="uupsUpgradeProxyToggle">`
+    proxyToggle.checked = defaultMode === 'deploy' && initializers.length > 0
+    upgradeToggle.checked = defaultMode === 'upgrade'
+    const proxyPanel = yo`<div class="mt-2" data-id="uupsProxyDeploymentPanel"></div>`
+    const upgradePanel = yo`<div class="mt-2" data-id="uupsProxyUpgradePanel"></div>`
+    const proxyNotice = initializers.length > 0
+      ? yo`<small class="d-block text-muted mt-1">Deploys the implementation, then an ERC1967 proxy initialized in a second transaction.</small>`
+      : yo`<small class="d-block text-warning mt-1" data-id="uupsMissingInitializer">Proxy deployment is unavailable because this contract has no initialize(...) function.</small>`
+    const proxyControls = yo`
+      <div class="mt-2 p-2 border rounded" data-id="uupsProxyControls">
+        <label class="mb-0 d-flex align-items-center">
+          ${proxyToggle}
+          <span>Deploy with ERC1967 Proxy</span>
+        </label>
+        ${proxyNotice}
+        ${proxyPanel}
+        <label class="mb-0 mt-2 d-flex align-items-center">
+          ${upgradeToggle}
+          <span>Upgrade existing ERC1967 Proxy</span>
+        </label>
+        <small class="d-block text-muted mt-1">Deploys this implementation, then upgrades the supplied proxy in a second transaction.</small>
+        ${upgradePanel}
+      </div>
+    `
+
+    if (initializers.length === 0) proxyToggle.setAttribute('disabled', true)
+
+    const constructorABI = selectedContract.getConstructorInterface()
+    let constructorArgsInput = null
+    if (constructorABI.inputs && constructorABI.inputs.length > 0) {
+      constructorArgsInput = yo`
+        <input class="form-control mt-2" data-id="uupsImplementationConstructorArgs"
+          placeholder="${selectedContract.getConstructorInputs()}"
+          title="Implementation constructor arguments">
+      `
+      proxyPanel.appendChild(yo`
+        <div>
+          <label class="mb-1">Implementation constructor arguments</label>
+          ${constructorArgsInput}
+        </div>
+      `)
+    }
+
+    let initializerSelect = null
+    const initializerHost = yo`<div data-id="uupsInitializerArguments"></div>`
+    if (initializers.length > 1) {
+      initializerSelect = yo`<select class="custom-select mt-2" data-id="uupsInitializerSelect"></select>`
+      initializers.forEach((initializer, index) => {
+        initializerSelect.appendChild(yo`<option value="${index}">${abiSignature(initializer)}</option>`)
+      })
+      proxyPanel.appendChild(yo`<div><label class="mb-1 mt-2">Initializer</label>${initializerSelect}</div>`)
+    }
+    proxyPanel.appendChild(initializerHost)
+
+    const renderInitializer = () => {
+      initializerHost.innerHTML = ''
+      if (initializers.length === 0) return
+      const initializerABI = initializers[initializerSelect ? Number(initializerSelect.value) : 0]
+      const proxyClickCallback = async (valArray, inputsValues) => {
+        const currentContract = this.getSelectedContract()
+        this.createProxyInstance(
+          currentContract,
+          constructorArgsInput ? constructorArgsInput.value : '',
+          initializerABI,
+          inputsValues
+        )
+        window?.gtag('event', 'click', { event_category: 'deploy_user_action', event_label: 'deploy_proxy' })
+      }
+      const initializeInstance = new MultiParamManager(
+        0,
+        initializerABI,
+        proxyClickCallback,
+        this.blockchain.getInputs(initializerABI),
+        'Deploy with Proxy',
+        null,
+        true
+      )
+      initializerHost.appendChild(initializeInstance.render())
+    }
+    if (initializerSelect) initializerSelect.addEventListener('change', renderInitializer)
+    renderInitializer()
+
+    const proxyAddressInput = yo`
+      <input class="form-control mt-2" data-id="uupsProxyAddress"
+        placeholder="Existing proxy address" title="Existing ERC1967 proxy address">
+    `
+    const upgradeClickCallback = async (valArray, inputsValues) => {
+      const currentContract = this.getSelectedContract()
+      this.createUpgradeInstance(currentContract, inputsValues, proxyAddressInput.value)
+      window?.gtag('event', 'click', { event_category: 'deploy_user_action', event_label: 'upgrade_proxy' })
+    }
+    const upgradeInstance = new MultiParamManager(
+      0,
+      constructorABI,
+      upgradeClickCallback,
+      selectedContract.getConstructorInputs(),
+      'Upgrade Proxy',
+      null,
+      true
+    )
+    upgradePanel.appendChild(proxyAddressInput)
+    upgradePanel.appendChild(yo`<small class="d-block text-warning mt-1">Verify storage-layout compatibility before upgrading. TronIDE does not prove upgrade safety.</small>`)
+    upgradePanel.appendChild(upgradeInstance.render())
+
+    const syncProxyMode = (changedMode) => {
+      if (changedMode === 'deploy' && proxyToggle.checked) upgradeToggle.checked = false
+      if (changedMode === 'upgrade' && upgradeToggle.checked) proxyToggle.checked = false
+      const deployEnabled = proxyToggle.checked && initializers.length > 0
+      const upgradeEnabled = upgradeToggle.checked
+      const mode = deployEnabled ? 'deploy' : (upgradeEnabled ? 'upgrade' : 'standard')
+      this.proxyPreferences.set(preferenceKey, mode)
+      standardDeployment.style.display = mode === 'standard' ? 'block' : 'none'
+      proxyPanel.style.display = deployEnabled ? 'block' : 'none'
+      upgradePanel.style.display = upgradeEnabled ? 'block' : 'none'
+    }
+    proxyToggle.addEventListener('change', () => syncProxyMode('deploy'))
+    upgradeToggle.addEventListener('change', () => syncProxyMode('upgrade'))
+
+    this.createPanel.appendChild(proxyControls)
+    this.createPanel.appendChild(standardDeployment)
+    syncProxyMode()
   }
 
   getSelectedContract () {
@@ -307,8 +462,249 @@ class ContractDropdownUI {
     return this.dropdownLogic.getSelectedContract(contractName, compilerAtributeName)
   }
 
-  async createInstance (selectedContract, args) {
+  createProxyInstance (selectedContract, constructorArgs, initializerABI, initializerArgs) {
+    if (this.proxyDeploymentInProgress) {
+      return modalDialogCustom.alert('A proxy deployment is already in progress. Wait for both transactions to finish before starting another one.')
+    }
+
+    let initializerData
+    try {
+      validateConstructorArguments(selectedContract, constructorArgs)
+      initializerData = encodeInitializerCall(initializerABI, initializerArgs)
+    } catch (error) {
+      return modalDialogCustom.alert('Invalid proxy deployment arguments', error.message || String(error))
+    }
+
+    modalDialog('Deploy implementation and proxy', yo`
+      <div>
+        <p>This flow sends two transactions: first the ${selectedContract.name} implementation, then an ERC1967 proxy that calls ${abiSignature(initializerABI)}.</p>
+        <p class="mb-0">Your wallet may request two confirmations. If the proxy transaction fails, the implementation remains deployed and the proxy step can be retried.</p>
+      </div>
+    `, {
+      label: 'Proceed',
+      fn: () => {
+        this.proxyDeploymentInProgress = true
+        this.createInstance(selectedContract, constructorArgs, { type: 'deploy', initializerABI, initializerArgs, initializerData })
+      }
+    }, {
+      label: 'Cancel',
+      fn: () => {}
+    })
+  }
+
+  createUpgradeInstance (selectedContract, constructorArgs, proxyAddress) {
+    if (this.proxyDeploymentInProgress) {
+      return modalDialogCustom.alert('A proxy operation is already in progress. Wait for both transactions to finish before starting another one.')
+    }
+
+    let normalizedProxyAddress
+    try {
+      validateConstructorArguments(selectedContract, constructorArgs)
+      normalizedProxyAddress = normalizeContractAddress(proxyAddress)
+    } catch (error) {
+      return modalDialogCustom.alert('Invalid proxy upgrade arguments', error.message || String(error))
+    }
+
+    modalDialog('Deploy implementation and upgrade proxy', yo`
+      <div>
+        <p>This flow sends two transactions: first the new ${selectedContract.name} implementation, then an upgrade call to ${normalizedProxyAddress}.</p>
+        <p class="text-warning">TronIDE cannot prove storage-layout compatibility. Verify the new implementation against the current proxy before proceeding.</p>
+        <p class="mb-0">Your wallet may request two confirmations. If the upgrade transaction fails, the new implementation remains deployed and the upgrade step can be retried.</p>
+      </div>
+    `, {
+      label: 'Proceed',
+      fn: () => {
+        this.proxyDeploymentInProgress = true
+        this.createInstance(selectedContract, constructorArgs, { type: 'upgrade', proxyAddress: normalizedProxyAddress })
+      }
+    }, {
+      label: 'Cancel',
+      fn: () => {}
+    })
+  }
+
+  registerContractInstance (contractObject, address, displayName) {
+    this.event.trigger('clearInstance')
+    this.event.trigger('newContractInstanceAdded', [contractObject, address, displayName || contractObject.name])
+    const data = this.runView.compilersArtefacts.getCompilerAbstract(contractObject.contract.file)
+    let resolvedAddress
+    try { resolvedAddress = normalizeContractAddress(address) } catch (e) { resolvedAddress = helper.addressToString(address) }
+    this.runView.compilersArtefacts.addResolvedContract(resolvedAddress, data)
+  }
+
+  deployUUPSProxy (implementationContract, implementationAddress, proxyPlan, callbacks, confirmationCb) {
+    let proxyContract
+    let proxyArgs
+    try {
+      proxyContract = createProxyContract(implementationContract)
+      proxyArgs = proxyConstructorArguments(implementationAddress, proxyPlan.initializerData)
+    } catch (error) {
+      this.proxyDeploymentInProgress = false
+      return modalDialogCustom.alert('Unable to prepare proxy deployment', error.message || String(error))
+    }
+
+    const operation = `creation of ERC1967Proxy for ${implementationContract.name}`
+    const attemptContext = {
+      operation,
+      walletRequest: this.blockchain.getProvider() === 'injected',
+      retry: () => this.deployUUPSProxy(implementationContract, implementationAddress, proxyPlan, callbacks, confirmationCb)
+    }
+    const proxyStatusCb = (msg, context) => this.logCallback(msg, Object.assign({}, attemptContext, context))
+    const proxyFinalCb = (error, contractObject, proxyAddress) => {
+      this.proxyDeploymentInProgress = false
+      if (error) return
+
+      try {
+        const proxyInstance = Object.assign({}, implementationContract, {
+          implementationAddress: normalizeContractAddress(implementationAddress),
+          proxyAddress: normalizeContractAddress(proxyAddress),
+          proxyType: 'ERC1967'
+        })
+        this.registerContractInstance(proxyInstance, proxyAddress, `${implementationContract.name} (ERC1967Proxy)`)
+        _paq.push(['trackEvent', 'udapp', 'DeployWithProxy', this.networkName])
+      } catch (registrationError) {
+        console.error('[uups-proxy] proxy deployed but instance registration failed:', registrationError)
+        modalDialogCustom.alert('Proxy deployed', 'The proxy transaction succeeded, but the deployed instance could not be added to the panel. Check the terminal for its address.')
+      }
+    }
+
+    proxyStatusCb(`deploying ERC1967 ${proxyContract.proxyVersion} proxy for ${implementationContract.name}...`)
+    this.blockchain.deployContractAndLibraries(
+      proxyContract,
+      proxyArgs,
+      null,
+      {},
+      {
+        continueCb: callbacks.continueCb,
+        promptCb: callbacks.promptCb,
+        statusCb: proxyStatusCb,
+        finalCb: proxyFinalCb
+      },
+      confirmationCb
+    )
+  }
+
+  upgradeUUPSProxy (implementationContract, implementationAddress, proxyPlan, callbacks, confirmationCb) {
+    let proxyAddress
+    let newImplementationAddress
+    try {
+      proxyAddress = normalizeContractAddress(proxyPlan.proxyAddress)
+      newImplementationAddress = normalizeContractAddress(implementationAddress)
+    } catch (error) {
+      this.proxyDeploymentInProgress = false
+      return modalDialogCustom.alert('Unable to prepare proxy upgrade', error.message || String(error))
+    }
+
+    const operation = `upgrade of ERC1967Proxy to ${implementationContract.name}`
+    const attemptContext = {
+      operation,
+      walletRequest: this.blockchain.getProvider() === 'injected',
+      retry: () => this.upgradeUUPSProxy(implementationContract, implementationAddress, proxyPlan, callbacks, confirmationCb)
+    }
+    const upgradeStatusCb = (msg, context) => this.logCallback(msg, Object.assign({}, attemptContext, context))
+
+    const runUpgrade = (modern) => {
+      let upgradeCall
+      try { upgradeCall = createUpgradeCall(newImplementationAddress, modern) } catch (error) {
+        this.proxyDeploymentInProgress = false
+        return modalDialogCustom.alert('Unable to encode proxy upgrade', error.message || String(error))
+      }
+
+      const data = {
+        contractABI: implementationContract.abi,
+        contract: implementationContract.object,
+        contractName: 'ERC1967Proxy',
+        dataHex: upgradeCall.dataHex,
+        funAbi: upgradeCall.abi,
+        funArgs: upgradeCall.args,
+        linkReferences: {}
+      }
+      upgradeStatusCb(`upgrade of ERC1967 ${modern ? '5.x' : '4.x'} proxy pending...`, { phase: 'pending' })
+      this.blockchain.runTx(
+        { to: proxyAddress, data, useCall: false, value: '0', tokenId: '0', tokenValue: '0' },
+        confirmationCb,
+        callbacks.continueCb,
+        callbacks.promptCb,
+        (error, txResult) => {
+          this.proxyDeploymentInProgress = false
+          if (error) {
+            upgradeStatusCb(`upgrade of ERC1967Proxy errored: ${error.message || error}`, { phase: 'error', error, txResult })
+            return
+          }
+
+          upgradeStatusCb('upgrade of ERC1967Proxy succeeded.', { phase: 'success', txResult })
+          try {
+            const proxyInstance = Object.assign({}, implementationContract, {
+              implementationAddress: newImplementationAddress,
+              proxyAddress,
+              proxyType: 'ERC1967'
+            })
+            this.registerContractInstance(proxyInstance, proxyAddress, `${implementationContract.name} (Upgraded ERC1967Proxy)`)
+            _paq.push(['trackEvent', 'udapp', 'UpgradeProxy', this.networkName])
+          } catch (registrationError) {
+            console.error('[uups-proxy] proxy upgraded but instance registration failed:', registrationError)
+            modalDialogCustom.alert('Proxy upgraded', 'The upgrade transaction succeeded, but the upgraded instance could not be added to the panel. Check the terminal for its address.')
+          }
+        }
+      )
+    }
+
+    // OpenZeppelin 5.x removes upgradeTo(address), while 4.x does not expose
+    // UPGRADE_INTERFACE_VERSION(). Probe the CURRENT implementation through
+    // the proxy; if the call is absent or malformed, fall back to the legacy
+    // upgrade function. A guard prevents a slow provider from starting both.
+    const versionCall = createVersionCall()
+    const versionData = {
+      contractABI: [versionCall.abi],
+      contractName: 'ERC1967Proxy',
+      dataHex: versionCall.dataHex,
+      funAbi: versionCall.abi,
+      funArgs: [],
+      linkReferences: {}
+    }
+    let versionSettled = false
+    const finishVersionProbe = (modern) => {
+      if (versionSettled) return
+      versionSettled = true
+      clearTimeout(versionTimer)
+      upgradeStatusCb(`using ERC1967 ${modern ? '5.x upgradeToAndCall' : '4.x upgradeTo'} for the proxy upgrade...`)
+      runUpgrade(modern)
+    }
+    const failVersionProbe = () => {
+      if (versionSettled) return
+      versionSettled = true
+      this.proxyDeploymentInProgress = false
+      const error = new Error('Timed out while detecting the proxy upgrade interface. No upgrade transaction was sent.')
+      upgradeStatusCb(error.message, { phase: 'error', error })
+      modalDialogCustom.alert('Proxy upgrade not sent', 'TronIDE could not determine whether this proxy uses the OpenZeppelin 4.x or 5.x upgrade interface. Check the provider connection and retry; no upgrade transaction was sent.')
+    }
+    // A slow provider is ambiguous: guessing the legacy function could send a
+    // doomed transaction to an OpenZeppelin 5.x proxy after its implementation
+    // has already been deployed. Fail closed instead of guessing on timeout.
+    const versionTimer = setTimeout(failVersionProbe, 10000)
+    const silentContinueCb = (error, continueTxExecution, cancelCb) => {
+      if (!error) return continueTxExecution()
+      if (cancelCb) cancelCb()
+      finishVersionProbe(false)
+    }
+    const silentPromptCb = (okCb, cancelCb) => cancelCb()
+    const silentConfirmationCb = (network, tx, gasEstimation, continueTxExecution) => continueTxExecution()
+    try {
+      this.blockchain.runTx(
+        { to: proxyAddress, data: versionData, useCall: true, value: '0', tokenId: '0', tokenValue: '0' },
+        silentConfirmationCb,
+        silentContinueCb,
+        silentPromptCb,
+        (error, txResult, address, returnValue) => finishVersionProbe(!error && isModernUpgradeResponse(returnValue))
+      )
+    } catch (error) {
+      finishVersionProbe(false)
+    }
+  }
+
+  async createInstance (selectedContract, args, proxyPlan) {
     if (selectedContract.bytecodeObject.length === 0) {
+      this.proxyDeploymentInProgress = false
       return modalDialogCustom.alert('This contract may be abstract, not implement an abstract parent\'s methods completely or not invoke an inherited contract\'s constructor correctly.')
     }
 
@@ -341,25 +737,38 @@ class ContractDropdownUI {
       modalDialogCustom.promptPassphrase('Passphrase requested', 'Personal mode is enabled. Please provide passphrase of account', '', okCb, cancelCb)
     }
 
-    var statusCb = (msg) => {
-      return this.logCallback(msg)
+    const operation = proxyPlan
+      ? `${proxyPlan.type === 'upgrade' ? 'upgrade' : 'deployment'} of ${selectedContract.name} with ERC1967 proxy`
+      : `creation of ${selectedContract.name}`
+    const attemptContext = {
+      operation,
+      walletRequest: this.blockchain.getProvider() === 'injected',
+      retry: () => this.createInstance(selectedContract, args, proxyPlan)
+    }
+    var statusCb = (msg, context) => {
+      return this.logCallback(msg, Object.assign({}, attemptContext, context))
     }
 
     var finalCb = (error, contractObject, address) => {
-      self.event.trigger('clearInstance')
-
+      // createContract reports both error and success through statusCb so the
+      // terminal can close the exact Attempt card. Avoid logging the same error
+      // a second time here.
       if (error) {
-        return this.logCallback(error)
+        self.proxyDeploymentInProgress = false
+        return
       }
-      self.event.trigger('newContractInstanceAdded', [contractObject, address, contractObject.name])
-
-      const data = self.runView.compilersArtefacts.getCompilerAbstract(contractObject.contract.file)
-      self.runView.compilersArtefacts.addResolvedContract(helper.addressToString(address), data)
+      self.registerContractInstance(contractObject, address, contractObject.name)
       if (self.ipfsCheckedState) {
         _paq.push(['trackEvent', 'udapp', 'DeployAndPublish', this.networkName])
         publishToStorage('ipfs', self.runView.fileProvider, self.runView.fileManager, selectedContract)
       } else {
         _paq.push(['trackEvent', 'udapp', 'DeployOnly', this.networkName])
+      }
+
+      if (proxyPlan && proxyPlan.type === 'upgrade') {
+        self.upgradeUUPSProxy(selectedContract, address, proxyPlan, { continueCb, promptCb }, confirmationCb)
+      } else if (proxyPlan) {
+        self.deployUUPSProxy(selectedContract, address, proxyPlan, { continueCb, promptCb }, confirmationCb)
       }
     }
 
@@ -367,6 +776,7 @@ class ContractDropdownUI {
     try {
       contractMetadata = await this.runView.call('compilerMetadata', 'deployMetadataOf', selectedContract.name, selectedContract.contract.file)
     } catch (error) {
+      this.proxyDeploymentInProgress = false
       return statusCb(`creation of ${selectedContract.name} errored: ` + (error.message ? error.message : error))
     }
 
@@ -385,6 +795,7 @@ class ContractDropdownUI {
       }, {
         label: 'Cancel',
         fn: () => {
+          this.proxyDeploymentInProgress = false
           this.logCallback(`creation of ${selectedContract.name} canceled by user.`)
         }
       })

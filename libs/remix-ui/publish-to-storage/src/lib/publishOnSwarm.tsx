@@ -51,11 +51,11 @@ export const publishToSwarm = async (contract, fileManager) => {
     throw new Error(e)
   }
 
-  if (metadata === undefined) {
-    throw new Error('No metadata')
+  if (metadata === undefined || !metadata.sources || typeof metadata.sources !== 'object') {
+    throw new Error('No metadata sources')
   }
 
-  await Promise.all(Object.keys(metadata.sources).map(fileName => {
+  const sourceFiles = await Promise.all(Object.keys(metadata.sources).map(async fileName => {
     // find hash
     let hash = null
     try {
@@ -74,18 +74,14 @@ export const publishToSwarm = async (contract, fileManager) => {
       throw new Error('Error while extracting the hash from metadata.json')
     }
 
-    fileManager.fileProviderOf(fileName).get(fileName, (error, content) => {
-      if (error) {
-        console.log(error)
-      } else {
-        sources.push({
-          content: content,
-          hash: hash,
-          filename: fileName
-        })
-      }
-    })
+    const content = await readProviderFile(fileManager.fileProviderOf(fileName), fileName)
+    return {
+      content,
+      hash,
+      filename: fileName
+    }
   }))
+  sources.push(...sourceFiles)
   // publish the list of sources in order, fail if any failed
 
   await Promise.all(sources.map(async (item) => {
@@ -95,12 +91,14 @@ export const publishToSwarm = async (contract, fileManager) => {
       try {
         item.hash = result.url.match('bzz-raw://(.+)')[1]
       } catch (e) {
-        item.hash = '<Metadata inconsistency> - ' + item.fileName
+        item.hash = '<Metadata inconsistency> - ' + item.filename
       }
       item.output = result
       uploaded.push(item)
       // TODO this is a fix cause Solidity metadata does not contain the right swarm hash (poc 0.3)
-      metadata.sources[item.filename].urls[0] = result.url
+      const sourceMetadata = metadata.sources[item.filename]
+      sourceMetadata.urls = Array.isArray(sourceMetadata.urls) ? sourceMetadata.urls : []
+      sourceMetadata.urls[0] = result.url
     } catch (error) {
       throw new Error(error)
     }
@@ -129,6 +127,18 @@ export const publishToSwarm = async (contract, fileManager) => {
 
   return { uploaded, item }
 }
+
+const readProviderFile = (provider, path): Promise<string> => new Promise((resolve, reject) => {
+  try {
+    provider.get(path, (error, content) => {
+      if (error) return reject(error)
+      if (content === null || content === undefined) return reject(new Error(`Source file not found: ${path}`))
+      resolve(content)
+    })
+  } catch (error) {
+    reject(error)
+  }
+})
 
 const swarmVerifiedPublish = async (content, expectedHash): Promise<Record<string, any>> => {
   const ret = await putSwarmContent(content)

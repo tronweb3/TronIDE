@@ -164,7 +164,7 @@ export class InternalCallTree {
   async extractSourceLocation (step) {
     try {
       const address = this.traceManager.getCurrentCalledAddressAt(step)
-      const location = await this.sourceLocationTracker.getSourceLocationFromVMTraceIndex(address, step, this.solidityProxy.contracts)
+      const location = await this.sourceLocationTracker.getSourceLocationFromVMTraceIndex(address, step, this.solidityProxy.contracts, this.solidityProxy.sources)
       return location
     } catch (error) {
       throw new Error('InternalCallTree - Cannot retrieve sourcelocation for step ' + step + ' ' + error)
@@ -174,7 +174,7 @@ export class InternalCallTree {
   async extractValidSourceLocation (step) {
     try {
       const address = this.traceManager.getCurrentCalledAddressAt(step)
-      const location = await this.sourceLocationTracker.getValidSourceLocationFromVMTraceIndex(address, step, this.solidityProxy.contracts)
+      const location = await this.sourceLocationTracker.getValidSourceLocationFromVMTraceIndex(address, step, this.solidityProxy.contracts, this.solidityProxy.sources)
       return location
     } catch (error) {
       throw new Error('InternalCallTree - Cannot retrieve valid sourcelocation for step ' + step + ' ' + error)
@@ -270,7 +270,7 @@ function getGeneratedSources (tree, scopeId, contractObj) {
   return null
 }
 
-async function includeVariableDeclaration (tree, step, sourceLocation, scopeId, newLocation, previousSourceLocation, entryFunctionDefinition = null) {
+async function includeVariableDeclaration (tree, step, sourceLocation, scopeId, newLocation, previousSourceLocation, entryFunctionEntry = null) {
   const contractObj = await tree.solidityProxy.contractObjectAt(step)
   let states = null
   const generatedSources = getGeneratedSources(tree, scopeId, contractObj)
@@ -306,13 +306,15 @@ async function includeVariableDeclaration (tree, step, sourceLocation, scopeId, 
 
   // we check here if we are at the beginning inside a new function.
   // if that is the case, we have to add to locals tree the inputs and output params
-  const functionDefinition = entryFunctionDefinition || resolveFunctionDefinition(tree, previousSourceLocation, generatedSources)
+  const functionDefinition = entryFunctionEntry
+    ? entryFunctionEntry.functionDefinition
+    : resolveFunctionDefinition(tree, previousSourceLocation, generatedSources)
   if (!functionDefinition || tree.functionDefinitionsByScope[scopeId]) return false
 
   const previousIsJumpDest2 = isJumpDestInstruction(tree.traceManager.trace[step - 2])
   const previousIsJumpDest1 = isJumpDestInstruction(tree.traceManager.trace[step - 1])
   const isConstructor = functionDefinition.kind === 'constructor'
-  if (entryFunctionDefinition || (newLocation && (previousIsJumpDest1 || previousIsJumpDest2 || isConstructor))) {
+  if (entryFunctionEntry || (newLocation && (previousIsJumpDest1 || previousIsJumpDest2 || isConstructor))) {
     tree.functionCallStack.push(step)
     const functionDefinitionAndInputs = { functionDefinition, inputs: [] }
     // means: the previous location was a function definition && JUMPDEST
@@ -335,10 +337,10 @@ async function includeVariableDeclaration (tree, step, sourceLocation, scopeId, 
         // }
         // input params
         if (inputs && inputs.parameters) {
-          functionDefinitionAndInputs.inputs = addParams(inputs, tree, scopeId, states, contractObj, previousSourceLocation, stack.length, inputs.parameters.length, -1)
+          functionDefinitionAndInputs.inputs = addParams(inputs, tree, scopeId, states, contractObj, previousSourceLocation, stack.length, inputs.parameters.length, -1, functionDefinition, Boolean(entryFunctionEntry && entryFunctionEntry.inputsFromCalldata), step)
         }
         // output params
-        if (outputs) addParams(outputs, tree, scopeId, states, contractObj, previousSourceLocation, stack.length, 0, 1)
+        if (outputs) addParams(outputs, tree, scopeId, states, contractObj, previousSourceLocation, stack.length, 0, 1, functionDefinition, false, step)
       }
     } catch (error) {
       console.log(error)
@@ -354,11 +356,16 @@ async function resolveEntryFunctionDefinition (tree, step, sourceLocation, scope
   try {
     const contractObj = await tree.solidityProxy.contractObjectAt(step)
     const generatedSources = getGeneratedSources(tree, scopeId, contractObj)
+    if (scopeId === '' && isJumpInstruction(tree.traceManager.trace[step])) {
+      const calldataFunctionDefinition = resolveFunctionDefinitionFromCalldata(tree, step, sourceLocation, generatedSources, contractObj)
+      if (calldataFunctionDefinition) {
+        return { functionDefinition: calldataFunctionDefinition, inputsFromCalldata: true }
+      }
+    }
     const functionDefinition = resolveFunctionDefinition(tree, sourceLocation, generatedSources)
-    if (functionDefinition && functionDefinition.kind !== 'constructor') return functionDefinition
-    return scopeId === '' && isJumpInstruction(tree.traceManager.trace[step])
-      ? resolveFunctionDefinitionFromCalldata(tree, step, sourceLocation, generatedSources, contractObj)
-      : functionDefinition
+    return functionDefinition
+      ? { functionDefinition, inputsFromCalldata: false }
+      : null
   } catch (error) {
     console.log(error)
     return null
@@ -472,7 +479,7 @@ function extractFunctionDefinitions (ast, astWalker) {
   return ret
 }
 
-function addParams (parameterList, tree, scopeId, states, contractObj, sourceLocation, stackLength, stackPosition, dir) {
+function addParams (parameterList, tree, scopeId, states, contractObj, sourceLocation, stackLength, stackPosition, dir, functionDefinition, decodeFromCalldata, entryStep) {
   const contractName = contractObj.name
   const params = []
   for (const inputParam in parameterList.parameters) {
@@ -487,7 +494,15 @@ function addParams (parameterList, tree, scopeId, states, contractObj, sourceLoc
         type: parseType(param.typeDescriptions.typeString, states, contractName, location),
         stackDepth: stackDepth,
         sourceLocation: sourceLocation,
-        abi: contractObj.contract.abi
+        abi: contractObj.contract.abi,
+        decodeFromCalldata,
+        calldataEntryStep: decodeFromCalldata ? entryStep : null,
+        parameterIndex: Number(inputParam),
+        functionName: functionDefinition.name,
+        functionSelector: functionDefinition.functionSelector,
+        functionParameterCount: functionDefinition.parameters && functionDefinition.parameters.parameters
+          ? functionDefinition.parameters.parameters.length
+          : 0
       }
       params.push(attributesName)
     }

@@ -25,12 +25,20 @@ import EventEmitter from 'events'
 */
 class JournalLastChildIncludes extends EventEmitter {
   command (this: NightwatchBrowser, val: string): NightwatchBrowser {
+    const api = this.api
     this.api
       .waitForElementVisible('*[data-id="terminalJournal"] > div:last-child', 10000)
-      .getText('*[data-id="terminalJournal"] > div:last-child', (result) => {
-        console.log('JournalLastChildIncludes', result.value)
-        if (typeof result.value === 'string' && result.value.indexOf(val) === -1) return this.api.assert.fail(`wait for ${val} in ${result.value}`)
-        else this.api.assert.ok(true, `<*[data-id="terminalJournal"] > div:last-child> contains ${val}.`)
+      .waitUntil(function () {
+        return new Promise((resolve) => {
+          api.getText('*[data-id="terminalJournal"] > div:last-child', (result) => {
+            const text = typeof result.value === 'string' ? result.value : ''
+            console.log('JournalLastChildIncludes', text)
+            resolve(text.indexOf(val) !== -1)
+          })
+        })
+      }, 60000, 250)
+      .perform(() => {
+        api.assert.ok(true, `<*[data-id="terminalJournal"] > div:last-child> contains ${val}.`)
         this.emit('complete')
       })
     return this

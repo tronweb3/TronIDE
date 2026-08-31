@@ -19,13 +19,24 @@
 
 import { ViewPlugin } from '@remixproject/engine-web'
 import { removeMultipleSlashes, removeTrailingSlashes } from '../../lib/helper'
-import { canUseWorker, urlFromVersion } from '@remix-project/remix-solidity'
+import { BUILTIN_SOLC_VERSION, canUseWorker, urlFromVersion } from '@remix-project/remix-solidity'
 var yo = require('yo-yo')
 var async = require('async')
 var tooltip = require('../ui/tooltip')
 var Renderer = require('../ui/renderer')
 var css = require('./styles/test-tab-styles')
 var remixTests = require('@remix-project/remix-tests')
+
+// The AI tool runtime has a shorter queue timeout than the compiler's own
+// worker watchdog. Bound one AI run (and each file) so a blocked worker or
+// remote compiler returns a structured failure before the tool call expires;
+// interactive runs have their own bound as well so a broken compiler cannot
+// leave the Run/Stop controls stuck indefinitely.
+const AI_TEST_RUN_TIMEOUT_MS = 90000
+const AI_TEST_FILE_TIMEOUT_MS = 60000
+const INTERACTIVE_TEST_FILE_TIMEOUT_MS = 90000
+
+const workerCompilerVersion = (currentVersion) => currentVersion === 'builtin' ? BUILTIN_SOLC_VERSION : currentVersion
 
 const TestTabLogic = require('./testTab/testTab')
 
@@ -55,6 +66,8 @@ module.exports = class TestTab extends ViewPlugin {
     this.runningTestsNumber = 0
     this.readyTestsNumber = 0
     this.areTestsRunning = false
+    this.activeTestController = null
+    this.activeTestTimeout = null
     this.defaultPath = 'tests'
     this.offsetToLineColumnConverter = offsetToLineColumnConverter
     // filePanel can emit setWorkspace synchronously while this plugin is being
@@ -93,6 +106,7 @@ module.exports = class TestTab extends ViewPlugin {
   }
 
   onDeactivation () {
+    this.abortActiveTestRun()
     this._viewReady = false
     this._workspaceRefreshPending = false
     this._dirListRequestId++
@@ -101,6 +115,10 @@ module.exports = class TestTab extends ViewPlugin {
     this.fileManager.events.removeListener('noFileSelected', this._onNoFileSelected)
     this.fileManager.events.removeListener('currentFileChanged', this._onCurrentFileChanged)
     this._eventsListening = false
+  }
+
+  abortActiveTestRun () {
+    if (this.activeTestController && !this.activeTestController.signal.aborted) this.activeTestController.abort()
   }
 
   listenToEvents () {
@@ -454,9 +472,9 @@ module.exports = class TestTab extends ViewPlugin {
     }
   }
 
-  async testFromPath (path) {
+  async testFromPath (path, options = {}) {
     const fileContent = await this.fileManager.readFile(path)
-    return this.testFromSource(fileContent, path)
+    return this.testFromSource(fileContent, path, options)
   }
 
   // Programmatic test run for the AI assistant. `path` is an optional single
@@ -491,15 +509,46 @@ module.exports = class TestTab extends ViewPlugin {
     let totalFailing = 0
     const failures = []
     const compileErrors = []
+    const deadline = Date.now() + AI_TEST_RUN_TIMEOUT_MS
     for (const file of files) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) {
+        compileErrors.push({ file, message: `AI test run timed out after ${Math.ceil(AI_TEST_RUN_TIMEOUT_MS / 1000)}s.` })
+        continue
+      }
+      const timeoutMs = Math.min(AI_TEST_FILE_TIMEOUT_MS, remaining)
       let result
       try {
-        result = await this.testFromPath(file)
+        result = await this.testFromPath(file, { timeoutMs })
+        // Some browser/dev-server combinations can create the compiler worker
+        // but fail its importScripts(blob:...) bootstrap. A worker bootstrap
+        // error is deterministic and local; retry this file once on the main
+        // thread instead of reporting a misleading 0/0 test run.
+        const workerBootstrapFailed = (result.errors || []).some((entry) => /importScripts|WorkerGlobalScope|worker/i.test(String(entry && (entry.message || entry.value || entry))))
+        if (workerBootstrapFailed && Date.now() < deadline) {
+          result = await this.testFromPath(file, { usingWorker: false, timeoutMs: Math.min(AI_TEST_FILE_TIMEOUT_MS, deadline - Date.now()) })
+        }
       } catch (e) {
-        // A compile/deploy failure rejects the whole file — surface it instead
-        // of throwing so the other files still run and the model sees the cause.
-        compileErrors.push({ file, message: (e && (e.message || String(e))) || 'test run failed' })
-        continue
+        const message = (e && (e.message || String(e))) || 'test run failed'
+        const timedOut = e && e.code === 'AI_TEST_TIMEOUT'
+        // remix-tests may reject before returning a result when the worker
+        // bootstrap itself fails. Retry that one file on the main thread;
+        // unrelated compile/deploy failures remain ordinary compileErrors.
+        if (!timedOut && /importScripts|WorkerGlobalScope|worker/i.test(message) && Date.now() < deadline) {
+          try {
+            result = await this.testFromPath(file, { usingWorker: false, timeoutMs: Math.min(AI_TEST_FILE_TIMEOUT_MS, deadline - Date.now()) })
+          } catch (fallbackError) {
+            compileErrors.push({ file, message: (fallbackError && (fallbackError.message || String(fallbackError))) || message })
+            continue
+          }
+        } else {
+          // A compile/deploy failure rejects the whole file — surface it
+          // instead of throwing so the other files still run and the model
+          // sees the cause.
+          compileErrors.push({ file, message })
+          if (timedOut) break
+          continue
+        }
       }
       totalPassing += result.totalPassing || 0
       totalFailing += result.totalFailing || 0
@@ -521,25 +570,49 @@ module.exports = class TestTab extends ViewPlugin {
   /*
     Test is not associated with the UI
   */
-  testFromSource (content, path = 'browser/unit_test.sol') {
+  testFromSource (content, path = 'browser/unit_test.sol', options = {}) {
     return new Promise((resolve, reject) => {
-      const runningTest = {}
-      runningTest[path] = { content }
-      const { currentVersion, evmVersion, optimize, runs } = this.compileTab.getCurrentCompilerConfig()
-      const currentCompilerUrl = urlFromVersion(currentVersion)
-      const compilerConfig = {
-        currentCompilerUrl,
-        evmVersion,
-        optimize,
-        usingWorker: canUseWorker(currentVersion),
-        runs
+      const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : 0
+      const controller = typeof AbortController === 'function' ? new AbortController() : null
+      const signal = controller ? controller.signal : undefined
+      let settled = false
+      let timer
+      const settle = (handler, value) => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        handler(value)
       }
-      remixTests.runTestSources(runningTest, compilerConfig, () => {}, () => {}, (error, result) => {
-        if (error) return reject(error)
-        resolve(result)
-      }, (url, cb) => {
-        return this.contentImport.resolveAndSave(url).then((result) => cb(null, result)).catch((error) => cb(error.message))
-      })
+      if (timeoutMs) {
+        timer = setTimeout(() => {
+          const error = new Error(`Solidity test run timed out after ${Math.ceil(timeoutMs / 1000)}s.`)
+          error.code = 'AI_TEST_TIMEOUT'
+          settle(reject, error)
+          if (controller) controller.abort()
+        }, timeoutMs)
+      }
+      try {
+        const runningTest = {}
+        runningTest[path] = { content }
+        const { currentVersion, evmVersion, optimize, runs } = this.compileTab.getCurrentCompilerConfig()
+        const currentCompilerUrl = urlFromVersion(currentVersion)
+        const compilerConfig = {
+          currentCompilerUrl,
+          evmVersion,
+          optimize,
+          usingWorker: options.usingWorker === undefined ? canUseWorker(workerCompilerVersion(currentVersion)) : options.usingWorker,
+          runs
+        }
+        remixTests.runTestSources(runningTest, compilerConfig, () => {}, () => {}, (error, result) => {
+          if (error) return settle(reject, error)
+          settle(resolve, result)
+        }, (url, cb) => {
+          return this.contentImport.resolveAndSave(url).then((result) => cb(null, result)).catch((error) => cb(error.message))
+        }, { signal })
+      } catch (error) {
+        settle(reject, error)
+        if (controller) controller.abort()
+      }
     })
   }
 
@@ -548,8 +621,39 @@ module.exports = class TestTab extends ViewPlugin {
       this.updateFinalResult()
       return
     }
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    const signal = controller ? controller.signal : undefined
+    let settled = false
+    let timedOut = false
+    const finish = (error, result) => {
+      if (settled) return
+      settled = true
+      if (this.activeTestTimeout) clearTimeout(this.activeTestTimeout)
+      this.activeTestTimeout = null
+      if (this.activeTestController === controller) this.activeTestController = null
+      let finalError = error
+      if (timedOut) {
+        finalError = new Error(`Solidity test run timed out after ${Math.ceil(INTERACTIVE_TEST_FILE_TIMEOUT_MS / 1000)}s.`)
+        finalError.code = 'UI_TEST_TIMEOUT'
+      } else if (this.hasBeenStopped && finalError && finalError.code === 'AI_TEST_ABORTED') {
+        finalError = null
+      }
+      this.updateFinalResult(finalError, result, testFilePath)
+      callback(finalError)
+    }
+    this.activeTestController = controller
+    this.activeTestTimeout = setTimeout(() => {
+      timedOut = true
+      if (controller) controller.abort()
+      else finish(new Error('Solidity test run timed out.'))
+    }, INTERACTIVE_TEST_FILE_TIMEOUT_MS)
     this.resultStatistics.hidden = false
     this.fileManager.readFile(testFilePath).then((content) => {
+      if (signal && signal.aborted) {
+        const error = new Error('Solidity test run was cancelled.')
+        error.code = 'AI_TEST_ABORTED'
+        return finish(error)
+      }
       const runningTests = {}
       runningTests[testFilePath] = { content }
       const { currentVersion, evmVersion, optimize, runs } = this.compileTab.getCurrentCompilerConfig()
@@ -558,7 +662,7 @@ module.exports = class TestTab extends ViewPlugin {
         currentCompilerUrl,
         evmVersion,
         optimize,
-        usingWorker: canUseWorker(currentVersion),
+        usingWorker: canUseWorker(workerCompilerVersion(currentVersion)),
         runs
       }
       remixTests.runTestSources(
@@ -566,15 +670,12 @@ module.exports = class TestTab extends ViewPlugin {
         compilerConfig,
         (result) => this.testCallback(result, runningTests),
         (_err, result, cb) => this.resultsCallback(_err, result, cb),
-        (error, result) => {
-          this.updateFinalResult(error, result, testFilePath)
-          callback(error)
-        }, (url, cb) => {
+        finish, (url, cb) => {
           return this.contentImport.resolveAndSave(url).then((result) => cb(null, result)).catch((error) => cb(error.message))
-        }
+        }, { signal }
       )
     }).catch((error) => {
-      if (error) return // eslint-disable-line
+      finish(error)
     })
   }
 
@@ -623,19 +724,28 @@ module.exports = class TestTab extends ViewPlugin {
     if (!tests) return
     this.resultStatistics.hidden = tests.length === 0
     async.eachOfSeries(tests, (value, key, callback) => {
-      if (this.hasBeenStopped) return
+      if (this.hasBeenStopped) return callback()
       this.runTest(value, callback)
     })
   }
 
   stopTests () {
+    // A fast cached run can finish between pointer-down and the click handler.
+    // Ignore that stale click instead of replacing the already-reset controls
+    // with a permanent "Stopping" state when there is no active run to abort.
+    if (!this.areTestsRunning) return
     this.hasBeenStopped = true
+    this.testsExecutionStopped.hidden = false
     const stopBtnLabel = document.getElementById('runTestsTabStopActionLabel')
     stopBtnLabel.innerText = 'Stopping'
     const stopBtn = document.getElementById('runTestsTabStopAction')
     stopBtn.setAttribute('disabled', 'disabled')
     const runBtn = document.getElementById('runTestsTabRunAction')
     runBtn.setAttribute('disabled', 'disabled')
+    // Abort last: AbortController listeners run synchronously and the final
+    // callback restores Run/Stop. Updating "Stopping" after abort would
+    // overwrite that restored state and strand both controls disabled.
+    this.abortActiveTestRun()
   }
 
   updateGenerateFileAction () {

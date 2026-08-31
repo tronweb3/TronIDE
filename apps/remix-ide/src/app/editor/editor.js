@@ -77,7 +77,8 @@ const profile = {
   name: 'editor',
   description: 'service - editor',
   version: packageJson.version,
-  methods: ['highlight', 'discardHighlight', 'discardHighlightAt', 'clearAnnotations', 'addAnnotation']
+  methods: ['highlight', 'discardHighlight', 'discardHighlightAt', 'clearAnnotations', 'addAnnotation'],
+  events: ['breakpointAdded', 'breakpointCleared', 'contentChanged', 'requiringToSaveCurrentfile', 'sessionSwitched']
 }
 
 class Editor extends Plugin {
@@ -538,7 +539,11 @@ class Editor extends Plugin {
       menu.setAttribute('data-id', 'editorContextMenu')
       menu.setAttribute('role', 'menu')
       menu.tabIndex = -1
-      menu.style.cssText = 'position:fixed; z-index:10050; min-width:150px; padding:4px 0; background:var(--light,#fff); color:var(--text,#212529); border:1px solid var(--secondary,#ced4da); border-radius:4px; box-shadow:0 2px 10px rgba(0,0,0,.3); font-size:13px; user-select:none; outline:none;'
+      // The menu is attached directly to <body>, where the legacy --text
+      // variable is not defined by any built-in theme. Its dark fallback then
+      // rendered dark-on-dark in Dark/Black/Cyborg. --ai-title is defined by
+      // every theme and has AA contrast against that theme's --light surface.
+      menu.style.cssText = 'position:fixed; z-index:10050; min-width:150px; padding:4px 0; background:var(--light,#fff); color:var(--ai-title,#212529); border:1px solid var(--secondary,#ced4da); border-radius:4px; box-shadow:0 2px 10px rgba(0,0,0,.3); font-size:13px; user-select:none; outline:none;'
       items.forEach((it) => {
         if (it.sep) {
           const s = document.createElement('div')
@@ -550,13 +555,16 @@ class Editor extends Plugin {
         row.setAttribute('data-id', 'editorContextMenu' + it.label.replace(/\s/g, ''))
         row.setAttribute('role', 'menuitem')
         row.textContent = it.label
-        row.style.cssText = 'padding:5px 14px; white-space:nowrap; outline:none; cursor:' + (it.enabled ? 'pointer' : 'default') + '; opacity:' + (it.enabled ? '1' : '.45') + ';'
+        row.style.cssText = 'padding:5px 14px; white-space:nowrap; outline:none; cursor:' + (it.enabled ? 'pointer' : 'default') + '; opacity:' + (it.enabled ? '1' : '.82') + ';'
         if (it.enabled) {
           // focusable via the roving ArrowUp/Down handler (not the Tab order);
           // focus shares the hover highlight as its visible indicator
           row.tabIndex = -1
           row.setAttribute('data-enabled', 'true')
-          const highlight = () => { row.style.background = 'var(--secondary,#e9ecef)' }
+          // A low-opacity tint preserves contrast across every built-in theme;
+          // some themes use --secondary as a mid-tone with insufficient text
+          // contrast when it is used as the entire hover surface.
+          const highlight = () => { row.style.background = 'color-mix(in srgb, currentColor 8%, transparent)' }
           const unhighlight = () => { row.style.background = 'transparent' }
           row.addEventListener('mouseenter', highlight)
           row.addEventListener('mouseleave', unhighlight)

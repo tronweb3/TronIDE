@@ -30,6 +30,46 @@ const profile = {
   methods: ['resolve', 'resolveAndSave', 'isExternalUrl']
 }
 
+/**
+ * Solc calls the import callback with the literal path from the fetched
+ * source. GitHub Solidity files commonly use relative imports (`./IERC20`),
+ * but the callback has no parent URL to resolve against. Convert only those
+ * relative GitHub imports to explicit blob URLs while the parent URL is still
+ * known. This keeps arbitrary URLs untouched and lets the normal allowlist,
+ * resolver cache, and workspace dependency boundary handle every follow-up
+ * request.
+ */
+function absolutizeGithubImports (content: any, sourceUrl: string): any {
+  if (typeof content !== 'string' || typeof sourceUrl !== 'string') return content
+
+  let parsed: URL
+  try { parsed = new URL(sourceUrl) } catch (error) { return content }
+  if (parsed.hostname !== 'github.com' && parsed.hostname !== 'www.github.com') return content
+
+  const segments = parsed.pathname.split('/').filter(Boolean)
+  if (segments.length < 3) return content
+  const owner = segments[0]
+  const repository = segments[1]
+  let reference = 'master'
+  let fileStart = 2
+  if (segments[2] === 'blob' && segments.length >= 5) {
+    reference = segments[3]
+    fileStart = 4
+  }
+  const filePath = segments.slice(fileStart).join('/')
+  if (!filePath) return content
+
+  const parentUrl = `https://github.com/${owner}/${repository}/blob/${reference}/${filePath}`
+  const baseUrl = parentUrl.slice(0, parentUrl.lastIndexOf('/') + 1)
+  return content.replace(/(\bimport\s+(?:[^"'\n]*?\s+from\s+)?["'])(\.\.?\/[^"']+)(["'])/g, (match, prefix, relativePath, suffix) => {
+    try {
+      return prefix + new URL(relativePath, baseUrl).href + suffix
+    } catch (error) {
+      return match
+    }
+  })
+}
+
 export class CompilerImports extends Plugin {
   previouslyHandled: {}
   urlResolver: any
@@ -88,7 +128,8 @@ export class CompilerImports extends Plugin {
       // The Settings PAT only backs gist load/publish fallbacks elsewhere.
       resolved = await this.urlResolver.resolve(url)
       console.log(resolved)
-      const { content, cleanUrl, type } = resolved
+      const { cleanUrl, type } = resolved
+      const content = type === 'github' ? absolutizeGithubImports(resolved.content, url) : resolved.content
       self.previouslyHandled[url] = {
         content,
         cleanUrl,

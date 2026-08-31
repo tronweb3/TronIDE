@@ -15,7 +15,7 @@
  */
 
 import React, { useEffect, useState, useRef, memo } from 'react';
-import { List } from 'antd';
+import List from 'antd/lib/list';
 import NewSessionItemRender from "../ChatItemsRender/NewSessionItemRender";
 import MeDialogueItemRender from "../ChatItemsRender/MeDialogueItemRender";
 import OtherDialogueItemRender from "../ChatItemsRender/OtherDialogueItemRender";
@@ -43,9 +43,8 @@ const ChatItemsList = ({ list, loadingCompleted, toReAnswer = () => {}, setNewSe
         <OtherDialogueItemRender
             {...item}
             toReAnswer={toReAnswer}
-            chatList={list}
-            index={index}
-            loadingCompleted={loadingCompleted}
+            isLastChat={index === list.length - 1}
+            loadingCompleted={index === list.length - 1 ? loadingCompleted : true}
             setNewSession={setNewSession}
         />
       ) : (
@@ -57,8 +56,9 @@ const ChatItemsList = ({ list, loadingCompleted, toReAnswer = () => {}, setNewSe
         <List
           itemLayout="horizontal"
           dataSource={list}
+          rowKey={(item, index) => item.chatKey || index}
           renderItem={(item, index) => (
-            <List.Item key={index}>
+            <List.Item key={item.chatKey || index}>
             {renderItems(item, index)}
             </List.Item>
           )}

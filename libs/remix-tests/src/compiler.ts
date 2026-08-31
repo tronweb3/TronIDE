@@ -93,6 +93,12 @@ function processFile (filePath: string, sources: SrcIfc, isRoot = false) {
 const userAgent = (typeof (navigator) !== 'undefined') && navigator.userAgent ? navigator.userAgent.toLowerCase() : '-'
 const isBrowser = !(typeof (window) === 'undefined' || userAgent.indexOf(' electron/') > -1)
 
+function createCancellationError (): Error {
+  const error: any = new Error('Solidity test run was cancelled.')
+  error.code = 'AI_TEST_ABORTED'
+  return error
+}
+
 /**
  * @dev Compile file or files before running tests (used for CLI execution)
  * @param filename Name of file
@@ -142,6 +148,24 @@ export function compileFileOrFiles (filename: string, isDirectory: boolean, opts
     async.waterfall([
       function loadCompiler (next) {
         compiler = new RemixCompiler()
+        let settled = false
+        const finish = (error?: Error) => {
+          if (settled) return
+          settled = true
+          next(error)
+        }
+
+        // Compiler loading is asynchronous, including the bundled Node
+        // compiler. Register both outcomes before starting the load so a fast
+        // event cannot be missed and compilation can never run without
+        // compileJSON being installed.
+        compiler.event.register('compilerLoaded', this, function () {
+          finish()
+        })
+        compiler.event.register('compilerLoadFailed', this, function (message) {
+          finish(new Error(message || 'Failed to initialise Solidity compiler'))
+        })
+
         if (compilerConfig) {
           const { currentCompilerUrl, evmVersion, optimize, runs } = compilerConfig
           if (evmVersion) compiler.set('evmVersion', evmVersion)
@@ -149,16 +173,15 @@ export function compileFileOrFiles (filename: string, isDirectory: boolean, opts
           if (runs) compiler.set('runs', runs)
           if (currentCompilerUrl) {
             compiler.loadRemoteVersion(currentCompilerUrl)
-            compiler.event.register('compilerLoaded', this, function (version) {
-              next()
-            })
           } else {
-            compiler.onInternalCompilerLoaded()
-            next()
+            compiler.onInternalCompilerLoaded().then(() => {
+              if (!compiler.state.compileJSON) finish(new Error('Solidity compiler initialisation did not install compileJSON'))
+            }).catch(finish)
           }
         } else {
-          compiler.onInternalCompilerLoaded()
-          next()
+          compiler.onInternalCompilerLoaded().then(() => {
+            if (!compiler.state.compileJSON) finish(new Error('Solidity compiler initialisation did not install compileJSON'))
+          }).catch(finish)
         }
       },
       function doCompilation (next) {
@@ -169,6 +192,8 @@ export function compileFileOrFiles (filename: string, isDirectory: boolean, opts
         compiler.compile(sources, filepath)
       }
     ], function (err: Error | null | undefined, result: any) {
+      if (err) return cb(err)
+      if (!result) return cb(new Error('Solidity compilation finished without a result'))
       const error: Error[] = []
       if (result.error) error.push(result.error)
       const errors = (result.errors || error).filter((e) => e.type === 'Error' || e.severity === 'error')
@@ -176,7 +201,7 @@ export function compileFileOrFiles (filename: string, isDirectory: boolean, opts
         if (!isBrowser) require('signale').fatal(errors)
         return cb(new CompilationErrors(errors))
       }
-      cb(err, result.contracts, result.sources) // return callback with contract details & ASTs
+      cb(null, result.contracts, result.sources) // return callback with contract details & ASTs
     })
   }
 }
@@ -192,6 +217,39 @@ export function compileFileOrFiles (filename: string, isDirectory: boolean, opts
 export function compileContractSources (sources: SrcIfc, compilerConfig: CompilerConfiguration, importFileCb: any, opts: any, cb): void {
   let compiler, filepath: string
   const accounts: string[] = opts.accounts || []
+  const signal: AbortSignal | undefined = opts && opts.signal
+  let abortHandler: (() => void) | null = null
+  let finished = false
+
+  const clearAbortHandler = () => {
+    if (signal && abortHandler) signal.removeEventListener('abort', abortHandler)
+    abortHandler = null
+  }
+
+  const installAbortHandler = (handler: () => void) => {
+    clearAbortHandler()
+    if (!signal) return
+    abortHandler = handler
+    signal.addEventListener('abort', handler, { once: true })
+  }
+
+  const cleanup = () => {
+    clearAbortHandler()
+    if (compiler && typeof compiler.dispose === 'function') {
+      compiler.dispose()
+    }
+    compiler = null
+  }
+
+  const finish = (error?: Error, ...result: any[]) => {
+    if (finished) return
+    finished = true
+    cleanup()
+    cb(error, ...result)
+  }
+
+  if (signal && signal.aborted) return finish(createCancellationError())
+
   // Iterate over sources keys. Inject test libraries. Inject test library import statements.
   if (!('remix_tests.sol' in sources) && !('tests.sol' in sources)) {
     sources['tests.sol'] = { content: require('../sol/tests.sol') }
@@ -215,27 +273,66 @@ export function compileContractSources (sources: SrcIfc, compilerConfig: Compile
       compiler.set('evmVersion', evmVersion)
       compiler.set('optimize', optimize)
       compiler.set('runs', runs)
-      compiler.loadVersion(usingWorker, currentCompilerUrl)
+      let stageSettled = false
+      const finishStage = (error?: Error) => {
+        if (stageSettled) return
+        stageSettled = true
+        clearAbortHandler()
+        next(error)
+      }
+      const onAbort = () => {
+        if (compiler && typeof compiler.dispose === 'function') compiler.dispose()
+        finishStage(createCancellationError())
+      }
+      installAbortHandler(onAbort)
+      if (signal && signal.aborted) return onAbort()
+      // Register both outcomes before starting the asynchronous load. Invalid
+      // URLs fail synchronously, while network/worker failures are reported
+      // later; either path must advance the waterfall instead of hanging.
       // @ts-ignore
-      compiler.event.register('compilerLoaded', this, (version) => {
-        next()
-      })
+      compiler.event.register('compilerLoaded', this, () => finishStage())
+      // @ts-ignore
+      compiler.event.register('compilerLoadFailed', this, (message) => finishStage(new Error(message || 'Failed to initialise Solidity compiler')))
+      try {
+        Promise.resolve(compiler.loadVersion(usingWorker, currentCompilerUrl)).catch(finishStage)
+      } catch (error) {
+        finishStage(error)
+      }
     },
     function doCompilation (next) {
+      let stageSettled = false
+      const finishStage = (error?: Error, result?: any) => {
+        if (stageSettled) return
+        stageSettled = true
+        clearAbortHandler()
+        next(error, result)
+      }
+      const onAbort = () => {
+        if (compiler && typeof compiler.dispose === 'function') compiler.dispose()
+        finishStage(createCancellationError())
+      }
+      installAbortHandler(onAbort)
+      if (signal && signal.aborted) return onAbort()
       // @ts-ignore
       compiler.event.register('compilationFinished', this, (success, data, source) => {
-        next(null, data)
+        finishStage(null, data)
       })
-      compiler.compile(sources, filepath)
+      try {
+        compiler.compile(sources, filepath)
+      } catch (error) {
+        finishStage(error)
+      }
     }
   ], function (err: Error | null | undefined, result: any) {
+    if (err) return finish(err)
+    if (!result) return finish(new Error('Solidity compilation finished without a result'))
     const error: Error[] = []
     if (result.error) error.push(result.error)
     const errors = (result.errors || error).filter((e) => e.type === 'Error' || e.severity === 'error')
     if (errors.length > 0) {
       if (!isBrowser) require('signale').fatal(errors)
-      return cb(new CompilationErrors(errors))
+      return finish(new CompilationErrors(errors))
     }
-    cb(err, result.contracts, result.sources) // return callback with contract details & ASTs
+    finish(err, result.contracts, result.sources) // return callback with contract details & ASTs
   })
 }

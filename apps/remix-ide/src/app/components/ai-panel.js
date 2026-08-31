@@ -16,13 +16,14 @@
 
 import { AbstractPanel } from './panel'
 import * as packageJson from '../../../../../package.json'
-import CodeReader from '@remix-code-reader'
+import CodeReader, { getAITaskEntry, getAITaskEntryReadinessIssue } from '@remix-code-reader'
 import React from 'react'  // eslint-disable-line
 import ReactDOM from 'react-dom'
 
 const EventEmitter = require('events')
 const yo = require('yo-yo')
 const csjs = require('csjs-inject')
+const NARROW_PANEL_QUERY = '(max-width: 768px)'
 
 const css = csjs`
   .pluginsContainer {
@@ -38,7 +39,8 @@ const profile = {
   displayName: 'Ai Panel',
   description: '',
   version: packageJson.version,
-  methods: ['addView', 'removeView', 'hide', 'ask', 'explainError', 'explainContract', 'aiComplete', 'hasAiKey']
+  methods: ['addView', 'removeView', 'hide', 'conceal', 'ask', 'startTask', 'getTaskReadiness', 'explainError', 'explainContract', 'aiComplete', 'hasAiKey'],
+  events: ['aiPluginClosed', 'focusChanged']
 }
 
 export class AiPanel extends AbstractPanel {
@@ -48,6 +50,8 @@ export class AiPanel extends AbstractPanel {
     this.config = config
     this.init()
     this.events = new EventEmitter()
+    this.reconcileNarrowLayout = this.reconcileNarrowLayout.bind(this)
+    window.addEventListener('resize', this.reconcileNarrowLayout)
   }
 
   focus (name) {
@@ -74,13 +78,47 @@ export class AiPanel extends AbstractPanel {
     const el = document.getElementById('ai-panel')
     if (!el) return
     const isHidden = el.style.display === 'none' || el.style.width === '0px'
-    if (isHidden) {
-      el.style.display = 'flex'
-      el.style.minWidth = '340px'
-      el.style.width = el.dataset.previousWidth || '340px'
-      const previousSibling = el.previousElementSibling
-      if (previousSibling) previousSibling.style.display = 'block'
-      this.aiPanelvisible = true
+    if (isHidden) this.setPanelVisibility(true)
+    else this.focusAiPanelOnNarrowLayout()
+  }
+
+  isNarrowLayout () {
+    return typeof window.matchMedia === 'function' && window.matchMedia(NARROW_PANEL_QUERY).matches
+  }
+
+  isPanelVisible () {
+    const el = document.getElementById('ai-panel')
+    return Boolean(el && el.style.display !== 'none' && el.style.width !== '0px')
+  }
+
+  focusAiPanelOnNarrowLayout () {
+    if (!this.isNarrowLayout()) return
+    const sidePanel = document.getElementById('side-panel')
+    if (!sidePanel || sidePanel.style.display === 'none') return
+    sidePanel.style.display = 'none'
+    const resizeHandle = sidePanel.nextElementSibling
+    if (resizeHandle) resizeHandle.style.display = 'none'
+  }
+
+  reconcileNarrowLayout () {
+    if (this.isPanelVisible()) this.focusAiPanelOnNarrowLayout()
+  }
+
+  setPanelVisibility (shouldShow) {
+    const el = document.getElementById('ai-panel')
+    if (!el) return
+    if (shouldShow) {
+      this.focusAiPanelOnNarrowLayout()
+    } else {
+      el.dataset.previousWidth = el.style.width || `${el.getBoundingClientRect().width}px` || '340px'
+    }
+    el.style.display = shouldShow ? 'flex' : 'none'
+    el.style.minWidth = shouldShow ? '340px' : '0px'
+    el.style.width = shouldShow ? (el.dataset.previousWidth || '340px') : '0px'
+    const previousSibling = el.previousElementSibling
+    if (previousSibling) previousSibling.style.display = shouldShow ? 'block' : 'none'
+    this.aiPanelvisible = shouldShow
+    if (this.aiPanelEl) {
       ReactDOM.render(
         <CodeReader
           plugin={this}
@@ -88,8 +126,12 @@ export class AiPanel extends AbstractPanel {
         />,
         this.aiPanelEl
       )
-      this.emit('aiPluginClosed', false)
     }
+    this.emit('aiPluginClosed', !shouldShow)
+  }
+
+  async conceal () {
+    if (this.isPanelVisible()) this.setPanelVisibility(false)
   }
 
   // Reveal the panel and push a ready-made prompt into the chat. We wait a tick
@@ -101,6 +143,40 @@ export class AiPanel extends AbstractPanel {
     setTimeout(() => {
       this.events.emit('injectPrompt', { prompt })
     }, 150)
+  }
+
+  async getTaskReadiness () {
+    if (typeof this._getAITaskReadinessFn !== 'function') {
+      return {
+        hasKey: false,
+        hasModel: false,
+        aiModelVendor: '',
+        workspaceActionsEnabled: false,
+        toolProtocolSupported: false,
+        panelReady: false
+      }
+    }
+    return { ...this._getAITaskReadinessFn(), panelReady: true }
+  }
+
+  // Home and Deploy pass only a registry id plus bounded context. Chat rebuilds
+  // the canonical prompt and enters its normal Task Controller; this method
+  // never calls a model or executes a tool by itself.
+  async startTask ({ entryId, source = 'home', context = {}, runtimeContext = {} } = {}) {
+    const entry = getAITaskEntry(entryId)
+    if (!entry) return { ok: false, code: 'INVALID_ENTRY', summary: 'This AI task entry is unavailable.', userAction: 'Reload TronIDE and choose a supported task card.' }
+    this.reveal()
+    if (typeof this._getAITaskReadinessFn !== 'function') await new Promise((resolve) => setTimeout(resolve, 160))
+    const readiness = await this.getTaskReadiness()
+    const issue = getAITaskEntryReadinessIssue(entry, readiness, runtimeContext)
+    if (issue) {
+      if (typeof this._showAiSettingsFn === 'function') this._showAiSettingsFn(`${issue.summary} ${issue.userAction}`)
+      return issue
+    }
+    setTimeout(() => {
+      this.events.emit('injectTask', { entryId: entry.id, source, context, runtimeContext })
+    }, 0)
+    return { ok: true, code: 'OK', entryId: entry.id, title: entry.title }
   }
 
   async explainError ({ message, file, line, code } = {}) {
@@ -134,26 +210,7 @@ export class AiPanel extends AbstractPanel {
   }
 
   async hide () {
-    const el = document.getElementById('ai-panel')
-    if (el) {
-      const shouldShow = el.style.display === 'none'
-      if (!shouldShow) el.dataset.previousWidth = el.style.width || `${el.getBoundingClientRect().width}px` || '340px'
-      el.style.display = shouldShow ? 'flex' : 'none'
-      el.style.minWidth = shouldShow ? '340px' : '0px'
-      el.style.width = shouldShow ? (el.dataset.previousWidth || '340px') : '0px'
-      const previousSibling = el.previousElementSibling
-      if (previousSibling) previousSibling.style.display = shouldShow ? 'block' : 'none'
-      this.aiPanelvisible = shouldShow
-      ReactDOM.render(
-        <CodeReader
-          plugin={this}
-          aiPanelvisible={this.aiPanelvisible}
-        />,
-        this.aiPanelEl
-      )
-      // this.events?.emit('aiPluginClosed', !this.aiPanelvisible)
-      this.emit('aiPluginClosed', !shouldShow)
-    }
+    this.setPanelVisibility(!this.isPanelVisible())
   }
 
   render () {
@@ -168,6 +225,7 @@ export class AiPanel extends AbstractPanel {
       el
     )
     this.aiPanelEl = el
+    window.requestAnimationFrame(this.reconcileNarrowLayout)
     return el
   }
 }

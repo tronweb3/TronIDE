@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
-import { dismissWelcomeModal } from './helpers'
+import { dismissWelcomeModal, useBuiltinCompiler } from './helpers'
 
 // R-IX-2 batch from 交互回归测试计划.md: perturbation tests for the shared-state
 // matrix — order swaps (M5), rapid/repeated operations (M6) and re-render /
@@ -32,6 +32,7 @@ async function compileAndDeployStorage (page: Page) {
   }
   await storageFile.click()
   await page.locator('#icon-panel div[plugin="solidity"]').click()
+  await useBuiltinCompiler(page)
   await page.locator('*[data-id="compilerContainerCompileBtn"]').click()
   await expect(page.locator('*[data-id="compiledContracts"]')).toContainText('Storage', { timeout: 30_000 })
 
@@ -80,6 +81,12 @@ test.describe('Interaction perturbation (R-IX-2)', () => {
     await expect(onTag).toBeVisible({ timeout: 15_000 })
     await expect(card).toContainText('Deactivate')
     await expect(page.locator('[data-id="sidePanelSwapitTitle"]')).toContainText(/contract verification/i, { timeout: 15_000 })
+    // Opening an already-active plugin must settle the Home action. A second
+    // activatePlugin() call used to remain pending and leave the card
+    // aria-disabled forever, so its Deactivate control appeared stuck.
+    await expect(card).not.toHaveAttribute('aria-busy', 'true', { timeout: 3_000 })
+    await expect(card).not.toHaveAttribute('aria-disabled', 'true')
+    await expect(card.getByText('Deactivate', { exact: true })).toBeEnabled()
 
     // Reset to inactive for order B.
     await card.getByText('Deactivate', { exact: true }).click()

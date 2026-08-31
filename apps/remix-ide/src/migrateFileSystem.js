@@ -19,8 +19,32 @@
 
 import { Storage } from '@remix-project/remix-lib'
 import { joinPath } from './lib/helper'
+import sha256 from 'crypto-js/sha256.js'
 import yo from 'yo-yo'
 const modalDialogCustom = require('./app/ui/modal-dialog-custom')
+
+export const LEGACY_MIGRATION_FINGERPRINT_KEY = 'tron_legacy_migration_fingerprint'
+export const LEGACY_MIGRATION_ALREADY_CURRENT = 'MIGRATION_ALREADY_CURRENT'
+
+const canonicalize = (value) => {
+  if (Array.isArray(value)) return value.map(canonicalize)
+  if (!value || typeof value !== 'object') return value
+  return Object.keys(value).sort().reduce((result, key) => {
+    result[key] = canonicalize(value[key])
+    return result
+  }, {})
+}
+
+const legacyRootFiles = (files = {}) => Object.keys(files).reduce((result, path) => {
+  const normalized = String(path).replace(/^\/+/, '')
+  // These are storage implementation details, not user files. In particular,
+  // the IndexedDB marker must never be copied into a user-created recovery
+  // workspace by the older root-file migration action.
+  if (normalized !== '.workspaces' && normalized !== '.tronide-workspace-storage-v1') result[path] = files[path]
+  return result
+}, {})
+
+export const getLegacyMigrationFingerprint = (files) => sha256(JSON.stringify(canonicalize(files))).toString()
 /*
   Migrating the files to the BrowserFS storage instead or raw localstorage
 */
@@ -40,29 +64,34 @@ export default (fileProvider) => {
   fileStorageBrowserFS.set(flag, 'done')
 }
 
-export async function migrateToWorkspace (fileManager, filePanel) {
+export async function migrateToWorkspace (fileManager, filePanel, { previousFingerprint = null } = {}) {
   const browserProvider = fileManager.getProvider('browser')
   const workspaceProvider = fileManager.getProvider('workspace')
-  const files = await browserProvider.copyFolderToJson('/')
+  const files = legacyRootFiles(await browserProvider.copyFolderToJson('/'))
 
   if (Object.keys(files).length === 0) {
-    // we don't have any root file, only .workspaces
-    // don't need to create a workspace
     throw new Error('No file to migrate')
   }
 
-  if (Object.keys(files).length === 1 && files['/.workspaces']) {
-    // we don't have any root file, only .workspaces
-    // don't need to create a workspace
-    throw new Error('No file to migrate')
+  const sourceFingerprint = getLegacyMigrationFingerprint(files)
+  if (previousFingerprint && previousFingerprint === sourceFingerprint) {
+    const error = new Error('Legacy files are already migrated and unchanged.')
+    error.code = LEGACY_MIGRATION_ALREADY_CURRENT
+    throw error
   }
 
   const workspaceName = 'workspace_migrated_' + Date.now()
   await filePanel.processCreateWorkspace(workspaceName)
-  filePanel.getWorkspaces() // refresh list
+  await filePanel.getWorkspaces() // refresh list
   const workspacePath = joinPath('browser', workspaceProvider.workspacesPath, workspaceName)
   await populateWorkspace(workspacePath, files, browserProvider)
-  return workspaceName
+  // Migration is a user-facing workspace operation. Leave the user in the
+  // migrated tree instead of creating an unreachable workspace in the
+  // selector while the old browser-root files remain active.
+  if (typeof filePanel.setWorkspace === 'function') {
+    await filePanel.setWorkspace(workspaceName, true, true)
+  }
+  return { workspaceName, sourceFingerprint }
 }
 
 const populateWorkspace = async (workspace, json, browserProvider) => {

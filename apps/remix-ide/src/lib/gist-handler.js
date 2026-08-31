@@ -22,40 +22,22 @@ var modalDialogCustom
 if (typeof window !== 'undefined') {
   modalDialogCustom = require('../app/ui/modal-dialog-custom')
 }
-// Tab-session GitHub connect token used to authenticate
-// gist loads; tokens are never read from web storage or config.
+// Authenticated gist reads go through the BFF. The browser has only an opaque
+// TronIDE session handle; GitHub's credential remains encrypted server-side.
 var githubAuth = require('./github-auth')
+var githubBff = require('./github-bff')
 var githubGistSecurity = loadGithubGistSecurity()
 var normalizeGistId = require('./normalize-gist-id')
 
-// Read an access token to authenticate gist loads (authenticated GitHub requests
-// get a far higher rate limit than anonymous, which was causing "API rate limit
-// exceeded"). Uses only the in-memory GitHub connect token (lib/github-auth, set
-// by the Home/Header "Connect GitHub" flow) — the legacy Settings-tab PAT channel
-// is retired. Returns '' when not connected so we transparently load the gist
-// anonymously.
-function getGistAccessToken () {
-  try {
-    return String(githubAuth.getToken() || '').trim()
-  } catch (error) {
-    console.debug('[gistHandler] in-memory github token unavailable; loading gist anonymously', error)
-  }
-  return ''
-}
-
-// Only same-origin (api.github.com) HTTPS gist URLs are ever fetched. The gist id is constrained to
-// hex characters by `getGistId`, so this fetch cannot be redirected to attacker-controlled origins
-// even on a future browser without strict redirect semantics; the IDE's CSP would also block it.
 function fetchGist (gistId) {
-  var headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'tron-remix' }
-  // Authenticate when a token is configured to lift the GitHub rate limit; anonymous otherwise.
-  var token = getGistAccessToken()
-  if (token) headers.Authorization = 'token ' + token
-  return window.fetch('https://api.github.com/gists/' + encodeURIComponent(gistId), {
-    method: 'GET',
-    headers: headers,
-    redirect: 'error'
-  }).then(function (response) {
+  var request = githubAuth.isConnected()
+    ? githubBff.githubRequest('/gists/' + encodeURIComponent(gistId), { method: 'GET' })
+    : window.fetch('https://api.github.com/gists/' + encodeURIComponent(gistId), {
+      method: 'GET',
+      headers: { Accept: 'application/vnd.github+json' },
+      redirect: 'error'
+    })
+  return request.then(function (response) {
     return response.text().then(function (text) {
       var payload = {}
       try { payload = text ? JSON.parse(text) : {} } catch (parseError) {
@@ -81,7 +63,7 @@ function fetchGist (gistId) {
 // safelisted, so adding it forces a preflight the raw host doesn't answer — every
 // truncated-file backfill then fails with a CORS error (0 bytes), which surfaced as
 // "Could not load the content ... a rate limit applies" even with a token configured.
-// The token still authenticates the api.github.com call in `fetchGist` to lift the rate limit.
+// The BFF authenticates the metadata call; raw content remains anonymous.
 function fetchGistRawContent (rawUrl) {
   var parsed
   try { parsed = new URL(rawUrl) } catch (error) { return Promise.reject(new Error('invalid raw gist url')) }

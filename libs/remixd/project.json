@@ -14,7 +14,7 @@
         "lintFilePatterns": [
           "libs/remixd/**/*.{ts,tsx}"
         ],
-        "eslintConfig": "libs/remixd/.eslintrc"
+        "eslintConfig": "libs/remixd/.eslintrc.js"
       }
     },
     "test": {
@@ -44,7 +44,7 @@
         "build"
       ],
       "options": {
-        "command": "REMIXD_SCRIPT_PATH='build/libs/remixd/src/bin/remixd.js'; chmod +x \"$REMIXD_SCRIPT_PATH\"; CMD_TO_RUN=\"\\\"$REMIXD_SCRIPT_PATH\\\"\"; FOLDER_ARG='{args.folder}'; if [ -n \"$FOLDER_ARG\" ]; then CMD_TO_RUN=\"$CMD_TO_RUN -s \\\"$FOLDER_ARG\\\"\"; fi; REMIX_IDE_ARG='{args.remixide}'; if [ -n \"$REMIX_IDE_ARG\" ]; then CMD_TO_RUN=\"$CMD_TO_RUN --remix-ide \\\"$REMIX_IDE_ARG\\\"\"; fi; eval \"$CMD_TO_RUN\""
+        "command": "REMIXD_NODE_MODULES=\"$(pwd)/libs/remixd/node_modules\"; if [ -n \"$NODE_PATH\" ]; then export NODE_PATH=\"$REMIXD_NODE_MODULES:$NODE_PATH\"; else export NODE_PATH=\"$REMIXD_NODE_MODULES\"; fi; REMIXD_SCRIPT_PATH='build/libs/remixd/src/bin/remixd.js'; chmod +x \"$REMIXD_SCRIPT_PATH\"; CMD_TO_RUN=\"\\\"$REMIXD_SCRIPT_PATH\\\"\"; FOLDER_ARG='{args.folder}'; if [ -n \"$FOLDER_ARG\" ]; then CMD_TO_RUN=\"$CMD_TO_RUN -s \\\"$FOLDER_ARG\\\"\"; fi; REMIX_IDE_ARG='{args.remixide}'; if [ -n \"$REMIX_IDE_ARG\" ]; then CMD_TO_RUN=\"$CMD_TO_RUN --remix-ide \\\"$REMIX_IDE_ARG\\\"\"; fi; eval \"$CMD_TO_RUN\""
       }
     }
   }

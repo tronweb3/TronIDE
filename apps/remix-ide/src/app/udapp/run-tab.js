@@ -19,6 +19,8 @@
 
 import { ViewPlugin } from '@remixproject/engine-web'
 import * as packageJson from '../../../../../package.json'
+import { compareAIApprovalSnapshots, compareAITransactionEnvironmentFingerprints, createAIApprovalSnapshot, createAITransactionEnvironmentFingerprint, formatAIPreflightSummary, normalizeAIEnvironment, normalizeAITransactionStatus, sanitizeAIErrorMessage, trxBalanceToSun, waitForAIExecutionContext, waitForAITransactionFinality } from './ai-transaction-intelligence.js'
+const { TransactionAttemptLogger } = require('./transaction-attempt-logger')
 
 const $ = require('jquery')
 const yo = require('yo-yo')
@@ -38,9 +40,42 @@ const RecorderUI = require('../tabs/runTab/recorder.js')
 const DropdownLogic = require('../tabs/runTab/model/dropdownlogic.js')
 const ContractDropdownUI = require('../tabs/runTab/contractDropdown.js')
 const toaster = require('../ui/tooltip')
+const { requireUserPermission } = require('../ui/permission-security')
+const {
+  markExternalPluginTransaction,
+  verifyPluginTransactionNetwork
+} = require('../../blockchain/transaction-network-security')
+const { isTrustedHostPluginProfile } = require('../../lib/plugin-trust-security')
+const {
+  CAPABILITY_STATUS,
+  createCheckingProtocolCapabilitySnapshot,
+  createProtocolCapabilitySnapshot,
+  evaluateDeploymentCompatibility,
+  extractBytecodeObject,
+  formatDeploymentCompatibilityMessage,
+  scanCompilationArtifacts
+} = require('../lib/prague-osaka-compatibility')
 const _paq = window._paq = window._paq || []
 const walletProviderAdapter = execution.walletProviderAdapter
 const walletAdapterManager = execution.walletAdapterManager
+const AI_WALLET_WRITE_TIMEOUT_MS = 5 * 60 * 1000
+const TRON_NETWORK_LABELS = Object.freeze({ main: 'TRON Mainnet', nile: 'TRON Nile', shasta: 'TRON Shasta' })
+const TRONWEB_SAFE_CALL_VALUE_MAX = BigInt(Number.MAX_SAFE_INTEGER)
+const isFailedTransactionResult = (error, txResult) => {
+  if (error) return true
+  const receipt = txResult && (txResult.receipt || txResult)
+  const status = receipt && (receipt.status !== undefined ? receipt.status : receipt.result)
+  return status === false || status === 0 || status === '0x0' ||
+    String(status).toUpperCase() === 'FAILED' || String(status).toUpperCase() === 'REVERT'
+}
+const normalizeTronContractAddress = (address) => {
+  const value = typeof address === 'string' ? address.trim() : String(address || '')
+  const hexAddress = util.addressToHex(value)
+  if (!hexAddress || !/^0x[0-9a-fA-F]{40}$/.test(hexAddress)) throw new Error('Invalid TRON contract address')
+  const base58Address = util.addressToBase58(hexAddress)
+  if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(base58Address)) throw new Error('Invalid TRON contract address')
+  return base58Address
+}
 
 const UniversalDAppUI = require('../ui/universal-dapp-ui')
 
@@ -54,8 +89,8 @@ const profile = {
   documentation: 'https://developers.tron.network/docs/tron-ide',
   version: packageJson.version,
   permission: true,
-  events: ['newTransaction'],
-  methods: ['connectInjectedTronWeb', 'disconnectInjectedTronWeb', 'createVMAccount', 'sendTransaction', 'getAccounts', 'pendingTransactionsCount', 'getSettings', 'setEnvironmentMode', 'aiListContracts', 'aiDeploy', 'aiCallMethod', 'aiListAccounts', 'aiGetBalance', 'aiExportTronbox', 'aiSaveScenario', 'aiRunScenario', 'aiRecordingInfo']
+  events: ['newTransaction', 'environmentChanged'],
+  methods: ['connectInjectedTronWeb', 'disconnectInjectedTronWeb', 'createVMAccount', 'sendTransaction', 'getAccounts', 'pendingTransactionsCount', 'getSettings', 'setEnvironmentMode', 'aiListContracts', 'aiDeploy', 'aiCallMethod', 'aiListAccounts', 'aiGetBalance', 'aiGetEnvironment', 'aiPreflightTransaction', 'aiGetTransactionStatus', 'aiExportTronbox', 'aiSaveScenario', 'aiRunScenario', 'aiRecordingInfo']
 }
 
 export class RunTab extends ViewPlugin {
@@ -66,14 +101,56 @@ export class RunTab extends ViewPlugin {
     this.blockchain = blockchain
     this.fileManager = fileManager
     this.editor = editor
-    this.logCallback = (msg) => { mainView.getTerminal().logHtml(yo`<pre>${msg}</pre>`) }
+    this.transactionAttemptLogger = new TransactionAttemptLogger((element) => mainView.getTerminal().logHtml(element))
+    this.logCallback = (msg, context) => this.transactionAttemptLogger.log(msg, context)
     this.filePanel = filePanel
     this.compilersArtefacts = compilersArtefacts
     this.networkModule = networkModule
     this.fileProvider = fileProvider
     this._externalEventSubscriptions = []
     this._managerEventSubscriptionsRegistered = false
+    this._protocolCapabilityCache = new Map()
+    this._protocolCapabilityRequestId = 0
+    this._protocolCapabilities = null
+    this._compiledProtocolScan = { dependencies: [] }
     this.setupEvents()
+  }
+
+  _withUserPermission (method, message, action) {
+    if (!this.currentRequest) return action()
+    return requireUserPermission(this, method, message).then(action)
+  }
+
+  _createAITransactionCancelState (taskId) {
+    if (!taskId || !this.currentRequest) return null
+    const request = this.currentRequest
+    return { isCancelled: () => this.currentRequest !== request }
+  }
+
+  _assertAITransactionActive (cancelState) {
+    if (cancelState && cancelState.isCancelled()) {
+      throw new Error('Transaction stopped before signing or broadcast.')
+    }
+  }
+
+  async _isTrustedHostCaller (caller) {
+    if (!caller) return false
+    try {
+      const callerProfile = await this.call('manager', 'getProfile', caller)
+      return Boolean(callerProfile && callerProfile.name === caller && isTrustedHostPluginProfile(callerProfile))
+    } catch (e) {
+      return false
+    }
+  }
+
+  async _assertExternalTransactionNetworkAllowed () {
+    const caller = this.currentRequest && this.currentRequest.from
+    if (!caller || await this._isTrustedHostCaller(caller)) return false
+
+    await verifyPluginTransactionNetwork((callback) => this.blockchain.detectNetwork(callback))
+    // true means the transaction must retain this untrusted-caller provenance
+    // all the way to Blockchain.runTx's commit-time network recheck.
+    return true
   }
 
   // --- Programmatic deploy/interact for the AI assistant ---------------------
@@ -104,8 +181,9 @@ export class RunTab extends ViewPlugin {
 
   // Normalize the optional money fields of an AI deploy/call. Amounts are
   // integer strings — `value` in SUN (1 TRX = 1,000,000 SUN), `tokenValue` in
-  // the TRC10 token's raw units. Returns undefined when nothing is set, so
-  // downstream keeps reading the Deploy & Run panel fields as before.
+  // the TRC10 token's raw units. AI calls always carry an explicit value,
+  // including zero, so a stale Deploy & Run panel amount cannot leak into the
+  // approved transaction when the model omits `value`.
   _aiTxMeta ({ value, tokenId, tokenValue } = {}) {
     // The runner input contract differs per field: `value` (SUN) is parsed
     // radix-10, but tokenId/tokenValue are parsed radix-16 on the injected
@@ -126,9 +204,7 @@ export class RunTab extends ViewPlugin {
     const normTokenValue = norm(tokenValue, 'token_value', 16)
     if (normTokenValue && !normTokenId) throw new Error('token_value needs token_id (the TRC10 token to send).')
     if (normTokenId && !normTokenValue) throw new Error('token_id needs token_value (how much of the token to send).')
-    if (!normValue && !normTokenId) return undefined
-    const meta = {}
-    if (normValue) meta.value = normValue
+    const meta = { value: normValue || '0' }
     if (normTokenId) { meta.tokenId = normTokenId; meta.tokenValue = normTokenValue }
     return meta
   }
@@ -149,6 +225,7 @@ export class RunTab extends ViewPlugin {
   // List the environment's accounts with balances (TRX). VM gives the
   // deterministic set; injected gives the connected wallet's address(es).
   async aiListAccounts () {
+    await requireUserPermission(this, 'aiListAccounts', 'read accounts and balances')
     let accounts = []
     try { accounts = await this.blockchain.getAccounts() || [] } catch (e) { accounts = [] }
     if (!accounts.length) return { ok: false, message: 'No accounts available — on Injected, connect your wallet first.' }
@@ -164,11 +241,430 @@ export class RunTab extends ViewPlugin {
 
   // Balance (in TRX) of a single address in the current environment.
   async aiGetBalance ({ address } = {}) {
+    await requireUserPermission(this, 'aiGetBalance', 'read an account balance')
     if (!address) throw new Error('Provide an address to check the balance of.')
     const balance = await new Promise((resolve, reject) => {
       try { this.blockchain.getBalanceInEther(String(address).trim(), (err, b) => err ? reject(err) : resolve(b)) } catch (e) { reject(e) }
     })
     return { ok: true, address: String(address).trim(), balanceTrx: balance }
+  }
+
+  _aiDetectNetworkStatus () {
+    return new Promise((resolve) => {
+      let settled = false
+      const done = (value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(value)
+      }
+      const timer = setTimeout(() => {
+        const cached = this.blockchain.getCurrentNetworkStatus && this.blockchain.getCurrentNetworkStatus()
+        done(cached || { error: new Error('Network detection timed out') })
+      }, 10000)
+      try {
+        this.blockchain.detectNetwork((error, network) => done({ network, error }))
+      } catch (error) {
+        done({ error })
+      }
+    })
+  }
+
+  async _aiEnvironmentSnapshot () {
+    const providerTransition = await waitForAIExecutionContext({
+      getActiveProvider: () => this.blockchain.getProvider(),
+      getSelectedProvider: () => this.settingsUI && this.settingsUI.selectExEnv && this.settingsUI.selectExEnv.value
+    })
+    const provider = providerTransition.activeProvider || this.blockchain.getProvider()
+    const networkStatus = await this._aiDetectNetworkStatus()
+    let accounts = []
+    try { accounts = await this.blockchain.getAccounts() || [] } catch (e) { accounts = [] }
+    let selectedAccount = null
+    try { selectedAccount = this.settingsUI && this.settingsUI.getSelectedAccount() } catch (e) { selectedAccount = null }
+    if (selectedAccount && !accounts.some((account) => String(account).toLowerCase() === String(selectedAccount).toLowerCase())) selectedAccount = null
+    let endpoint = null
+    try {
+      const web3 = this.blockchain.web3()
+      endpoint = (web3 && web3.fullNode && web3.fullNode.host) || (web3 && web3.currentProvider && web3.currentProvider.host) || null
+    } catch (e) { endpoint = null }
+    const walletState = provider === 'injected'
+      ? walletProviderAdapter.getInjectedWalletStatus(window)
+      : (provider === 'vm' ? 'not_applicable' : (accounts.length ? 'connected' : 'unknown'))
+    const environment = normalizeAIEnvironment({ provider, networkStatus, walletState, accounts, selectedAccount, endpoint })
+    if (!providerTransition.settled) {
+      environment.providerTransition = {
+        pending: true,
+        selectedProvider: providerTransition.selectedProvider,
+        activeProvider: provider
+      }
+    }
+    return environment
+  }
+
+  // Read-only execution context snapshot. A missing genesis-derived network ID
+  // stays Unknown; callers must not guess a chain from a node URL or old task.
+  async aiGetEnvironment () {
+    await requireUserPermission(this, 'aiGetEnvironment', 'read the active transaction environment')
+    const environment = await this._aiEnvironmentSnapshot()
+    return { ok: true, ...environment }
+  }
+
+  _aiPanelFeeLimit () {
+    try {
+      const el = this.settingsUI && this.settingsUI.el && this.settingsUI.el.querySelector('#gasLimit')
+      return el && el.value !== '' ? String(el.value) : null
+    } catch (e) { return null }
+  }
+
+  _aiInteger (value, label, optional = false) {
+    if ((value === undefined || value === null || value === '') && optional) return null
+    if (!/^\d+$/.test(String(value == null ? '' : value))) throw new Error(`${label} must be a non-negative integer.`)
+    return BigInt(String(value))
+  }
+
+  async _aiBalance (address) {
+    if (!address) return null
+    return new Promise((resolve) => {
+      try { this.blockchain.getBalanceInEther(address, (error, value) => resolve(error ? null : value)) } catch (e) { resolve(null) }
+    })
+  }
+
+  async _aiEstimateWriteEnergy ({ environment, address, funABI, args, from, valueSun, tokenId, tokenValue, feeLimitSun }) {
+    if (environment.provider === 'vm') return { status: 'unavailable', reason: 'The JavaScript VM does not expose the TRON estimateenergy RPC.' }
+    if (!environment.network.known) return { status: 'unavailable', reason: 'The current TRON network is unknown.' }
+    let tronWeb
+    try { tronWeb = this.blockchain.web3() } catch (e) { tronWeb = null }
+    if (!tronWeb || !tronWeb.transactionBuilder || typeof tronWeb.transactionBuilder.estimateEnergy !== 'function') {
+      return { status: 'unavailable', reason: 'The current provider does not expose estimateEnergy.' }
+    }
+    try {
+      const functionSelector = Web3.utils._jsonInterfaceMethodToString ? Web3.utils._jsonInterfaceMethodToString(funABI) : ''
+      if (!functionSelector) return { status: 'unavailable', reason: 'The method selector could not be encoded.' }
+      const parameters = (funABI.inputs || []).map((input, index) => ({ type: input.type, value: args[index] }))
+      const safeNumber = (value, label) => {
+        if (value == null) return undefined
+        if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error(`${label} exceeds the safe integer range.`)
+        return Number(value)
+      }
+      const options = {}
+      const callValue = safeNumber(valueSun, 'value')
+      const feeLimit = safeNumber(feeLimitSun, 'fee_limit')
+      const normalizedTokenId = safeNumber(tokenId, 'token_id')
+      const normalizedTokenValue = safeNumber(tokenValue, 'token_value')
+      if (callValue) options.callValue = callValue
+      if (feeLimit != null) options.feeLimit = feeLimit
+      if (normalizedTokenId) options.tokenId = normalizedTokenId
+      if (normalizedTokenValue) options.tokenValue = normalizedTokenValue
+      const estimate = await walletProviderAdapter.withWalletTimeout(
+        tronWeb.transactionBuilder.estimateEnergy(address, functionSelector, options, parameters, from),
+        walletProviderAdapter.WALLET_NODE_TIMEOUT_MS,
+        walletProviderAdapter.WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT
+      )
+      if (!estimate || estimate.energy_required == null || estimate.result?.result === false) {
+        return { status: 'unavailable', reason: 'The provider returned no usable energy estimate.' }
+      }
+      return { status: 'available', energyRequired: estimate.energy_required }
+    } catch (error) {
+      return { status: 'unavailable', reason: sanitizeAIErrorMessage(error) || 'Energy estimation failed.' }
+    }
+  }
+
+  _aiArtifactFingerprint (abi, bytecode = '') {
+    const encoded = JSON.stringify({ abi: abi || [], bytecode: bytecode || '' })
+    return Web3.utils.sha3(encoded) || null
+  }
+
+  // Read-only transaction preflight. It validates the exact environment,
+  // account, value and ABI before any wallet prompt or broadcast can happen.
+  async aiPreflightTransaction ({ operation, contractName, address, method, args = [], abi: explicitAbi, from, value, tokenId, tokenValue, feeLimit, skipResourceEstimate = false } = {}) {
+    await requireUserPermission(this, 'aiPreflightTransaction', 'inspect a proposed transaction')
+    const kind = String(operation || '').toLowerCase()
+    if (!['deploy', 'write'].includes(kind)) throw new Error('operation must be "deploy" or "write".')
+    const environment = await this._aiEnvironmentSnapshot()
+    const issues = []
+    const blocker = (code, message) => issues.push({ severity: 'blocker', code, message })
+    const warning = (code, message) => issues.push({ severity: 'warning', code, message })
+    if (!environment.network.known) blocker('NETWORK_UNKNOWN', 'The current network is unknown; select and verify a TRON network before sending.')
+    if (environment.network.stale) blocker('NETWORK_STALE', 'The network identity is from a stale cached probe; wait for a fresh network check before sending.')
+    if (environment.provider === 'injected' && environment.walletState !== 'connected') blocker('WALLET_NOT_CONNECTED', `Injected wallet state is ${environment.walletState}.`)
+
+    let sender = from || environment.selectedAccount || null
+    if (sender) {
+      try { sender = await this._aiResolveFrom(sender) } catch (error) { blocker('ACCOUNT_UNAVAILABLE', error.message); sender = null }
+    } else {
+      blocker('ACCOUNT_UNAVAILABLE', 'No sender account is available in the current environment.')
+    }
+
+    let valueSun = BigInt(0)
+    let feeLimitSun = null
+    let normalizedTokenId = null
+    let normalizedTokenValue = null
+    try {
+      valueSun = this._aiInteger(value == null || value === '' ? '0' : value, 'value')
+      feeLimitSun = this._aiInteger(feeLimit == null || feeLimit === '' ? this._aiPanelFeeLimit() : feeLimit, 'fee_limit', true)
+      normalizedTokenId = this._aiInteger(tokenId, 'token_id', true)
+      normalizedTokenValue = this._aiInteger(tokenValue, 'token_value', true)
+      if ((normalizedTokenId == null) !== (normalizedTokenValue == null)) blocker('TOKEN_PAIR_INVALID', 'token_id and token_value must be provided together.')
+    } catch (error) { blocker('AMOUNT_INVALID', error.message) }
+    if (environment.provider === 'injected' && valueSun > TRONWEB_SAFE_CALL_VALUE_MAX) {
+      blocker('INJECTED_VALUE_PRECISION_UNSUPPORTED', 'Injected TronWeb cannot serialize transaction values above the JavaScript safe-integer range without changing the amount.')
+    }
+    const runtimeValidation = execution.runtimeFacade.createRuntimeFacade({
+      kind: 'tvm',
+      environment: environment.provider,
+      account: sender
+    }).validateTransaction({
+      tokenId: normalizedTokenId == null ? undefined : normalizedTokenId.toString(),
+      tokenValue: normalizedTokenValue == null ? undefined : normalizedTokenValue.toString(),
+      feeLimit: feeLimitSun == null ? undefined : feeLimitSun.toString(),
+      callValue: valueSun.toString(),
+      from: sender,
+      to: address
+    })
+    runtimeValidation.errors.forEach((message) => blocker('RUNTIME_VALIDATION_FAILED', message))
+    runtimeValidation.warnings.forEach((message) => warning('RUNTIME_VALIDATION_WARNING', message))
+    if (feeLimitSun == null) warning('FEE_LIMIT_UNAVAILABLE', 'No fee limit is available; review it in Deploy & Run before sending.')
+
+    const balanceTrx = await this._aiBalance(sender)
+    const balanceSun = trxBalanceToSun(balanceTrx)
+    if (sender && balanceSun == null) warning('BALANCE_UNAVAILABLE', 'The sender balance could not be read.')
+    if (balanceSun != null && valueSun > BigInt(balanceSun)) blocker('INSUFFICIENT_VALUE_BALANCE', 'The sender balance is lower than the transaction value.')
+
+    let target = { contractName: contractName || null, address: address || null, method: method || null, args }
+    let resourceEstimate = { status: 'unavailable', reason: 'No estimator was run.' }
+    try {
+      if (kind === 'deploy') {
+        if (!contractName) throw new Error('contract_name is required for a deployment preflight.')
+        const selected = this._aiSelectedContract(contractName)
+        if (!selected.bytecodeObject || selected.bytecodeObject.length === 0) throw new Error(`"${contractName}" has no deployable bytecode.`)
+        const constructorABI = (selected.abi || []).find((entry) => entry.type === 'constructor') || { inputs: [], stateMutability: 'nonpayable' }
+        if ((constructorABI.inputs || []).length !== args.length) throw new Error(`Constructor expects ${(constructorABI.inputs || []).length} argument(s), received ${args.length}.`)
+        execution.txHelper.encodeParams(constructorABI, args.slice())
+        if (valueSun > BigInt(0) && constructorABI.stateMutability !== 'payable') throw new Error(`The ${contractName} constructor is not payable.`)
+        target = { ...target, artifactFingerprint: this._aiArtifactFingerprint(selected.abi, selected.bytecodeObject) }
+        resourceEstimate = { status: 'unavailable', reason: 'Deployment energy estimation is not exposed by the current IDE pipeline.' }
+      } else {
+        if (!address || !contractName || !method) throw new Error('address, contract_name and method are required for a write preflight.')
+        const resolved = this._aiResolveCallTarget({ address, contractName, abi: explicitAbi })
+        const funABI = (resolved.abi || []).find((entry) => entry.type === 'function' && entry.name === method)
+        if (!funABI) throw new Error(`No function "${method}" on ${contractName}.`)
+        const readOnly = funABI.stateMutability === 'view' || funABI.stateMutability === 'pure' || funABI.constant === true
+        if (readOnly) throw new Error(`"${method}" is read-only; use read_contract instead.`)
+        if ((funABI.inputs || []).length !== args.length) throw new Error(`${method} expects ${(funABI.inputs || []).length} argument(s), received ${args.length}.`)
+        execution.txHelper.encodeParams(funABI, args.slice())
+        if (valueSun > BigInt(0) && funABI.stateMutability !== 'payable') throw new Error(`"${method}" is not payable.`)
+        target = { ...target, artifactFingerprint: this._aiArtifactFingerprint(resolved.abi) }
+        resourceEstimate = skipResourceEstimate
+          ? { status: 'unavailable', reason: 'Energy estimation was skipped during the final approval-context recheck.' }
+          : await this._aiEstimateWriteEnergy({ environment, address, funABI, args, from: sender, valueSun, tokenId: normalizedTokenId, tokenValue: normalizedTokenValue, feeLimitSun })
+      }
+    } catch (error) {
+      blocker('TRANSACTION_INVALID', error.message || String(error))
+    }
+    if (resourceEstimate.status === 'unavailable') warning('ENERGY_ESTIMATE_UNAVAILABLE', resourceEstimate.reason)
+
+    const report = {
+      ok: true,
+      ready: !issues.some((issue) => issue.severity === 'blocker'),
+      operation: kind,
+      environment,
+      target,
+      from: sender,
+      valueSun: valueSun.toString(),
+      balanceTrx,
+      feeLimitSun: feeLimitSun == null ? null : feeLimitSun.toString(),
+      resourceEstimate,
+      issues
+    }
+    report.approvalSnapshot = createAIApprovalSnapshot({
+      environment,
+      operation: kind,
+      target,
+      from: sender,
+      valueSun,
+      tokenId: normalizedTokenId,
+      tokenValue: normalizedTokenValue,
+      feeLimitSun
+    })
+    report.summary = formatAIPreflightSummary(report)
+    return report
+  }
+
+  async _aiAssertApprovalSnapshot (approved, intent, approvalDeadline) {
+    if (!approved) throw new Error('The transaction has no approval snapshot. Run preflight and approve it again.')
+    if (!Number.isFinite(approvalDeadline) || approvalDeadline < Date.now() || approvalDeadline > Date.now() + 2 * 60 * 1000) {
+      throw new Error('The transaction approval is missing, expired, or has an invalid lifetime. Approve a fresh preflight.')
+    }
+    const current = await this.aiPreflightTransaction({ ...intent, skipResourceEstimate: true })
+    if (Date.now() > approvalDeadline) throw new Error('The transaction approval expired during the final context check. Approve a fresh preflight.')
+    if (!current.ready) throw new Error(`Transaction context is no longer safe: ${current.summary}`)
+    const comparison = compareAIApprovalSnapshots(approved, current.approvalSnapshot)
+    if (!comparison.ok) throw new Error(`${comparison.reason} Run preflight and approve the updated transaction again.`)
+    return current
+  }
+
+  _aiWeb3Lookup (method, hash, boundWeb3 = null) {
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const done = (error, value) => {
+        if (settled) return
+        settled = true
+        error ? reject(error) : resolve(value)
+      }
+      try {
+        const web3 = boundWeb3 || this.blockchain.web3()
+        const fn = web3 && web3.eth && web3.eth[method]
+        if (typeof fn !== 'function') return done(new Error(`Provider does not expose eth.${method}.`))
+        const returned = fn.call(web3.eth, hash, done)
+        if (returned && typeof returned.then === 'function') returned.then((value) => done(null, value)).catch(done)
+      } catch (error) { done(error) }
+    })
+  }
+
+  _aiTransactionRpcContext () {
+    const provider = this.blockchain.web3()
+    if (!provider) throw new Error('No active RPC provider is available.')
+    const node = provider.fullNode || provider.currentProvider || provider.solidityNode || null
+    const endpoint = String((node && node.host) || '')
+    let epoch = null
+    if (typeof this.blockchain.getProviderContextEpoch === 'function') {
+      const value = this.blockchain.getProviderContextEpoch()
+      if (Number.isSafeInteger(value) && value >= 0) epoch = value
+    }
+    return { provider, node, endpoint, epoch }
+  }
+
+  _aiCompareTransactionRpcContexts (expected, current) {
+    if (!expected || !current || expected.provider !== current.provider || expected.node !== current.node) {
+      return { ok: false, reason: 'The active RPC provider changed during transaction status lookup.' }
+    }
+    if (expected.endpoint !== current.endpoint) {
+      return { ok: false, reason: 'The active RPC endpoint changed during transaction status lookup.' }
+    }
+    if (expected.epoch != null && current.epoch !== expected.epoch) {
+      return { ok: false, reason: 'The RPC provider context changed during transaction status lookup.' }
+    }
+    return { ok: true, reason: null }
+  }
+
+  // Read-only resolution for TX_UNKNOWN. It never retries or resubmits a write;
+  // pending/unknown explicitly instructs the caller to query the same hash.
+  async aiGetTransactionStatus ({ txHash } = {}) {
+    await requireUserPermission(this, 'aiGetTransactionStatus', 'read a transaction status')
+    const hash = String(txHash || '').trim().replace(/^0x/, '')
+    if (!/^[0-9a-fA-F]{64}$/.test(hash)) throw new Error('Provide a 64-character TRON transaction hash.')
+    const environment = await this._aiEnvironmentSnapshot()
+    const initialFingerprint = createAITransactionEnvironmentFingerprint(environment)
+    const stateChangedResult = (currentEnvironment, reason) => ({
+      environment: currentEnvironment || environment,
+      ...normalizeAITransactionStatus({ txHash: hash, networkId: null, error: new Error(reason) }),
+      code: 'STATE_CHANGED',
+      userAction: 'The provider or network changed during this lookup. Select the original network and query the same transaction hash again. Do not resubmit the transaction.'
+    })
+    if (!initialFingerprint.valid) {
+      return { ...stateChangedResult(environment, 'The active provider or network could not be verified before transaction status lookup.'), lookupAttempts: 0 }
+    }
+    let initialRpcContext
+    try {
+      initialRpcContext = this._aiTransactionRpcContext()
+    } catch (error) {
+      return { ...stateChangedResult(environment, 'The active RPC provider could not be bound before transaction status lookup.'), lookupAttempts: 0 }
+    }
+    const lookup = async () => {
+      let currentEnvironment
+      try {
+        currentEnvironment = await this._aiEnvironmentSnapshot()
+      } catch (error) {
+        return stateChangedResult(environment, 'The active provider or network could not be rechecked before transaction status lookup.')
+      }
+      let fingerprintComparison = compareAITransactionEnvironmentFingerprints(
+        initialFingerprint,
+        createAITransactionEnvironmentFingerprint(currentEnvironment)
+      )
+      if (!fingerprintComparison.ok) return stateChangedResult(currentEnvironment, fingerprintComparison.reason)
+      let rpcContextComparison
+      try {
+        rpcContextComparison = this._aiCompareTransactionRpcContexts(initialRpcContext, this._aiTransactionRpcContext())
+      } catch (error) {
+        return stateChangedResult(currentEnvironment, 'The active RPC provider could not be rechecked before transaction status lookup.')
+      }
+      if (!rpcContextComparison.ok) return stateChangedResult(currentEnvironment, rpcContextComparison.reason)
+
+      let transaction = null
+      let receipt = null
+      let lookupError = null
+      try {
+        // Use the provider object bound at lookup start rather than re-reading
+        // whichever live wallet object happens to be active for this attempt.
+        const web3 = initialRpcContext.provider
+        if (environment.provider !== 'vm' && web3 && web3.trx) {
+          const guarded = (operation) => walletProviderAdapter.withWalletTimeout(
+            operation,
+            walletProviderAdapter.WALLET_NODE_TIMEOUT_MS,
+            walletProviderAdapter.WALLET_ERROR_CODES.WALLET_REQUEST_TIMEOUT
+          )
+          // TronWeb's getTransactionInfo() intentionally reads the Solidity
+          // node (walletsolidity/gettransactioninfobyid). That endpoint can
+          // lag behind a transaction that is already included on the full
+          // node, which leaves the UI stuck at PENDING. Resolve the receipt
+          // from the full node instead; getUnconfirmedTransactionInfo is
+          // TronWeb's public wrapper for wallet/gettransactioninfobyid and
+          // also returns the receipt after inclusion.
+          const getFullNodeTransactionInfo = () => {
+            if (typeof web3.trx.getUnconfirmedTransactionInfo === 'function') {
+              return web3.trx.getUnconfirmedTransactionInfo(hash)
+            }
+            if (web3.fullNode && typeof web3.fullNode.request === 'function') {
+              return web3.fullNode.request('wallet/gettransactioninfobyid', { value: hash }, 'post')
+            }
+            throw new Error('Provider does not expose a full-node transaction-info method.')
+          }
+          const results = await Promise.allSettled([
+            guarded(web3.trx.getTransaction(hash)),
+            guarded(getFullNodeTransactionInfo())
+          ])
+          if (results[0].status === 'fulfilled') transaction = results[0].value
+          if (results[1].status === 'fulfilled') receipt = results[1].value
+          const rejected = results.find((result) => result.status === 'rejected')
+          if (!transaction && !receipt && rejected) lookupError = rejected.reason
+        } else {
+          const results = await Promise.allSettled([
+            this._aiWeb3Lookup('getTransaction', '0x' + hash, web3),
+            this._aiWeb3Lookup('getTransactionReceipt', '0x' + hash, web3)
+          ])
+          if (results[0].status === 'fulfilled') transaction = results[0].value
+          if (results[1].status === 'fulfilled') receipt = results[1].value
+          const rejected = results.find((result) => result.status === 'rejected')
+          if (!transaction && !receipt && rejected) lookupError = rejected.reason
+        }
+      } catch (error) { lookupError = error }
+
+      // The wallet can switch while either full-node request is in flight.
+      // Recheck after both reads and discard their data on drift, so a response
+      // from the new network can never inherit the old explorer/metadata.
+      try {
+        currentEnvironment = await this._aiEnvironmentSnapshot()
+      } catch (error) {
+        return stateChangedResult(environment, 'The active provider or network could not be rechecked after transaction status lookup.')
+      }
+      fingerprintComparison = compareAITransactionEnvironmentFingerprints(
+        initialFingerprint,
+        createAITransactionEnvironmentFingerprint(currentEnvironment)
+      )
+      if (!fingerprintComparison.ok) return stateChangedResult(currentEnvironment, fingerprintComparison.reason)
+      try {
+        rpcContextComparison = this._aiCompareTransactionRpcContexts(initialRpcContext, this._aiTransactionRpcContext())
+      } catch (error) {
+        return stateChangedResult(currentEnvironment, 'The active RPC provider could not be rechecked after transaction status lookup.')
+      }
+      if (!rpcContextComparison.ok) return stateChangedResult(currentEnvironment, rpcContextComparison.reason)
+
+      return {
+        environment,
+        ...normalizeAITransactionStatus({ txHash: hash, networkId: initialFingerprint.networkId, transaction, receipt, error: lookupError })
+      }
+    }
+    return waitForAITransactionFinality({ lookup })
   }
 
   _aiSelectedContract (contractName) {
@@ -185,6 +681,7 @@ export class RunTab extends ViewPlugin {
   // recorder UI is a sub-component of this tab (not an engine-registered plugin),
   // so the AI tool routes through udapp (which IS registered) and delegates.
   async aiExportTronbox (opts = {}) {
+    await requireUserPermission(this, 'aiExportTronbox', 'export the recorded transactions')
     if (!this.recorderInterface || !this.recorderInterface.aiExportTronbox) return { ok: false, message: 'The recorder is not available.' }
     return this.recorderInterface.aiExportTronbox(opts)
   }
@@ -192,25 +689,34 @@ export class RunTab extends ViewPlugin {
   // Save the current recording to a workspace scenario.json (delegates to the
   // recorder sub-component; see aiExportTronbox for why this routes through udapp).
   async aiSaveScenario (opts = {}) {
+    await requireUserPermission(this, 'aiSaveScenario', 'save the recorded transactions')
     if (!this.recorderInterface || !this.recorderInterface.aiSaveScenario) return { ok: false, message: 'The recorder is not available.' }
     return this.recorderInterface.aiSaveScenario(opts)
   }
 
   // Replay a scenario.json — re-execute its recorded transactions.
   async aiRunScenario (opts = {}) {
+    await requireUserPermission(this, 'aiRunScenario', 'replay recorded transactions')
+    const externalPluginTransaction = await this._assertExternalTransactionNetworkAllowed()
     if (!this.recorderInterface || !this.recorderInterface.aiRunScenario) return { ok: false, message: 'The recorder is not available.' }
-    return this.recorderInterface.aiRunScenario(opts)
+    // Copy only string-keyed connector data. The internal Symbol marker cannot
+    // be supplied or cleared through the external payload.
+    const replayOptions = { ...opts }
+    if (externalPluginTransaction) markExternalPluginTransaction(replayOptions)
+    return this.recorderInterface.aiRunScenario(replayOptions)
   }
 
   // Live recording journal info (tx count) — read-only; lets the chat warn
   // before a replay clears the journal and put real counts in write confirms.
   async aiRecordingInfo () {
+    await requireUserPermission(this, 'aiRecordingInfo', 'read transaction recording information')
     if (!this.recorderInterface || !this.recorderInterface.aiRecordingInfo) return { ok: false, message: 'The recorder is not available.' }
     return this.recorderInterface.aiRecordingInfo()
   }
 
   // List the contracts available to deploy from the last compilation.
   async aiListContracts () {
+    await requireUserPermission(this, 'aiListContracts', 'read compiled contract names')
     if (!this.compilersArtefacts || !this.compilersArtefacts.__last) return { ok: false, message: 'Nothing compiled yet — compile a contract first.' }
     const contracts = []
     try {
@@ -222,19 +728,31 @@ export class RunTab extends ViewPlugin {
   // Deploy a compiled contract. `args` are the constructor arguments in order.
   // value (SUN) / tokenId+tokenValue fund a payable constructor. `from` picks
   // the sending account (defaults to the panel's selected account).
-  async aiDeploy ({ contractName, args = [], value, tokenId, tokenValue, from } = {}) {
+  async aiDeploy ({ contractName, args = [], value, tokenId, tokenValue, from, approvalSnapshot, approvalDeadline, taskId } = {}) {
+    await requireUserPermission(this, 'aiDeploy', 'deploy a compiled contract')
+    const cancelState = this._createAITransactionCancelState(taskId)
+    this._assertAITransactionActive(cancelState)
+    const externalPluginTransaction = await this._assertExternalTransactionNetworkAllowed()
+    this._assertAITransactionActive(cancelState)
+    const approvedContext = await this._aiAssertApprovalSnapshot(approvalSnapshot, { operation: 'deploy', contractName, args, value, tokenId, tokenValue, from }, approvalDeadline)
+    this._assertAITransactionActive(cancelState)
     const selectedContract = this._aiSelectedContract(contractName)
     if (!selectedContract.bytecodeObject || selectedContract.bytecodeObject.length === 0) {
       throw new Error(`"${contractName}" has no bytecode (it may be abstract or an interface) — it cannot be deployed.`)
     }
     const txMeta = this._aiTxMeta({ value, tokenId, tokenValue }) || {}
-    if (txMeta.value) {
+    if (cancelState) txMeta.cancelState = cancelState
+    if (externalPluginTransaction) markExternalPluginTransaction(txMeta)
+    // _aiTxMeta always carries an explicit string zero so an omitted value
+    // cannot inherit a stale panel amount. Treat only a non-zero value as a
+    // transfer; string "0" is not truthy money.
+    if (txMeta.value !== undefined && txMeta.value !== '0') {
       const ctor = (selectedContract.abi || []).find((f) => f.type === 'constructor')
       if (!ctor || ctor.stateMutability !== 'payable') {
         throw new Error(`The ${contractName} constructor is not payable — deploy without value.`)
       }
     }
-    const fromAddr = await this._aiResolveFrom(from)
+    const fromAddr = await this._aiResolveFrom(approvedContext.from)
     if (fromAddr) txMeta.from = fromAddr
     let contractMetadata = null
     try { contractMetadata = await this.call('compilerMetadata', 'deployMetadataOf', selectedContract.name, selectedContract.contract.file) } catch (e) { contractMetadata = null }
@@ -243,8 +761,14 @@ export class RunTab extends ViewPlugin {
 
     return new Promise((resolve, reject) => {
       let settled = false
-      const done = (fn) => { if (!settled) { settled = true; fn() } }
-      const statusCb = (msg) => { try { this.logCallback(msg) } catch (e) {} }
+      let timer = null
+      const done = (fn) => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        fn()
+      }
+      const statusCb = (msg, context) => { try { this.logCallback(msg, context) } catch (e) {} }
       const continueCb = (error, continueTxExecution) => {
         if (error) return done(() => reject(new Error(typeof error === 'string' ? error : (error.message || 'gas estimation failed'))))
         continueTxExecution()
@@ -255,7 +779,7 @@ export class RunTab extends ViewPlugin {
       // panel already confirmed with the user, and on Injected the wallet
       // prompts for the real signature next.
       const confirmationCb = (network, tx, gasEstimation, continueTxExecution) => continueTxExecution()
-      const finalCb = (error, contractObject, address) => {
+      const finalCb = (error, contractObject, address, txResult) => {
         if (error) return done(() => reject(new Error(typeof error === 'string' ? error : (error.message || 'deployment failed'))))
         // Register the deployed instance in the Deploy & Run panel exactly as
         // the manual deploy path does (contractDropdown finalCb): otherwise an
@@ -270,11 +794,20 @@ export class RunTab extends ViewPlugin {
           const data = this.compilersArtefacts.getCompilerAbstract(contractObject.contract.file)
           this.compilersArtefacts.addResolvedContract(helper.addressToString(address), data)
         } catch (e) { console.error('[aiDeploy] instance UI registration failed (deploy still succeeded):', e) }
-        done(() => resolve({ ok: true, address: address || (contractObject && contractObject.address) || null, contractName }))
+        const txHash = txResult && (txResult.transactionHash || (txResult.receipt && txResult.receipt.transactionHash) || txResult.txID)
+        const rawDeployedAddress = address || (contractObject && contractObject.address) || null
+        let deployedAddress = null
+        try {
+          deployedAddress = rawDeployedAddress ? normalizeTronContractAddress(rawDeployedAddress) : null
+        } catch (e) {
+          return done(() => reject(new Error('Deployment completed with an invalid TRON contract address. Inspect the transaction receipt before retrying.')))
+        }
+        done(() => resolve({ ok: true, address: deployedAddress, contractName, txHash: txHash || null }))
       }
       // Safety net: never hang the tool loop if a callback path goes silent.
-      setTimeout(() => done(() => reject(new Error('Deployment did not complete in time (the wallet prompt may be waiting, or the network is slow).'))), 180000)
+      timer = setTimeout(() => done(() => reject(new Error('Deployment did not complete in time (the wallet prompt may be waiting, or the network is slow).'))), AI_WALLET_WRITE_TIMEOUT_MS)
       try {
+        this._assertAITransactionActive(cancelState)
         this.blockchain.deployContractAndLibraries(selectedContract, encodedArgs, contractMetadata, compilerContracts, { continueCb, promptCb, statusCb, finalCb }, confirmationCb, txMeta)
       } catch (e) { done(() => reject(e)) }
     })
@@ -308,6 +841,13 @@ export class RunTab extends ViewPlugin {
     if (this.compilersArtefacts) {
       if (address) {
         const forms = [String(address), String(address).toLowerCase()]
+        try {
+          const hexAddress = util.addressToHex(String(address))
+          if (hexAddress) {
+            forms.push(hexAddress, String(hexAddress).toLowerCase())
+            try { forms.push(helper.addressToString(hexAddress)) } catch (e) { /* keep the normalized hex form */ }
+          }
+        } catch (e) { /* keep the raw forms */ }
         try { forms.push(helper.addressToString(address)) } catch (e) { /* keep the raw forms */ }
         for (const f of forms) {
           try { const hitAbstract = this.compilersArtefacts.get(f); if (hitAbstract) candidates.push(hitAbstract) } catch (e) {}
@@ -328,19 +868,34 @@ export class RunTab extends ViewPlugin {
   // decoded value; writes return the transaction hash once mined.
   // value (SUN) / tokenId+tokenValue attach money to a payable method.
   // `from` picks the sending account (defaults to the panel's selected one).
-  async aiCallMethod ({ address, contractName, method, args = [], readOnly = false, value, tokenId, tokenValue, abi: explicitAbi, from } = {}) {
+  async aiCallMethod ({ address, contractName, method, args = [], readOnly = false, value, tokenId, tokenValue, abi: explicitAbi, from, approvalSnapshot, approvalDeadline, taskId } = {}) {
+    await requireUserPermission(this, 'aiCallMethod', 'call or transact with a deployed contract')
+    const cancelState = this._createAITransactionCancelState(taskId)
     if (!address) throw new Error('Provide the deployed contract address.')
+    const executionAddress = this.blockchain.getProvider() === 'vm' ? util.addressToHex(String(address)) : address
+    if (!executionAddress) throw new Error('Provide a valid deployed contract address.')
     const resolved = this._aiResolveCallTarget({ address, contractName, abi: explicitAbi })
     const abi = resolved.abi
     const funABI = (abi || []).find((f) => f.type === 'function' && f.name === method)
     if (!funABI) throw new Error(`No function "${method}" on ${contractName}. Check the ABI / method name.`)
     const lookupOnly = funABI.stateMutability === 'view' || funABI.stateMutability === 'pure' || funABI.constant === true
+    const externalPluginTransaction = !lookupOnly && await this._assertExternalTransactionNetworkAllowed()
+    this._assertAITransactionActive(cancelState)
+    const hasExplicitTransfer = (value !== undefined && value !== null && String(value) !== '') ||
+      (tokenId !== undefined && tokenId !== null && String(tokenId) !== '') ||
+      (tokenValue !== undefined && tokenValue !== null && String(tokenValue) !== '')
     const txMeta = this._aiTxMeta({ value, tokenId, tokenValue }) || {}
-    if (Object.keys(txMeta).length && lookupOnly) throw new Error(`"${method}" is read-only — a call cannot carry value or tokens.`)
-    if (txMeta.value && funABI.stateMutability !== 'payable') {
+    if (cancelState && !lookupOnly) txMeta.cancelState = cancelState
+    if (externalPluginTransaction) markExternalPluginTransaction(txMeta)
+    if (hasExplicitTransfer && lookupOnly) throw new Error(`"${method}" is read-only — a call cannot carry value or tokens.`)
+    if (txMeta.value !== undefined && txMeta.value !== '0' && funABI.stateMutability !== 'payable') {
       throw new Error(`"${method}" is not payable — send the transaction without value.`)
     }
-    const fromAddr = await this._aiResolveFrom(from)
+    const approvedContext = !lookupOnly
+      ? await this._aiAssertApprovalSnapshot(approvalSnapshot, { operation: 'write', address, contractName, method, args, abi: explicitAbi, value, tokenId, tokenValue, from }, approvalDeadline)
+      : null
+    this._assertAITransactionActive(cancelState)
+    const fromAddr = await this._aiResolveFrom(approvedContext ? approvedContext.from : from)
     if (fromAddr) txMeta.from = fromAddr
     // read_contract passes readOnly:true — refuse to silently transact a
     // state-changing method (that path belongs to write_contract, which asks
@@ -351,17 +906,17 @@ export class RunTab extends ViewPlugin {
 
     return new Promise((resolve, reject) => {
       let settled = false
-      let onExecuted = null
-      // Unregister the write listener on EVERY settle path — the gas-error
-      // (continueCb) and errored-log (logCallback) paths previously settled
-      // without cleanup(), leaking a transactionExecuted listener per failed
-      // write. Folding cleanup into done() makes it exactly-once. (Note:
-      // EventManager matches listeners by func.toString(), so this stays
-      // correct only because AI tool calls run sequentially — never two
-      // in-flight writes with identical onExecuted source at once.)
-      const cleanup = () => { if (onExecuted) { try { this.blockchain.event.unregister('transactionExecuted', onExecuted) } catch (e) {}; onExecuted = null } }
-      const done = (fn) => { if (settled) return; settled = true; cleanup(); fn() }
-      const logCallback = (msg) => { try { this.logCallback(msg) } catch (e) {}; if (/errored:/.test(String(msg))) done(() => reject(new Error(String(msg)))) }
+      let timer = null
+      let completionTriggered = false
+      const done = (fn) => { if (settled) return; settled = true; if (timer) clearTimeout(timer); fn() }
+      const logCallback = (msg) => {
+        try { this.logCallback(msg) } catch (e) {}
+        // Blockchain invokes completionCb before logging a transaction error.
+        // Do not race its deterministic VM-revert result with a generic
+        // rejection; build/encoding errors never trigger completionCb and
+        // still fail through this guard.
+        if (/errored:/.test(String(msg)) && !completionTriggered) done(() => reject(new Error(String(msg))))
+      }
       const outputCb = (returnValue) => {
         done(() => resolve({ ok: true, kind: 'read', result: this._aiStringifyReturn(returnValue, funABI) }))
       }
@@ -372,45 +927,64 @@ export class RunTab extends ViewPlugin {
       const promptCb = (okCb, cancelCb) => cancelCb()
       const confirmationCb = (network, tx, gasEstimation, continueTxExecution) => continueTxExecution()
 
-      // Writes have no explicit completion callback in runOrCallContractMethod;
-      // resolve on the next transactionExecuted for this address.
-      if (!lookupOnly) {
-        onExecuted = (error, from, to, dataObj, isCall, txResult) => {
-          if (isCall) return
-          // Only settle for OUR transaction: the engine can replay a prior
-          // result (a deploy's `to` is null), so require the target address to
-          // match — otherwise we'd resolve on the deploy's replayed event
-          // before store() actually runs, then read stale state.
-          if (!to || String(to).toLowerCase() !== String(address).toLowerCase()) return
-          const hash = txResult && (txResult.transactionHash || (txResult.receipt && txResult.receipt.transactionHash) || txResult.txID)
-          if (error) return done(() => reject(new Error(typeof error === 'string' ? error : (error.message || 'transaction failed'))))
-          // A reverted state-changing tx still produces a receipt — surface it
-          // instead of reporting a false success.
-          const receipt = txResult && (txResult.receipt || txResult)
-          const status = receipt && (receipt.status !== undefined ? receipt.status : (receipt.result !== undefined ? receipt.result : undefined))
-          const reverted = status === false || status === '0x0' || status === 0 || String(status).toUpperCase() === 'FAILED' || String(status).toUpperCase() === 'REVERT'
-          if (reverted) {
-            // Decode WHY it reverted (custom error name+args / require string /
-            // Panic) so the model gets an actionable reason, not a bare
-            // "reverted". The revert data is fetched from the simulator by hash
-            // (async); settle once it resolves.
-            this._aiRevertReason(hash, abi, resolved.object).then((reason) => {
-              done(() => reject(new Error(`${logMsg} ${reason || 'reverted (transaction failed on-chain)'}.`)))
-            })
-            return
+      // Blockchain.runOrCallContractMethod now returns the exact completion
+      // callback for writes. Do not infer ownership from a shared
+      // transactionExecuted event: a concurrent manual transaction to the same
+      // contract must never resolve this AI call.
+      const completionCb = (error, txResult) => {
+        completionTriggered = true
+        const hash = txResult && (txResult.transactionHash || (txResult.receipt && txResult.receipt.transactionHash) || txResult.txID)
+        if (error) {
+          // The VM simulator reports a deterministic revert through the
+          // callback error path (there is no receipt with status=FAILED). It
+          // is a known execution failure, not an uncertain broadcast, so keep
+          // it as a failed tool result and let the Task Runtime continue with
+          // the canonical EXECUTION_REVERTED status. Injected-wallet/provider
+          // errors remain fail-closed and uncertain.
+          let provider = null
+          try { provider = this.blockchain && this.blockchain.getProvider && this.blockchain.getProvider() } catch (e) {}
+          if (provider === 'vm' && /\b(?:VM error|revert|reverted)\b/i.test(String(error))) {
+            const message = typeof error === 'string' ? error : (error.message || 'transaction reverted')
+            // The simulator has already provided a definitive outcome. When
+            // a hash is available, decode the same execution result used by
+            // the terminal into the compact custom-error/Panic/reason form;
+            // fall back to the verbose message if decoding is unavailable.
+            return this._aiRevertReason(hash, abi, resolved.object)
+              .then((reason) => done(() => resolve({ ok: false, kind: 'write', txHash: hash || null, message: `${logMsg} ${reason || message}` })))
+              .catch(() => done(() => resolve({ ok: false, kind: 'write', txHash: hash || null, message: `${logMsg} ${message}` })))
           }
-          done(() => resolve({ ok: true, kind: 'write', txHash: hash || null }))
+          return done(() => reject(new Error(typeof error === 'string' ? error : (error.message || 'transaction failed'))))
         }
-        try { this.blockchain.event.register('transactionExecuted', onExecuted) } catch (e) { /* fall back to timeout */ }
+        const receipt = txResult && (txResult.receipt || txResult)
+        const status = receipt && (receipt.status !== undefined ? receipt.status : (receipt.result !== undefined ? receipt.result : undefined))
+        const reverted = status === false || status === '0x0' || status === 0 || String(status).toUpperCase() === 'FAILED' || String(status).toUpperCase() === 'REVERT'
+        if (reverted) {
+          this._aiRevertReason(hash, abi, resolved.object).then((reason) => {
+            done(() => resolve({
+              ok: false,
+              kind: 'write',
+              txHash: hash || null,
+              message: `${logMsg} ${reason || 'reverted (transaction failed on-chain)'}.`
+            }))
+          }).catch(() => done(() => resolve({
+            ok: false,
+            kind: 'write',
+            txHash: hash || null,
+            message: `${logMsg} reverted (transaction failed on-chain).`
+          })))
+          return
+        }
+        done(() => resolve({ ok: true, kind: 'write', txHash: hash || null }))
       }
 
-      setTimeout(() => done(() => reject(new Error(`${logMsg} did not complete in time (the wallet prompt may be waiting, or the network is slow).`))), 180000)
+      timer = setTimeout(() => done(() => reject(new Error(`${logMsg} did not complete in time (the wallet prompt may be waiting, or the network is slow).`))), AI_WALLET_WRITE_TIMEOUT_MS)
 
       try {
+        this._assertAITransactionActive(cancelState)
         this.blockchain.runOrCallContractMethod(
-          contractName, abi, funABI, resolved.object, encodedArgs, address, encodedArgs, lookupOnly,
-          logMsg, logCallback, outputCb, confirmationCb, continueCb, promptCb, txMeta)
-      } catch (e) { done(() => { cleanup(); reject(e) }) }
+          contractName, abi, funABI, resolved.object, encodedArgs, executionAddress, encodedArgs, lookupOnly,
+          logMsg, logCallback, outputCb, confirmationCb, continueCb, promptCb, txMeta, completionCb)
+      } catch (e) { done(() => reject(e)) }
     })
   }
 
@@ -470,6 +1044,7 @@ export class RunTab extends ViewPlugin {
     if (!emitter || !handler) return
     if (emitter.on) emitter.on(eventName, handler)
     else if (emitter.addListener) emitter.addListener(eventName, handler)
+    else if (emitter.register) emitter.register(eventName, handler)
     else return
     this._externalEventSubscriptions.push({ emitter, eventName, handler, scope })
   }
@@ -484,6 +1059,7 @@ export class RunTab extends ViewPlugin {
       }
       if (emitter.removeListener) emitter.removeListener(eventName, handler)
       else if (emitter.off) emitter.off(eventName, handler)
+      else if (emitter.unregister) emitter.unregister(eventName, handler)
     })
     this._externalEventSubscriptions = remaining
   }
@@ -503,46 +1079,381 @@ export class RunTab extends ViewPlugin {
     this._managerEventSubscriptionsRegistered = false
   }
 
+  _activeWorkspaceName () {
+    try {
+      const workspaceProvider = this.fileManager?.getProvider?.('workspace')
+      return workspaceProvider?.getWorkspace?.() || null
+    } catch (e) {
+      return null
+    }
+  }
+
+  _protocolCapabilityEnvironment () {
+    const context = this._deploymentExecutionContext()
+    let endpoint = null
+    try {
+      const tronWeb = this.blockchain.web3()
+      endpoint = tronWeb?.fullNode?.host || tronWeb?.fullNode?.url || null
+      if (endpoint) endpoint = new URL(endpoint, window.location.href).origin
+    } catch (e) {}
+    return { ...context, endpoint }
+  }
+
+  _protocolCapabilityContextKey () {
+    const environment = this._protocolCapabilityEnvironment()
+    return JSON.stringify({
+      provider: environment.provider,
+      networkId: environment.network?.id || null,
+      contextEpoch: environment.contextEpoch,
+      endpoint: environment.endpoint
+    })
+  }
+
+  _setProtocolCapabilities (snapshot) {
+    this._protocolCapabilities = snapshot
+    this._renderProtocolCapabilityState()
+    return snapshot
+  }
+
+  _protocolCapabilityStatusLabel (status) {
+    return {
+      [CAPABILITY_STATUS.ACTIVE]: 'Active',
+      [CAPABILITY_STATUS.INACTIVE]: 'Inactive',
+      [CAPABILITY_STATUS.UNKNOWN]: 'Unknown',
+      [CAPABILITY_STATUS.UNSUPPORTED]: 'Unsupported',
+      [CAPABILITY_STATUS.CHECKING]: 'Checking'
+    }[status] || 'Unknown'
+  }
+
+  _renderProtocolCapabilityBadge (element, capabilityState) {
+    if (!element) return
+    const status = capabilityState?.status || CAPABILITY_STATUS.UNKNOWN
+    const className = {
+      [CAPABILITY_STATUS.ACTIVE]: 'badge-success',
+      [CAPABILITY_STATUS.INACTIVE]: 'badge-warning',
+      [CAPABILITY_STATUS.UNKNOWN]: 'badge-danger',
+      [CAPABILITY_STATUS.UNSUPPORTED]: 'badge-secondary',
+      [CAPABILITY_STATUS.CHECKING]: 'badge-info'
+    }[status]
+    element.className = `badge badge-pill ${className}`
+    element.dataset.status = status
+    element.textContent = this._protocolCapabilityStatusLabel(status)
+  }
+
+  _renderProtocolCapabilityState () {
+    if (!this.protocolCapabilitiesCard) return
+    const snapshot = this._protocolCapabilities || createCheckingProtocolCapabilitySnapshot(this._protocolCapabilityEnvironment())
+    this._renderProtocolCapabilityBadge(this.protocolPragueStatus, snapshot.prague)
+    this._renderProtocolCapabilityBadge(this.protocolOsakaStatus, snapshot.osaka)
+
+    const dependencies = this._compiledProtocolScan?.dependencies || []
+    this.protocolArtifactRequirements.textContent = dependencies.length
+      ? `Compiled bytecode uses: ${dependencies.map((dependency) => dependency.label).join(', ')}.`
+      : 'Compiled bytecode: no Prague/Osaka dependency detected.'
+
+    if (this.protocolCapabilitiesCheckedAt) {
+      this.protocolCapabilitiesCheckedAt.textContent = snapshot.checkedAt
+        ? `Checked ${new Date(snapshot.checkedAt).toLocaleTimeString()}`
+        : 'Waiting for provider check'
+    }
+  }
+
+  _setProtocolCompatibilityMessage (message, kind = 'warning') {
+    if (!this.protocolCapabilitiesMessage) return
+    this.protocolCapabilitiesMessage.textContent = message || ''
+    this.protocolCapabilitiesMessage.className = `mt-2 small ${kind === 'danger' ? 'text-danger' : 'text-warning'}`
+    this.protocolCapabilitiesMessage.style.display = message ? 'block' : 'none'
+  }
+
+  async _requestProtocolCapabilities (force = false) {
+    const environment = this._protocolCapabilityEnvironment()
+    const contextKey = this._protocolCapabilityContextKey()
+    const cached = this._protocolCapabilityCache.get(contextKey)
+    if (!force && cached && cached.checkedAt && Date.now() - cached.checkedAt < 30000) {
+      return this._setProtocolCapabilities(cached)
+    }
+
+    const requestId = ++this._protocolCapabilityRequestId
+    this._setProtocolCapabilities(createCheckingProtocolCapabilitySnapshot(environment))
+    if (environment.provider === 'vm') {
+      const snapshot = createProtocolCapabilitySnapshot(environment)
+      this._protocolCapabilityCache.set(contextKey, snapshot)
+      return this._setProtocolCapabilities(snapshot)
+    }
+
+    let chainParameters
+    let error
+    try {
+      const tronWeb = this.blockchain.web3()
+      let request
+      if (tronWeb?.trx?.getChainParameters) {
+        request = Promise.resolve(tronWeb.trx.getChainParameters())
+      } else if (tronWeb?.fullNode?.request) {
+        request = Promise.resolve(tronWeb.fullNode.request('wallet/getchainparameters', {}, 'post'))
+      } else {
+        throw new Error('The current provider does not support chain parameter lookup.')
+      }
+      let timeout
+      try {
+        chainParameters = await Promise.race([
+          request,
+          new Promise((resolve, reject) => {
+            timeout = setTimeout(() => reject(new Error('Chain parameter lookup timed out.')), 8000)
+          })
+        ])
+      } finally {
+        clearTimeout(timeout)
+      }
+    } catch (requestError) {
+      error = requestError
+    }
+
+    // A provider/network switch while the request was in flight invalidates
+    // the response. Never paint or authorize with capability data from the
+    // environment that just disappeared.
+    if (requestId !== this._protocolCapabilityRequestId || contextKey !== this._protocolCapabilityContextKey()) {
+      return this._protocolCapabilities
+    }
+    const snapshot = createProtocolCapabilitySnapshot({ ...environment, chainParameters, error })
+    this._protocolCapabilityCache.set(contextKey, snapshot)
+    return this._setProtocolCapabilities(snapshot)
+  }
+
+  _scanCompilerProtocolRequirements (compiler) {
+    // Compatibility messages describe the artifact that was validated at the
+    // time of the deploy attempt. A new compilation replaces that artifact,
+    // so retaining the old blocker/warning mislabels the newly selected
+    // contract until the user clicks Deploy again.
+    this._setProtocolCompatibilityMessage('')
+    const dependencyMap = new Map()
+    if (compiler && typeof compiler.visitContracts === 'function') {
+      compiler.visitContracts((contract) => {
+        const artifact = contract?.object
+        const scan = scanCompilationArtifacts({
+          creationBytecode: artifact?.evm?.bytecode,
+          runtimeBytecode: artifact?.evm?.deployedBytecode
+        })
+        scan.dependencies.forEach((dependency) => {
+          if (!dependencyMap.has(dependency.id)) dependencyMap.set(dependency.id, { ...dependency, scopes: [], matches: [] })
+          const aggregate = dependencyMap.get(dependency.id)
+          dependency.scopes.forEach((scope) => {
+            if (!aggregate.scopes.includes(scope)) aggregate.scopes.push(scope)
+          })
+          aggregate.matches.push(...dependency.matches)
+        })
+      })
+    }
+    this._compiledProtocolScan = { dependencies: Array.from(dependencyMap.values()) }
+    this._renderProtocolCapabilityState()
+  }
+
+  _deploymentBytecodeScan (data) {
+    const originalCreation = extractBytecodeObject(data?.contractBytecode)
+    let creationBytecode = originalCreation
+    // Linked deployment data preserves the byte length of Solidity's library
+    // placeholders. Scan that executable prefix instead of rejecting the
+    // unresolved artifact or interpreting constructor arguments as opcodes.
+    if (creationBytecode.includes('_') && typeof data?.dataHex === 'string') {
+      const executableData = data.dataHex.replace(/^0x/i, '')
+      creationBytecode = executableData.slice(0, creationBytecode.replace(/^0x/i, '').length)
+    }
+    return scanCompilationArtifacts({
+      creationBytecode,
+      runtimeBytecode: data?.deployedBytecode
+    })
+  }
+
+  _validateDeploymentCompatibility (data, callback) {
+    let completed = false
+    const done = (error) => {
+      if (completed) return
+      completed = true
+      callback(error)
+    }
+    ;(async () => {
+      const scan = this._deploymentBytecodeScan(data)
+      if (!scan.dependencies.length) {
+        this._setProtocolCompatibilityMessage('')
+        return done(null)
+      }
+
+      const checkedAt = this._protocolCapabilities?.checkedAt || 0
+      const force = !checkedAt || Date.now() - checkedAt > 60000
+      const snapshot = await this._requestProtocolCapabilities(force)
+      const evaluation = evaluateDeploymentCompatibility(scan, snapshot)
+      if (!evaluation.compatible) {
+        const message = formatDeploymentCompatibilityMessage(evaluation)
+        this._setProtocolCompatibilityMessage(message, 'danger')
+        toaster(message)
+        return done(new Error(message))
+      }
+      if (evaluation.warnings.length) {
+        const warning = evaluation.warnings.map((item) => item.message).join(' ')
+        this._setProtocolCompatibilityMessage(warning)
+        toaster(warning)
+      } else {
+        this._setProtocolCompatibilityMessage('')
+      }
+      done(null)
+    })().catch((error) => {
+      const message = `Deployment blocked: compatibility check failed (${error.message || error}).`
+      this._setProtocolCompatibilityMessage(message, 'danger')
+      toaster(message)
+      done(new Error(message))
+    })
+  }
+
+  _deploymentExecutionContext () {
+    const networkStatus = this.blockchain.getCurrentNetworkStatus?.()
+    const network = networkStatus?.network || null
+    let contextEpoch = null
+    if (typeof this.blockchain.getProviderContextEpoch === 'function') {
+      const value = this.blockchain.getProviderContextEpoch()
+      if (Number.isSafeInteger(value) && value >= 0) contextEpoch = value
+    }
+    return {
+      provider: this.blockchain.getProvider?.() || null,
+      network: network ? { name: network.name || null, id: network.id || null } : null,
+      contextEpoch,
+      workspace: this._activeWorkspaceName()
+    }
+  }
+
+  _clearPublishedDeployment (reason) {
+    if (typeof window === 'undefined') return
+    delete window.__tronideLastDeployment
+    if (typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('tronideDeploymentContextCleared', { detail: { reason } }))
+    }
+  }
+
+  _clearPublishedDeploymentIfStale (reason) {
+    if (typeof window === 'undefined' || !window.__tronideLastDeployment) return
+    const deployment = window.__tronideLastDeployment
+    const current = this._deploymentExecutionContext()
+    const staleEpoch = deployment.contextEpoch != null && current.contextEpoch != null && deployment.contextEpoch !== current.contextEpoch
+    const staleProvider = deployment.provider && current.provider && deployment.provider !== current.provider
+    const staleWorkspace = Object.prototype.hasOwnProperty.call(deployment, 'workspace') && deployment.workspace !== current.workspace
+    const currentNetworkId = current.provider === 'vm' ? 'vm' : current.network?.id
+    const staleNetwork = deployment.networkId && currentNetworkId && deployment.networkId !== currentNetworkId
+    if (staleEpoch || staleProvider || staleWorkspace || staleNetwork) this._clearPublishedDeployment(reason)
+  }
+
   setupEvents () {
     this._onNewTransaction = (tx, receipt) => {
       this.emit('newTransaction', tx, receipt)
     }
     this._registerExternalListener(this.blockchain.events, 'newTransaction', this._onNewTransaction)
+    // Publish one deployment-completed signal for both the manual Deploy
+    // button and the AI deployment pipeline. The AI panel consumes this same
+    // signal to render its five explicit post-deployment actions, so a normal
+    // Deploy & Run deployment no longer has a separate, missing next-step UX.
+    this._onContractDeploymentStarted = (timestamp, tx, payload) => {
+      if (!tx || tx.useCall || tx.to || !payload || !payload.contractName) return
+      // Bind the eventual receipt to the workspace/provider/network that
+      // initiated it. A late receipt must never repopulate a new context.
+      payload.tronideDeploymentContext = this._deploymentExecutionContext()
+    }
+    this._registerExternalListener(this.blockchain.event, 'initiatingTransaction', this._onContractDeploymentStarted)
+    this._onContractDeploymentCompleted = (error, from, to, data, call, txResult, timestamp, payload) => {
+      // A failed VM deployment can still carry a deterministic contractAddress
+      // in its receipt. Only publish a deployment context after a successful
+      // creation; otherwise the AI panel offers success-oriented next steps
+      // for a transaction that actually reverted.
+      if (isFailedTransactionResult(error, txResult) || call || to) return
+      const receipt = txResult && (txResult.receipt || txResult)
+      const rawAddress = receipt && (receipt.contractAddress || receipt.contract_address)
+      if (!rawAddress) return
+
+      const capturedContext = payload?.tronideDeploymentContext || null
+      const currentContext = this._deploymentExecutionContext()
+      if (capturedContext?.contextEpoch != null && currentContext.contextEpoch != null && capturedContext.contextEpoch !== currentContext.contextEpoch) return
+      if (capturedContext && capturedContext.workspace !== currentContext.workspace) return
+
+      let contractAddress = null
+      try {
+        contractAddress = normalizeTronContractAddress(rawAddress)
+      } catch (e) {
+        console.debug('[udapp] could not normalize deployed contract address:', e)
+        return
+      }
+      if (!contractAddress) return
+
+      const transactionHash = receipt.transactionHash || txResult.transactionHash || txResult.txID || txResult.txid || null
+      const provider = capturedContext?.provider || currentContext.provider
+      const networkInfo = capturedContext?.network || currentContext.network
+      const networkId = provider === 'vm' ? 'vm' : ((networkInfo && networkInfo.id) || null)
+      const deployment = {
+        contractAddress,
+        contractName: (payload && payload.contractName) || (data && data.contractName) || 'Contract',
+        transactionHash: transactionHash || null,
+        network: provider === 'vm' ? 'JavaScript VM (Tron)' : (TRON_NETWORK_LABELS[networkId] || (networkInfo && (networkInfo.name || networkInfo.id)) || 'network pending'),
+        networkId,
+        provider: provider || null,
+        contextEpoch: capturedContext?.contextEpoch ?? currentContext.contextEpoch,
+        workspace: capturedContext?.workspace ?? currentContext.workspace,
+        timestamp: timestamp || Date.now()
+      }
+      if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return
+      window.__tronideLastDeployment = deployment
+      window.dispatchEvent(new CustomEvent('tronideDeploymentCompleted', { detail: deployment }))
+    }
+    this._registerExternalListener(this.blockchain.event, 'transactionExecuted', this._onContractDeploymentCompleted)
+    this._publishEnvironmentChanged = (networkStatus = null) => {
+      const network = networkStatus?.network || this.blockchain.getCurrentNetworkStatus?.()?.network || null
+      this.emit('environmentChanged', {
+        provider: this.blockchain.getProvider(),
+        network: network ? { name: network.name || null, id: network.id || null } : null
+      })
+    }
+    this._onBlockchainContextChanged = (networkStatus = null) => {
+      this._clearPublishedDeployment('execution-context-changed')
+      this._publishEnvironmentChanged(networkStatus)
+      this._requestProtocolCapabilities(true).catch((error) => console.debug('[udapp] protocol capability refresh failed:', error))
+    }
+    this._onBlockchainNetworkStatus = (networkStatus = null) => {
+      this._publishEnvironmentChanged(networkStatus)
+      this._clearPublishedDeploymentIfStale('network-changed')
+      this._requestProtocolCapabilities(false).catch((error) => console.debug('[udapp] protocol capability refresh failed:', error))
+    }
+    this._registerExternalListener(this.blockchain.event, 'contextChanged', this._onBlockchainContextChanged)
+    this._registerExternalListener(this.blockchain.event, 'networkStatus', this._onBlockchainNetworkStatus)
   }
 
   getSettings () {
-    return new Promise((resolve, reject) => {
-      if (!this.container) reject(new Error('UI not ready'))
-      else {
-        resolve({
-          selectedAccount: this.settingsUI.getSelectedAccount(),
-          selectedEnvMode: this.blockchain.getProvider(),
-          networkEnvironment: this.container.querySelector('*[data-id="settingsNetworkEnv"]').textContent
+    return this._withUserPermission('getSettings', 'read deployment settings', () => {
+      return new Promise((resolve, reject) => {
+        if (!this.container) reject(new Error('UI not ready'))
+        else {
+          resolve({
+            selectedAccount: this.settingsUI.getSelectedAccount(),
+            selectedEnvMode: this.blockchain.getProvider(),
+            networkEnvironment: this.container.querySelector('*[data-id="settingsNetworkEnv"]').textContent
+          }
+          )
         }
-        )
-      }
+      })
     })
   }
 
   async setEnvironmentMode (env) {
-    const canCall = await this.askUserPermission('setEnvironmentMode', 'change the environment used')
-    if (canCall) {
-      toaster(yo`
+    await requireUserPermission(this, 'setEnvironmentMode', 'change the environment used')
+    toaster(yo`
         <div>
           <i class="fas fa-exclamation-triangle text-danger mr-1"></i>
           <span>
-            ${this.currentRequest.from}
+            ${(this.currentRequest && this.currentRequest.from) || 'TronIDE'}
             <span class="font-weight-bold text-warning">
               is changing your environment to
             </span> ${env}
           </span>
         </div>
       `, '', { time: 3000 })
-      this.settingsUI.setExecutionContext(env)
-    }
+    this.settingsUI.setExecutionContext(env)
   }
 
   async connectInjectedTronWeb () {
+    await requireUserPermission(this, 'connectInjectedTronWeb', 'connect the injected wallet')
     if (!this.settingsUI) throw new Error('Deploy & Run is not ready')
     const hadInjectedAccount = typeof window !== 'undefined' && window.tronWeb && window.tronWeb.defaultAddress && window.tronWeb.defaultAddress.base58
 
@@ -616,6 +1527,7 @@ export class RunTab extends ViewPlugin {
   }
 
   async disconnectInjectedTronWeb () {
+    await requireUserPermission(this, 'disconnectInjectedTronWeb', 'disconnect the injected wallet')
     // Provider events can repeat or race with a user changing environments.
     // Only tear down an injected context; an existing VM/custom context must
     // keep its accounts and state intact.
@@ -634,20 +1546,55 @@ export class RunTab extends ViewPlugin {
   }
 
   createVMAccount (newAccount) {
-    return this.blockchain.createVMAccount(newAccount)
+    return this._withUserPermission('createVMAccount', 'create a virtual machine account', () => {
+      return this.blockchain.createVMAccount(newAccount)
+    })
   }
 
   sendTransaction (tx) {
-    _paq.push(['trackEvent', 'udapp', 'sendTx'])
-    return this.blockchain.sendTransaction(tx)
+    return this._withUserPermission('sendTransaction', 'send a transaction', () => {
+      _paq.push(['trackEvent', 'udapp', 'sendTx'])
+      return this.blockchain.sendTransaction(tx)
+    })
   }
 
   getAccounts (cb) {
-    return this.blockchain.getAccounts(cb)
+    return this._withUserPermission('getAccounts', 'read available accounts', () => {
+      return this.blockchain.getAccounts(cb)
+    })
   }
 
   pendingTransactionsCount () {
-    return this.blockchain.pendingTransactionsCount()
+    return this._withUserPermission('pendingTransactionsCount', 'read the pending transaction count', () => {
+      return this.blockchain.pendingTransactionsCount()
+    })
+  }
+
+  renderProtocolCapabilities () {
+    this.protocolPragueStatus = yo`<span class="badge badge-pill badge-info" data-id="protocolPragueStatus" data-status="checking">Checking</span>`
+    this.protocolOsakaStatus = yo`<span class="badge badge-pill badge-info" data-id="protocolOsakaStatus" data-status="checking">Checking</span>`
+    this.protocolArtifactRequirements = yo`<div class="small text-muted mt-2" data-id="protocolArtifactRequirements"></div>`
+    this.protocolCapabilitiesCheckedAt = yo`<span class="small text-muted" data-id="protocolCapabilitiesCheckedAt">Waiting for provider check</span>`
+    this.protocolCapabilitiesMessage = yo`<div class="mt-2 small text-warning" data-id="protocolCapabilitiesMessage" style="display: none"></div>`
+    this.protocolCapabilitiesCard = yo`
+      <div class="border-0 list-group-item" data-id="protocolCapabilitiesCard">
+        <div class="d-flex justify-content-between align-items-center">
+          <span class="font-weight-bold">Protocol compatibility</span>
+          <button class="btn btn-sm btn-link p-0" type="button" data-id="protocolCapabilitiesRefresh"
+            title="Refresh Prague and Osaka chain parameters"
+            onclick=${() => this._requestProtocolCapabilities(true)}>
+            <i class="fas fa-sync-alt" aria-hidden="true"></i> Refresh
+          </button>
+        </div>
+        <div class="d-flex align-items-center mt-2">
+          <span class="mr-1">Prague</span>${this.protocolPragueStatus}
+          <span class="ml-3 mr-1">Osaka</span>${this.protocolOsakaStatus}
+        </div>
+        ${this.protocolArtifactRequirements}
+        <div class="mt-1">${this.protocolCapabilitiesCheckedAt}</div>
+        ${this.protocolCapabilitiesMessage}
+      </div>`
+    this._renderProtocolCapabilityState()
   }
 
   renderContainer () {
@@ -656,6 +1603,7 @@ export class RunTab extends ViewPlugin {
     var el = yo`
     <div class="list-group list-group-flush">
       ${this.settingsUI.render()}
+      ${this.protocolCapabilitiesCard}
       ${this.contractDropdownUI.render()}
       ${this.recorderCard.render()}
       ${this.instanceContainer}
@@ -711,8 +1659,16 @@ export class RunTab extends ViewPlugin {
     // When the last file closes, compile-tab resets its artifacts — the Deploy
     // & Run contract list must follow, or it keeps offering a stale compilation
     // the compiler no longer shows (TC-CMP-010 / TC-IX-CMP-002).
-    this._onNoFileSelected = () => this.contractDropdownUI.updateCompiledContracts(false)
+    this._onNoFileSelected = () => {
+      this.contractDropdownUI.updateCompiledContracts(false)
+      this._scanCompilerProtocolRequirements(null)
+    }
     this._registerExternalListener(fileManager.events, 'noFileSelected', this._onNoFileSelected, 'render')
+
+    dropdownLogic.event.register('newlyCompiled', (success, data, source, compiler) => {
+      this._scanCompilerProtocolRequirements(success ? compiler : null)
+    })
+    this._scanCompilerProtocolRequirements(compilersArtefacts.__last)
 
     this.contractDropdownUI.event.register('clearInstance', () => {
       const noInstancesText = this.noInstancesText
@@ -880,8 +1836,23 @@ export class RunTab extends ViewPlugin {
           cb(err, res)
         }
         ;(async () => {
-          const selectedAddress = $('#txorigin').val()
-          if (this.blockchain.getProvider() !== 'injected') return cbOnce(null, selectedAddress)
+          // Read from the active Settings instance rather than a document-wide
+          // jQuery id lookup. Provider switches can leave a stale/hidden
+          // #txorigin node around briefly; selecting that node returned
+          // undefined even while the visible VM account selector was ready.
+          let selectedAddress
+          try { selectedAddress = this.settingsUI && this.settingsUI.getSelectedAccount() } catch (e) {
+            const accountSelect = document.querySelector('#runTabView #txorigin')
+            selectedAddress = accountSelect && accountSelect.value
+          }
+          if (this.blockchain.getProvider() !== 'injected') {
+            if (selectedAddress) return cbOnce(null, selectedAddress)
+            try {
+              const accounts = await this.blockchain.getAccounts()
+              if (accounts && accounts[0]) return cbOnce(null, accounts[0])
+            } catch (e) { return cbOnce(e) }
+            return cbOnce(new Error('No account is available in the selected environment.'))
+          }
 
           try {
             const accounts = await this.blockchain.getAccounts()
@@ -983,10 +1954,12 @@ export class RunTab extends ViewPlugin {
             cbOnce(e.message)
           }
         })()
-      }
+      },
+      validateDeploymentCompatibility: (data, cb) => this._validateDeploymentCompatibility(data, cb)
     })
     this.renderInstanceContainer()
     this.renderSettings()
+    this.renderProtocolCapabilities()
     this.renderDropdown(this.udappUI, this.fileManager, this.compilersArtefacts, this.config, this.editor, this.logCallback)
     this.renderRecorder(this.udappUI, this.fileManager, this.config, this.logCallback)
     this.renderRecorderCard()
@@ -1019,16 +1992,28 @@ export class RunTab extends ViewPlugin {
     // created in; switching workspace must clear them — otherwise the old
     // workspace's instances stay visible and the user can fire transactions at a
     // stale address/network. Mirrors compile-tab resetting results on switch.
-    this.on('filePanel', 'setWorkspace', () => this.event.trigger('clearInstance', []))
+    this._onWorkspaceChanged = () => {
+      this.event.trigger('clearInstance', [])
+      this._clearPublishedDeployment('workspace-changed')
+    }
+    this.on('filePanel', 'setWorkspace', this._onWorkspaceChanged)
     this._managerEventSubscriptionsRegistered = true
-    return this.renderContainer()
+    const container = this.renderContainer()
+    this._requestProtocolCapabilities(false).catch((error) => console.debug('[udapp] protocol capability refresh failed:', error))
+    return container
   }
 
   onDeactivation () {
+    this._protocolCapabilityRequestId++
     this._clearManagerEventSubscriptions()
     this._removeExternalListeners()
     if (this.settingsUI && this.settingsUI.destroy) this.settingsUI.destroy()
     this._onNewTransaction = null
+    this._onContractDeploymentStarted = null
+    this._onContractDeploymentCompleted = null
+    this._onBlockchainContextChanged = null
+    this._onBlockchainNetworkStatus = null
+    this._onWorkspaceChanged = null
     this._onCurrentFileChanged = null
     this._addPluginProvider = null
     this._removePluginProvider = null

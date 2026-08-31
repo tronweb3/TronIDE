@@ -31,9 +31,10 @@
   margin-right: 10px;
 }
 .chat-set-wrapper .chat-set-content {
-  padding: 0 16px;
+  box-sizing: border-box;
+  padding: 0 16px 96px;
   overflow-y: auto;
-  max-height: calc(100vh - 146px);
+  max-height: calc(100vh - 186px);
 }
 .chat-set-wrapper .open-ai-title {
   margin-bottom: 5px;
@@ -100,6 +101,22 @@
 .chat-set-wrapper .gpt-model-wrap .ant-checkbox-label {
   color: var(--ai-text);
 }
+.chat-set-wrapper .gpt-model-wrap .ai-local-metrics-panel,
+.chat-set-wrapper .gpt-model-wrap .ai-local-metrics-panel p {
+  color: var(--ai-text);
+}
+.chat-set-wrapper .gpt-model-wrap .bank-model-load-button {
+  color: var(--ai-input-text);
+  border-color: var(--ai-input-border);
+}
+.chat-set-wrapper .gpt-model-wrap .bank-model-load-button:disabled, .chat-set-wrapper .gpt-model-wrap .bank-model-load-button.disabled {
+  color: var(--ai-text);
+  border-color: var(--ai-input-border);
+  opacity: 0.8;
+}
+.chat-set-wrapper .gpt-model-wrap .bank-model-load-help {
+  color: var(--ai-text);
+}
 .chat-set-wrapper .context-wrap {
   margin-top: 20px;
 }
@@ -108,6 +125,7 @@
 }
 .chat-set-wrapper .collapse-wrap {
   margin-top: 16px;
+  padding-bottom: 8px;
   text-align: center;
   color: var(--ai-title);
 }

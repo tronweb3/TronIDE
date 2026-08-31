@@ -37,12 +37,14 @@
       border-radius: 6px;
       background: var(--header-control-bg);
       color: var(--header-control-text);
+      text-decoration: none;
       cursor: pointer;
       &:hover,
       &:focus{
         border-color: var(--header-control-hover-border);
         background: var(--header-control-hover-bg);
         color: var(--header-control-text);
+        text-decoration: none;
         outline: none;
       }
       i{
@@ -87,10 +89,20 @@
     margin-right: 12px;
     font-size: 14px;
     line-height: 1;
+    font-family: inherit;
     color: var(--ai-text);
+    background: transparent;
     border: 1px solid var(--ai-input-border);
     padding: 6px 10px;
     border-radius: 4px;
+    text-decoration: none;
+    cursor: pointer;
+    &:hover,
+    &:focus-visible {
+      border-color: var(--ai-text);
+      color: var(--ai-title);
+      text-decoration: none;
+    }
   }
 
 .top-header-wrapper .ai-show-btn{

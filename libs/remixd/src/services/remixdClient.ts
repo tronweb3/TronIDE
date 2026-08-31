@@ -41,7 +41,9 @@ export class RemixdClient extends PluginClient {
   }
 
   sharedFolder (currentSharedFolder: string): void {
-    this.currentSharedFolder = currentSharedFolder
+    // Validate and canonicalize the root once so list/watch operations cannot
+    // bypass the path and symlink boundary enforced by absolutePath.
+    this.currentSharedFolder = utils.absolutePath('./', currentSharedFolder)
     if (this.isLoaded) this.emit('rootFolderChanged')
   }
 
@@ -68,30 +70,15 @@ export class RemixdClient extends PluginClient {
     return this.readOnly
   }
 
-  get (args: SharedFolderArgs): Promise<FileContent> {
-    try {
-      return new Promise((resolve, reject) => {
-        const path = utils.absolutePath(args.path, this.currentSharedFolder)
-
-        if (!fs.existsSync(path)) {
-          return reject(new Error('File not found ' + path))
-        }
-        if (!isRealPath(path)) return
-        isbinaryfile(path, (error: Error, isBinary: boolean) => {
-          if (error) console.log(error)
-          if (isBinary) {
-            resolve({ content: '<binary content not displayed>', readonly: true })
-          } else {
-            fs.readFile(path, 'utf8', (error: Error, data: string) => {
-              if (error) console.log(error)
-              resolve({ content: data, readonly: false })
-            })
-          }
-        })
-      })
-    } catch (error) {
-      throw new Error(error)
-    }
+  async get (args: SharedFolderArgs): Promise<FileContent> {
+    const path = utils.absolutePath(args.path, this.currentSharedFolder)
+    if (!fs.existsSync(path)) throw new Error('File not found ' + path)
+    if (!isRealPath(path)) throw new Error('Symbolic links are not allowed in the shared folder.')
+    const isBinary = await new Promise<boolean>((resolve, reject) => {
+      isbinaryfile(path, (error: Error, binary: boolean) => error ? reject(error) : resolve(binary))
+    })
+    if (isBinary) return { content: '<binary content not displayed>', readonly: true }
+    return { content: await fs.readFile(path, 'utf8'), readonly: false }
   }
 
   exists (args: SharedFolderArgs): boolean {
@@ -104,65 +91,42 @@ export class RemixdClient extends PluginClient {
     }
   }
 
-  set (args: SharedFolderArgs) {
-    try {
-      return new Promise((resolve, reject) => {
-        if (this.readOnly) return reject(new Error('Cannot write file: read-only mode selected'))
-        const path = utils.absolutePath(args.path, this.currentSharedFolder)
-        const exists = fs.existsSync(path)
+  async set (args: SharedFolderArgs): Promise<boolean> {
+    if (this.readOnly) throw new Error('Cannot write file: read-only mode selected')
+    const path = utils.absolutePath(args.path, this.currentSharedFolder)
+    const exists = fs.existsSync(path)
 
-        if (exists && !isRealPath(path)) return reject(new Error(''))
-        if (args.content === 'undefined') { // no !!!!!
-          console.log('trying to write "undefined" ! stopping.')
-          return reject(new Error('trying to write "undefined" ! stopping.'))
-        }
-        this.trackDownStreamUpdate[path] = path
-        if (!exists && args.path.indexOf('/') !== -1) {
-          // the last element is the filename and we should remove it
-          this.createDir({ path: args.path.substr(0, args.path.lastIndexOf('/')) })
-        }
-        try {
-          fs.writeFile(path, args.content, 'utf8', (error: Error) => {
-            if (error) {
-              console.log(error)
-              return reject(error)
-            }
-            resolve(true)
-          })
-        } catch (e) {
-          return reject(e)
-        }
-        if (!exists) {
-          this.emit('fileAdded', args.path)
-        } else {
-          this.emit('fileChanged', args.path)
-        }
-      })
-    } catch (error) {
-      throw new Error(error)
+    if (exists && !isRealPath(path)) throw new Error('Symbolic links are not allowed in the shared folder.')
+    if (args.content === 'undefined') throw new Error('trying to write "undefined" ! stopping.')
+    if (!exists && args.path.indexOf('/') !== -1) {
+      // Create and validate the parent before writing the new leaf. The old
+      // implementation only checked the leaf when it already existed, which
+      // allowed writes through a symlinked parent directory.
+      await this.createDir({ path: args.path.substr(0, args.path.lastIndexOf('/')) })
     }
+    this.trackDownStreamUpdate[path] = path
+    await fs.writeFile(path, args.content, 'utf8')
+    if (!exists) this.emit('fileAdded', args.path)
+    else this.emit('fileChanged', args.path)
+    return true
   }
 
-  createDir (args: SharedFolderArgs) {
-    try {
-      return new Promise((resolve, reject) => {
-        if (this.readOnly) return reject(new Error('Cannot create folder: read-only mode selected'))
-        const paths = args.path.split('/').filter(value => value)
-        if (paths.length && paths[0] === '') paths.shift()
-        let currentCheck = ''
-        paths.forEach((value) => {
-          currentCheck = currentCheck ? currentCheck + '/' + value : value
-          const path = utils.absolutePath(currentCheck, this.currentSharedFolder)
-          if (!fs.existsSync(path)) {
-            fs.mkdirp(path)
-            this.emit('folderAdded', currentCheck)
-          }
-        })
-        resolve(true)
-      })
-    } catch (error) {
-      throw new Error(error)
+  async createDir (args: SharedFolderArgs): Promise<boolean> {
+    if (this.readOnly) throw new Error('Cannot create folder: read-only mode selected')
+    const paths = args.path.split('/').filter(value => value)
+    if (paths.length && paths[0] === '') paths.shift()
+    let currentCheck = ''
+    for (const value of paths) {
+      currentCheck = currentCheck ? currentCheck + '/' + value : value
+      const path = utils.absolutePath(currentCheck, this.currentSharedFolder)
+      if (!fs.existsSync(path)) {
+        await fs.mkdirp(path)
+        this.emit('folderAdded', currentCheck)
+      } else if (!isRealPath(path)) {
+        throw new Error('Symbolic links are not allowed in the shared folder.')
+      }
     }
+    return true
   }
 
   rename (args: SharedFolderArgs): Promise<boolean> {
@@ -176,7 +140,7 @@ export class RemixdClient extends PluginClient {
         }
         const newpath = utils.absolutePath(args.newPath, this.currentSharedFolder)
 
-        if (!isRealPath(oldpath)) return
+        if (!isRealPath(oldpath)) return reject(new Error('Symbolic links are not allowed in the shared folder.'))
         fs.move(oldpath, newpath, (error: Error) => {
           if (error) {
             console.log(error)
@@ -198,7 +162,7 @@ export class RemixdClient extends PluginClient {
         const path = utils.absolutePath(args.path, this.currentSharedFolder)
 
         if (!fs.existsSync(path)) return reject(new Error('File not found ' + path))
-        if (!isRealPath(path)) return
+        if (!isRealPath(path)) return reject(new Error('Symbolic links are not allowed in the shared folder.'))
         // Saving the content of the item{folder} before removing it
         const ls = []
         try {

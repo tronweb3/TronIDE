@@ -21,11 +21,91 @@
 import { NightwatchBrowser } from 'nightwatch'
 import init from '../helpers/init'
 
+const e2eBaseUrl = (process.env.E2E_BASE_URL || 'http://127.0.0.1:8080').replace(/\/$/, '')
+const loopbackPluginHost = (() => {
+  try {
+    const hostname = new URL(e2eBaseUrl).hostname.replace(/^\[|\]$/g, '')
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+  } catch (e) {
+    return false
+  }
+})()
+
 const testData = {
   pluginName: 'remixIde',
   pluginDisplayName: 'Remix IDE',
-  pluginUrl: (process.env.E2E_BASE_URL || 'http://127.0.0.1:8080') + '/assets/plugins/restorebackupzip/'
+  pluginUrl: e2eBaseUrl + '/assets/plugins/restorebackupzip/'
 }
+
+// A deployed TronIDE page must reject its own public HTTPS origin as a
+// "local" plugin URL. Keep the full create/duplicate/reload lifecycle for the
+// loopback CI server, and turn the live-site variant into an explicit security
+// assertion instead of waiting 100 seconds for a plugin that must not exist.
+const localPluginTests = loopbackPluginHost
+  ? {
+    'Should connect a local plugin': function (browser: NightwatchBrowser) {
+      browser.waitForElementVisible('*[data-id="pluginManagerComponentPluginManager"]')
+        .click('*[data-id="pluginManagerComponentPluginSearchButton"]')
+        .waitForElementVisible('*[data-id="modalDialogContainer"]')
+        .click('*[data-id="modalDialogModalBody"]')
+        .waitForElementVisible('*[data-id="localPluginName"]')
+        .setValue('*[data-id="localPluginName"]', testData.pluginName)
+        .setValue('*[data-id="localPluginDisplayName"]', testData.pluginDisplayName)
+        .setValue('*[data-id="localPluginUrl"]', testData.pluginUrl)
+        .modalFooterOKClick()
+        .waitForElementVisible('*[data-id="pluginManagerComponentDeactivateButtonremixIde"]', 100000)
+    },
+
+    'Should display error message for creating already existing plugin': function (browser: NightwatchBrowser) {
+      browser.waitForElementVisible('*[data-id="pluginManagerComponentPluginManager"]')
+        .click('*[data-id="pluginManagerComponentPluginSearchButton"]')
+        .waitForElementVisible('*[data-id="modalDialogContainer"]')
+        .click('*[data-id="modalDialogModalBody"]')
+        .waitForElementVisible('*[data-id="localPluginName"]')
+        .clearValue('*[data-id="localPluginName"]').setValue('*[data-id="localPluginName"]', testData.pluginName)
+        .clearValue('*[data-id="localPluginDisplayName"]').setValue('*[data-id="localPluginDisplayName"]', testData.pluginDisplayName)
+        .clearValue('*[data-id="localPluginUrl"]').setValue('*[data-id="localPluginUrl"]', testData.pluginUrl)
+        .modalFooterOKClick()
+        .pause(5000)
+        .waitForElementVisible('*[data-shared="tooltipPopup"]:nth-last-of-type(1)')
+        .pause(2000)
+        .assert.containsText('*[data-shared="tooltipPopup"]:nth-last-of-type(1)', 'Cannot create Plugin : This name has already been used')
+    },
+
+    'Should load back installed plugins after reload': function (browser: NightwatchBrowser) {
+      browser.waitForElementVisible('*[data-id="pluginManagerComponentPluginManager"]')
+        .getInstalledPlugins((plugins) => {
+          browser.refresh()
+            .waitForElementVisible('*[data-id="remixIdeSidePanel"]')
+            .pause(3000)
+            .perform((done) => {
+              plugins.forEach(plugin => {
+                if (plugin !== testData.pluginName) {
+                  browser.waitForElementVisible(`[plugin="${plugin}"]`)
+                }
+              })
+              done()
+            })
+        })
+        .end()
+    }
+  }
+  : {
+    'Should reject a public URL as a local plugin': function (browser: NightwatchBrowser) {
+      browser.waitForElementVisible('*[data-id="pluginManagerComponentPluginManager"]')
+        .click('*[data-id="pluginManagerComponentPluginSearchButton"]')
+        .waitForElementVisible('*[data-id="modalDialogContainer"]')
+        .click('*[data-id="modalDialogModalBody"]')
+        .waitForElementVisible('*[data-id="localPluginName"]')
+        .setValue('*[data-id="localPluginName"]', testData.pluginName)
+        .setValue('*[data-id="localPluginDisplayName"]', testData.pluginDisplayName)
+        .setValue('*[data-id="localPluginUrl"]', testData.pluginUrl)
+        .modalFooterOKClick()
+        .waitForElementVisible('*[data-shared="tooltipPopup"]', 10000)
+        .assert.containsText('*[data-shared="tooltipPopup"]', 'Remote plugin URLs are disabled. Use localhost, 127.0.0.1, or ::1.')
+        .assert.not.elementPresent('*[data-id="pluginManagerComponentDeactivateButtonremixIde"]')
+    }
+  }
 
 module.exports = {
   before: function (browser: NightwatchBrowser, done: VoidFunction) {
@@ -109,56 +189,5 @@ module.exports = {
   },
   */
 
-  'Should connect a local plugin': function (browser: NightwatchBrowser) {
-    browser.waitForElementVisible('*[data-id="pluginManagerComponentPluginManager"]')
-      .click('*[data-id="pluginManagerComponentPluginSearchButton"]')
-      .waitForElementVisible('*[data-id="modalDialogContainer"]')
-      .click('*[data-id="modalDialogModalBody"]')
-      .waitForElementVisible('*[data-id="localPluginName"]')
-      .setValue('*[data-id="localPluginName"]', testData.pluginName)
-      .setValue('*[data-id="localPluginDisplayName"]', testData.pluginDisplayName)
-      .setValue('*[data-id="localPluginUrl"]', testData.pluginUrl)
-      .click('*[data-id="localPluginRadioButtoniframe"]')
-      .click('*[data-id="localPluginRadioButtonsidePanel"]')
-      .click('*[data-id="modalDialogModalFooter"]')
-      .modalFooterOKClick()
-      .waitForElementVisible('*[data-id="pluginManagerComponentDeactivateButtonremixIde"]', 100000)
-  },
-
-  'Should display error message for creating already existing plugin': function (browser: NightwatchBrowser) {
-    browser.waitForElementVisible('*[data-id="pluginManagerComponentPluginManager"]')
-      .click('*[data-id="pluginManagerComponentPluginSearchButton"]')
-      .waitForElementVisible('*[data-id="modalDialogContainer"]')
-      .click('*[data-id="modalDialogModalBody"]')
-      .waitForElementVisible('*[data-id="localPluginName"]')
-      .clearValue('*[data-id="localPluginName"]').setValue('*[data-id="localPluginName"]', testData.pluginName)
-      .clearValue('*[data-id="localPluginDisplayName"]').setValue('*[data-id="localPluginDisplayName"]', testData.pluginDisplayName)
-      .clearValue('*[data-id="localPluginUrl"]').setValue('*[data-id="localPluginUrl"]', testData.pluginUrl)
-      .click('*[data-id="localPluginRadioButtoniframe"]')
-      .click('*[data-id="localPluginRadioButtonsidePanel"]')
-      .click('*[data-id="modalDialogModalFooter"]')
-      .modalFooterOKClick()
-      .pause(5000)
-      .waitForElementVisible('*[data-shared="tooltipPopup"]:nth-last-of-type(1)')
-      .pause(2000)
-      .assert.containsText('*[data-shared="tooltipPopup"]:nth-last-of-type(1)', 'Cannot create Plugin : This name has already been used')
-  },
-
-  'Should load back installed plugins after reload': function (browser: NightwatchBrowser) {
-    browser.waitForElementVisible('*[data-id="pluginManagerComponentPluginManager"]')
-      .getInstalledPlugins((plugins) => {
-        browser.refresh()
-          .waitForElementVisible('*[data-id="remixIdeSidePanel"]')
-          .pause(3000)
-          .perform((done) => {
-            plugins.forEach(plugin => {
-              if (plugin !== testData.pluginName) {
-                browser.waitForElementVisible(`[plugin="${plugin}"`)
-              }
-            })
-            done()
-          })
-      })
-      .end()
-  }
+  ...localPluginTests
 }

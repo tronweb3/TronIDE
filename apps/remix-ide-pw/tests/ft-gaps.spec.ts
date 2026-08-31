@@ -2,9 +2,10 @@
  *  existing 23 specs. Self-contained (creates its own files) so it runs against
  *  the live deployed build as well as local. */
 import { test, expect, Page } from '@playwright/test'
+import { createFile, getEditorText, saveCurrentFile, setEditorText, useBuiltinCompiler } from './helpers'
 
 async function boot (page: Page) {
-  await page.goto('/')
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
   for (const l of ['I Understand']) { const b = page.getByRole('button', { name: l }); if (await b.first().isVisible().catch(() => false)) await b.first().click().catch(() => {}) }
   await page.locator('#icon-panel').waitFor({ timeout: 45_000 })
 }
@@ -14,16 +15,9 @@ async function ensurePanel (page: Page, plugin: string, probe: string) {
   await page.locator(probe).first().waitFor({ timeout: 15_000 })
 }
 async function newFile (page: Page, name: string, content: string) {
-  await ensurePanel(page, 'filePanel', 'select[data-id="workspacesSelect"]')
-  await page.locator('[data-id="fileExplorerNewFilecreateNewFile"]').evaluate((el: HTMLElement) => el.click())
-  const ed = page.locator('div.remixui_items[contenteditable="true"]')
-  await ed.waitFor({ state: 'visible', timeout: 10_000 })
-  await page.evaluate((n) => { const el = document.querySelector('div.remixui_items[contenteditable="true"]') as HTMLElement; if (el) el.innerText = n }, name)
-  await ed.press('Enter')
-  await page.locator('#input').waitFor({ timeout: 15_000 })
-  await page.evaluate((c) => { (document.getElementById('input') as any).editor.session.setValue(c) }, content)
-  await page.waitForTimeout(500)
-  await page.keyboard.press('Control+S')
+  await createFile(page, name)
+  await setEditorText(page, content)
+  await saveCurrentFile(page, name, content)
 }
 const SIMPLE = ['// SPDX-License-Identifier: MIT', 'pragma solidity >=0.8.2 <0.9.0;',
   'contract Args { uint256 public n; string public s; constructor(uint256 _n, string memory _s){ n=_n; s=_s; } }'].join('\n')
@@ -38,7 +32,7 @@ test.describe('FT gap-filler', () => {
       await expect(page.locator('[data-id="search_include"], input[placeholder*="search" i], #search_input').first()).toBeVisible({ timeout: 10_000 })
     }
     // Create Contract -> file creation flow on filePanel
-    await page.goto('/'); await page.locator('#icon-panel').waitFor()
+    await page.goto('/', { waitUntil: 'domcontentloaded' }); await page.locator('#icon-panel').waitFor()
     const create = page.getByText('Create Contract', { exact: false }).first()
     if (await create.isVisible().catch(() => false)) {
       await create.click()
@@ -54,16 +48,22 @@ test.describe('FT gap-filler', () => {
     const tabs = page.locator('.remix-ui-tabs_tab, [data-id^="tab-"], remix-tab')
     expect(await tabs.count()).toBeGreaterThanOrEqual(2)
     // editor shows B (last opened)
-    expect(await page.evaluate(() => (document.getElementById('input') as any).editor.getValue())).toContain('contract B')
+    await expect.poll(() => getEditorText(page), { timeout: 10_000 }).toContain('contract B')
   })
 
   test('FT-EDIT-07: compile error produces an inline annotation', async ({ page }) => {
     await boot(page)
     await newFile(page, 'Bad.sol', '// SPDX-License-Identifier: MIT\npragma solidity >=0.8.2 <0.9.0;\ncontract Bad { uint x = ; }')
     await ensurePanel(page, 'solidity', '*[data-id="compilerContainerCompileBtn"]')
+    await useBuiltinCompiler(page)
     await page.locator('*[data-id="compilerContainerCompileBtn"]').click()
     // an error entry appears in the compile feedback
-    await expect(page.locator('[data-id="compiledErrors"], .alert-danger, [class*="error"]').first()).toBeVisible({ timeout: 60_000 })
+    // Scope to the compiler's feedback container.  A hidden RunTab status
+    // icon also carries an `error*` class and appears earlier in document
+    // order, so the broad selector used here could resolve the wrong node.
+    const compileErrors = page.locator('[data-id="compiledErrors"]')
+    await expect(compileErrors).toBeVisible({ timeout: 60_000 })
+    await expect(compileErrors).toContainText(/ParserError|Expected primary expression/i)
   })
 
   test('FT-CMP-07/08/09: optimize toggle persists, Yul language option, hide-warnings present', async ({ page }) => {
@@ -95,8 +95,8 @@ test.describe('FT gap-filler', () => {
     }
     // theme select (rendered in settings DOM) offers both light & dark options
     const themeOpts = await page.locator('select').evaluateAll((sels) => {
-      const t = (sels as HTMLSelectElement[]).find((s) => [...s.options].some((o) => /dark|light/i.test(o.text)))
-      return t ? [...t.options].map((o) => o.text) : []
+      const t = (sels as HTMLSelectElement[]).find((s) => Array.from(s.options).some((o) => /dark|light/i.test(o.text)))
+      return t ? Array.from(t.options).map((o) => o.text) : []
     })
     if (themeOpts.length) { expect(themeOpts.join(',')).toMatch(/light/i); expect(themeOpts.join(',')).toMatch(/dark/i) }
   })

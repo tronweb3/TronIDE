@@ -17,7 +17,7 @@
  * limitations under the License.
  */
 
-import React, { useEffect, useState } from 'react' // eslint-disable-line
+import React, { useEffect, useRef, useState } from 'react' // eslint-disable-line
 import { ModalDialog } from '@remix-ui/modal-dialog' // eslint-disable-line
 
 import './toaster.css'
@@ -29,6 +29,9 @@ export interface ToasterProps {
 }
 
 export const Toaster = (props: ToasterProps) => {
+  const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const finishHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const messageGeneration = useRef(0)
   const [state, setState] = useState({
     message: '',
     hide: true,
@@ -38,29 +41,71 @@ export const Toaster = (props: ToasterProps) => {
     showModal: false
   })
 
-  useEffect(() => {
-    if (props.message) {
-      const timeOutId = setTimeout(() => {
-        setState(prevState => {
-          return { ...prevState, hiding: true }
-        })
-      }, state.timeOut)
+  const clearAutoHideTimer = () => {
+    if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
+    autoHideTimer.current = null
+  }
 
+  const clearFinishHideTimer = () => {
+    if (finishHideTimer.current) clearTimeout(finishHideTimer.current)
+    finishHideTimer.current = null
+  }
+
+  const closeTheToaster = () => {
+    clearAutoHideTimer()
+    clearFinishHideTimer()
+    setState(prevState => {
+      return { ...prevState, message: '', hide: true, hiding: false, timeOutId: null, showModal: false }
+    })
+  }
+
+  useEffect(() => {
+    clearAutoHideTimer()
+    clearFinishHideTimer()
+    const generation = ++messageGeneration.current
+    if (!props.message) {
       setState(prevState => {
-        const shortTooltipText = props.message.length > 201 ? props.message.substring(0, 200) + '...' : props.message
-
-        return { ...prevState, hide: false, hiding: false, timeOutId, message: shortTooltipText }
+        return { ...prevState, message: '', hide: true, hiding: false, timeOutId: null, showModal: false }
       })
+      return
     }
-  }, [props.message])
+
+    const shortTooltipText = props.message.length > 201 ? props.message.substring(0, 200) + '...' : props.message
+    const timeOutId = setTimeout(() => {
+      if (generation !== messageGeneration.current) return
+      autoHideTimer.current = null
+      setState(prevState => {
+        return { ...prevState, hiding: true }
+      })
+    }, props.timeOut || 7000)
+    autoHideTimer.current = timeOutId
+
+    setState(prevState => {
+      return { ...prevState, hide: false, hiding: false, timeOutId, message: shortTooltipText }
+    })
+
+    return () => {
+      clearAutoHideTimer()
+      clearFinishHideTimer()
+    }
+  }, [props.message, props.timeOut])
 
   useEffect(() => {
-    if (state.hiding) {
-      setTimeout(() => {
-        closeTheToaster()
-      }, 1800)
-    }
+    clearFinishHideTimer()
+    if (!state.hiding) return
+    const generation = messageGeneration.current
+    finishHideTimer.current = setTimeout(() => {
+      if (generation !== messageGeneration.current) return
+      finishHideTimer.current = null
+      closeTheToaster()
+    }, 1800)
+    return clearFinishHideTimer
   }, [state.hiding])
+
+  useEffect(() => () => {
+    clearAutoHideTimer()
+    clearFinishHideTimer()
+  }, [])
 
   const showFullMessage = () => {
     setState(prevState => {
@@ -74,31 +119,24 @@ export const Toaster = (props: ToasterProps) => {
     })
   }
 
-  const closeTheToaster = () => {
-    if (state.timeOutId) {
-      clearTimeout(state.timeOutId)
-    }
-    setState(prevState => {
-      return { ...prevState, message: '', hide: true, hiding: false, timeOutId: null, showModal: false }
-    })
-  }
-
   const handleMouseEnter = () => {
-    if (state.timeOutId) {
-      clearTimeout(state.timeOutId)
-    }
+    clearAutoHideTimer()
     setState(prevState => {
       return { ...prevState, timeOutId: null }
     })
   }
 
   const handleMouseLeave = () => {
-    if (!state.timeOutId) {
+    if (!autoHideTimer.current) {
+      const generation = messageGeneration.current
       const timeOutId = setTimeout(() => {
+        if (generation !== messageGeneration.current) return
+        autoHideTimer.current = null
         setState(prevState => {
           return { ...prevState, hiding: true }
         })
-      }, state.timeOut)
+      }, props.timeOut || 7000)
+      autoHideTimer.current = timeOutId
 
       setState(prevState => {
         return { ...prevState, timeOutId }

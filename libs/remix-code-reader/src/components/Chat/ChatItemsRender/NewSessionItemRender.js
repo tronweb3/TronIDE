@@ -26,4 +26,4 @@ const NewSessionItemRender = ({ text }) => {
   )
 };
 
-export default NewSessionItemRender;
+export default React.memo(NewSessionItemRender);

@@ -32,15 +32,14 @@ class TestTabLogic {
     this.currentPath = helper.removeMultipleSlashes(helper.removeTrailingSlashes(path))
   }
 
-  generateTestFolder (path) {
+  async generateTestFolder (path) {
     // Todo move this check to File Manager after refactoring
     // Checking to ignore the value which contains only whitespaces
     if (!path || !(/\S/.test(path))) return
     path = helper.removeMultipleSlashes(path)
     const fileProvider = this.fileManager.fileProviderOf(path.split('/')[0])
-    fileProvider.exists(path).then(res => {
-      if (!res) fileProvider.createDir(path)
-    })
+    const exists = await fileProvider.exists(path)
+    if (!exists) await fileProvider.createDir(path)
   }
 
   async pathExists (path) {
@@ -59,9 +58,14 @@ class TestTabLogic {
     if (!fileProvider) return
     const splittedFileName = fileName.split('/')
     const fileNameToImport = (!hasCurrent) ? fileName : this.currentPath + '/' + splittedFileName[splittedFileName.length - 1]
-    helper.createNonClashingNameWithPrefix(fileNameToImport, fileProvider, '_test', (error, newFile) => {
+    helper.createNonClashingNameWithPrefix(fileNameToImport, fileProvider, '_test', async (error, newFile) => {
       if (error) return modalDialogCustom.alert('Failed to create file. ' + newFile + ' ' + error)
-      if (!fileProvider.set(newFile, this.generateTestContractSample(hasCurrent, fileName))) return modalDialogCustom.alert('Failed to create test file ' + newFile)
+      try {
+        const saved = await fileProvider.set(newFile, this.generateTestContractSample(hasCurrent, fileName))
+        if (!saved) return modalDialogCustom.alert('Failed to create test file ' + newFile)
+      } catch (error) {
+        return modalDialogCustom.alert('Failed to create test file ' + newFile + ' ' + (error.message || error))
+      }
       this.fileManager.open(newFile)
       this.fileManager.syncEditor(newFile)
     })

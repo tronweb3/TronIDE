@@ -200,6 +200,10 @@ UniversalDAppUI.prototype.renderInstanceFromABI = function (contractABI, address
       llIError.innerText = text
     }
 
+    function isPayable (funABI) {
+      return funABI && (funABI.stateMutability === 'payable' || funABI.payable)
+    }
+
     setLLIError('')
     const fallback = txHelper.getFallbackInterface(contractABI)
     const receive = txHelper.getReceiveInterface(contractABI)
@@ -211,14 +215,15 @@ UniversalDAppUI.prototype.renderInstanceFromABI = function (contractABI, address
     }
     const amount = document.querySelector('#value').value
     const tokenAmount = document.querySelector('#tokenValue').value
-    if (amount !== '0' || tokenAmount !== '0') {
+    const hasValueOrToken = amount !== '0' || tokenAmount !== '0'
+    if (hasValueOrToken) {
       // check for numeric and receive/fallback
       if (!helper.isNumeric(amount)) {
         return setLLIError('Value to send should be a number')
       }
       if (!helper.isNumeric(tokenAmount)) {
         return setLLIError('TokenValue to send should be a number')
-      } else if (!receive && !(fallback && fallback.stateMutability === 'payable')) {
+      } else if (!receive && !isPayable(fallback)) {
         return setLLIError("In order to receive TRX or TRC10 transfer the contract should have either 'receive' or payable 'fallback' function")
       }
     }
@@ -255,12 +260,18 @@ UniversalDAppUI.prototype.renderInstanceFromABI = function (contractABI, address
         const hash = txHelper.encodeFunctionId(abi)
         if (hash === funcHash) {
           args.funABI = abi
+          if (hasValueOrToken && !isPayable(args.funABI)) {
+            return setLLIError('The called function should be payable if you send value')
+          }
           return self.runTransaction(false, args, null, `raw:0x${calldata.slice(8)}`, null)
         }
       }
     }
 
     if (!args.funABI) return setLLIError('Please define a \'Fallback\' function to send calldata and a either \'Receive\' or payable \'Fallback\' to send ethers')
+    if (hasValueOrToken && !isPayable(args.funABI)) {
+      return setLLIError('The called function should be payable if you send value')
+    }
     self.runTransaction(false, args, null, calldataInput.value, null)
   }
 
@@ -289,6 +300,7 @@ UniversalDAppUI.prototype.getCallButton = function (args) {
 }
 
 UniversalDAppUI.prototype.runTransaction = function (lookupOnly, args, valArr, inputsValues, outputOverride) {
+  const self = this
   const functionName = args.funABI.type === 'function' ? args.funABI.name : `(${args.funABI.type})`
   const logMsg = `${lookupOnly ? 'call' : 'transact'} to ${args.contractName}.${functionName}`
 
@@ -308,6 +320,14 @@ UniversalDAppUI.prototype.runTransaction = function (lookupOnly, args, valArr, i
 
   _paq.push(['trackEvent', 'udapp', callinfo, this.blockchain.getCurrentNetworkStatus().network.name])
   const params = args.funABI.type !== 'fallback' ? inputsValues : ''
+  const attemptContext = lookupOnly
+    ? {}
+    : {
+      operation: logMsg,
+      walletRequest: this.blockchain.getProvider() === 'injected',
+      retry: () => self.runTransaction(lookupOnly, args, valArr, inputsValues, outputOverride)
+    }
+  const logAttempt = (message, context) => this.logCallback(message, Object.assign({}, attemptContext, context))
   this.blockchain.runOrCallContractMethod(
     args.contractName,
     args.contractABI,
@@ -318,7 +338,7 @@ UniversalDAppUI.prototype.runTransaction = function (lookupOnly, args, valArr, i
     params,
     lookupOnly,
     logMsg,
-    this.logCallback,
+    logAttempt,
     outputCb,
     callbacksInContext.confirmationCb.bind(callbacksInContext),
     callbacksInContext.continueCb.bind(callbacksInContext),

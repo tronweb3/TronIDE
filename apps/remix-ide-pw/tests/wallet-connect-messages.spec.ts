@@ -8,8 +8,8 @@ import { dismissWelcomeModal } from './helpers'
 //
 // Covered:
 //  - no provider                          → "TronLink is not installed"        (visible toast, not just hover)
-//  - reject  (ready, resolves no account) → "Wallet connection was rejected…"  (distinct from locked)
-//  - locked  (ready === false, no account)→ "…Make sure it's unlocked…"
+//  - reject  (ready, resolves no account) → concise unlock/approve guidance
+//  - locked  (ready === false, no account)→ concise account/reload guidance
 //  - stale/dead bridge (cached account,   → optimistic connect then demotes to
 //    request never settles)                  the reload hint (liveness probe)
 
@@ -34,14 +34,18 @@ function injectedProvider (opts: { account: string; ready: boolean; requestMode:
       trx: { getBlock: async () => ({ blockID: '${NILE_GENESIS}' }), getNodeInfo: async () => ({}) },
       ready
     }
+    window.__walletConnectRequests = 0
     window.tronLink = {
       ready,
       tronWeb: window.tronWeb,
-      request: () => ${opts.requestMode === 'hang'
+      request: () => {
+        window.__walletConnectRequests += 1
+        return ${opts.requestMode === 'hang'
         ? 'new Promise(() => {})'
         : opts.requestMode === 'rejectLocked'
           ? "Promise.reject(Object.assign(new Error('TronLink is locked. Please unlock TronLink.'), { code: 'WALLET_LOCKED' }))"
-          : 'Promise.resolve([])'},
+          : 'Promise.resolve([])'}
+      },
       on: () => {}, removeListener: () => {}
     }
   })()`
@@ -94,8 +98,8 @@ test.describe('Wallet connect — distinct, visible messages', () => {
   test('TC-WAL-MSG-2: a denied connection shows the unified unlock/approve message', async ({ page }) => {
     await boot(page, injectedProvider({ account: '', ready: true, requestMode: 'resolveEmpty' }))
     await page.locator(HEADER_BTN).click()
-    await expect(page.locator(TOAST)).toContainText("didn't connect", { timeout: 15_000 })
-    await expect(page.locator(TOAST)).toContainText('approve the connection request')
+    await expect(page.locator(TOAST)).toContainText('did not connect', { timeout: 15_000 })
+    await expect(page.locator(TOAST)).toContainText('approve this site')
   })
 
   // An EXPLICIT lock error from TronLink still maps to the locked-specific message
@@ -104,8 +108,28 @@ test.describe('Wallet connect — distinct, visible messages', () => {
     await boot(page, injectedProvider({ account: '', ready: false, requestMode: 'rejectLocked' }))
     await page.locator(HEADER_BTN).click()
     const toast = page.locator(TOAST)
-    await expect(toast).toContainText('with at least one account', { timeout: 15_000 })
+    await expect(toast).toContainText('Unlock an account', { timeout: 15_000 })
     await expect(toast).not.toContainText('was rejected')
+    const prompt = page.locator('[data-id="headerWalletConnectPrompt"]')
+    await expect(prompt).toContainText('TronLink needs attention')
+    await expect(prompt).toContainText('Unlock an account')
+    await expect(page.locator('[data-id="headerWalletConnectRetry"]')).toBeVisible()
+
+    await page.locator('[data-id="headerWalletConnectRetry"]').click()
+    await expect.poll(() => page.evaluate(() => (window as any).__walletConnectRequests)).toBe(2)
+  })
+
+  test('TC-WAL-MSG-4: a pending approval shows a persistent action and countdown', { tag: '@gate' }, async ({ page }) => {
+    await boot(page, injectedProvider({ account: '', ready: false, requestMode: 'hang' }))
+    await page.locator(HEADER_BTN).click()
+
+    const prompt = page.locator('[data-id="headerWalletConnectPrompt"]')
+    await expect(prompt).toBeVisible()
+    await expect(prompt).toContainText('Open TronLink')
+    await expect(prompt).toContainText('Approve this site in the TronLink popup')
+    await expect(page.locator('[data-id="headerWalletConnectCountdown"]')).toHaveText(/\d+s remaining/)
+    await expect(page.locator(HEADER_BTN)).toContainText('Waiting for TronLink')
+    await expect(page.locator('[data-id="headerWalletConnectRetry"]')).toHaveCount(0)
   })
 
   // A provider whose objects linger after the extension was disabled: the cached

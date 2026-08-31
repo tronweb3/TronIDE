@@ -18,23 +18,42 @@
  */
 
 export class FramingService {
-  constructor (sidePanel, verticalIcon, mainView, resizeFeature) {
+  constructor (sidePanel, verticalIcon, mainView, resizeFeature, aiPanel) {
     this.sidePanel = sidePanel
     this.verticalIcon = verticalIcon
     this.mainPanel = mainView.getAppPanel()
     this.mainView = mainView
     this.resizeFeature = resizeFeature
+    this.aiPanel = aiPanel
+  }
+
+  isNarrowLayout () {
+    return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches
+  }
+
+  showSidePanel () {
+    if (this.isNarrowLayout() && this.aiPanel) this.aiPanel.conceal()
+    this.resizeFeature.showPanel()
+    const resizeHandle = this.resizeFeature.panel.nextElementSibling
+    if (resizeHandle) resizeHandle.style.display = 'block'
+  }
+
+  hideSidePanel () {
+    this.resizeFeature.hidePanel()
+    if (!this.isNarrowLayout()) return
+    const resizeHandle = this.resizeFeature.panel.nextElementSibling
+    if (resizeHandle) resizeHandle.style.display = 'none'
   }
 
   start (params) {
     this.sidePanel.events.on('toggle', () => {
-      this.resizeFeature.panel.clientWidth !== 0 ? this.resizeFeature.hidePanel() : this.resizeFeature.showPanel()
+      this.resizeFeature.panel.clientWidth !== 0 ? this.hideSidePanel() : this.showSidePanel()
     })
     this.sidePanel.events.on('showing', () => {
-      if (this.resizeFeature.panel.clientWidth === 0) this.resizeFeature.showPanel()
+      if (this.resizeFeature.panel.clientWidth === 0) this.showSidePanel()
     })
     this.mainPanel.events.on('toggle', () => {
-      this.resizeFeature.showPanel()
+      this.showSidePanel()
     })
 
     this.verticalIcon.select('filePanel')
@@ -53,11 +72,11 @@ export class FramingService {
     })
 
     if (params.minimizeterminal) this.mainView.minimizeTerminal()
-    if (params.minimizesidepanel) this.resizeFeature.hidePanel()
+    if (params.minimizesidepanel) this.hideSidePanel()
   }
 
   embed () {
     this.mainView.minimizeTerminal()
-    this.resizeFeature.hidePanel()
+    this.hideSidePanel()
   }
 }

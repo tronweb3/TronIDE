@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "tronide-tronbox-export",
+  "generator": {
+    "name": "TronIDE",
+    "version": "2.3.3"
+  },
+  "solc": {
+    "version": "0.8.20",
+    "source": "scenario"
+  },
+  "network": {
+    "source": "scenario",
+    "provider": "vm",
+    "name": "JavaScript VM (Tron)",
+    "id": null
+  },
+  "scenarioSource": {
+    "type": "workspace-file",
+    "path": "scenario.json",
+    "schemaVersion": 1,
+    "transactionCount": 2
+  },
+  "compatibility": {
+    "testedTronbox": {
+      "package": "tronbox",
+      "version": "4.8.0"
+    },
+    "apiBoundary": "generated-project-files"
+  }
+}

@@ -4,6 +4,12 @@ export interface TronTemplate {
   path: string
   description: string
   content: string
+  files?: TronTemplateFile[]
+}
+
+export interface TronTemplateFile {
+  path: string
+  content: string
 }
 
 export const TRON_TEMPLATES: TronTemplate[] = [
@@ -247,9 +253,138 @@ contract LibraryDeployment {
     }
 }
 `
+  },
+  {
+    id: 'prague-osaka-compatibility',
+    name: 'Prague / Osaka Compatibility',
+    path: 'contracts/P256Verifier.sol',
+    description: 'P-256 verification and Prague historical block-hash examples with deployment compatibility checks.',
+    content: `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+/// @title P-256 signature verification through the Osaka precompile.
+/// @notice Deploy only when TronIDE reports Osaka as Active.
+contract P256Verifier {
+    address internal constant P256_PRECOMPILE = address(0x100);
+
+    function verify(
+        bytes32 messageHash,
+        bytes32 r,
+        bytes32 s,
+        bytes32 publicKeyX,
+        bytes32 publicKeyY
+    ) external view returns (bool) {
+        (bool success, bytes memory result) = P256_PRECOMPILE.staticcall(
+            abi.encodePacked(messageHash, r, s, publicKeyX, publicKeyY)
+        );
+        return success && result.length == 32 && abi.decode(result, (uint256)) == 1;
+    }
+}
+`,
+    files: [
+      {
+        path: 'contracts/P256Verifier.sol',
+        content: `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+/// @title P-256 signature verification through the Osaka precompile.
+/// @notice Deploy only when TronIDE reports Osaka as Active.
+contract P256Verifier {
+    address internal constant P256_PRECOMPILE = address(0x100);
+
+    function verify(
+        bytes32 messageHash,
+        bytes32 r,
+        bytes32 s,
+        bytes32 publicKeyX,
+        bytes32 publicKeyY
+    ) external view returns (bool) {
+        (bool success, bytes memory result) = P256_PRECOMPILE.staticcall(
+            abi.encodePacked(messageHash, r, s, publicKeyX, publicKeyY)
+        );
+        return success && result.length == 32 && abi.decode(result, (uint256)) == 1;
+    }
+}
+`
+      },
+      {
+        path: 'contracts/PragueHistory.sol',
+        content: `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+/// @title Read recent and Prague-era historical block hashes.
+contract PragueHistory {
+    address internal constant HISTORY_CONTRACT = 0x0000F90827F1C53a10cb7A02335B175320002935;
+    uint256 internal constant HISTORY_WINDOW = 8191;
+
+    function historicalBlockHash(uint256 blockNumber) external view returns (bytes32 hash, bool available) {
+        if (blockNumber >= block.number) return (bytes32(0), false);
+
+        uint256 distance = block.number - blockNumber;
+        if (distance <= 256) {
+            hash = blockhash(blockNumber);
+            return (hash, hash != bytes32(0));
+        }
+        if (distance > HISTORY_WINDOW) return (bytes32(0), false);
+
+        (bool success, bytes memory result) = HISTORY_CONTRACT.staticcall(abi.encode(blockNumber));
+        if (!success || result.length != 32) return (bytes32(0), false);
+        hash = abi.decode(result, (bytes32));
+        return (hash, hash != bytes32(0));
+    }
+}
+`
+      },
+      {
+        path: 'tests/P256Verifier_test.sol',
+        content: `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "../contracts/P256Verifier.sol";
+
+/// @notice Minimal smoke test: an all-zero signature must never verify.
+contract P256VerifierTest {
+    function testInvalidSignatureReturnsFalse() external returns (bool) {
+        P256Verifier verifier = new P256Verifier();
+        bool valid = verifier.verify(bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0));
+        require(!valid, "zero signature unexpectedly verified");
+        return true;
+    }
+}
+`
+      },
+      {
+        path: 'README.md',
+        content: `# Prague / Osaka compatibility example
+
+This workspace demonstrates two protocol-dependent features:
+
+- \`P256Verifier.sol\` calls the P-256 verification precompile at \`0x100\` and requires **Osaka**.
+- \`PragueHistory.sol\` reads older block hashes from the Prague history contract and requires **Prague**.
+
+Open **Deploy & Run Transactions** before deployment. TronIDE reads \`getAllowTvmPrague\` and
+\`getAllowTvmOsaka\` from the selected node, scans creation and runtime bytecode, and blocks a
+deployment when a required upgrade is not active or cannot be verified.
+
+The JavaScript VM does not advertise these TRON chain parameters, so deployment of these examples
+is intentionally blocked there. Compile with a TRON-supported Solidity compiler, connect TronLink to
+Nile, confirm both badges show **Active**, and then deploy. Do not use the example with production keys
+or assets without an independent security review.
+
+Dynamic call targets cannot be identified by the first-pass bytecode scanner. A clean scan is therefore
+not a proof that a contract has no protocol dependency.
+`
+      }
+    ]
   }
 ]
 
 export function getTronTemplate (id: string): TronTemplate | undefined {
   return TRON_TEMPLATES.find((template) => template.id === id)
+}
+
+export function getTronTemplateFiles (template: TronTemplate): TronTemplateFile[] {
+  return template.files && template.files.length
+    ? template.files
+    : [{ path: template.path, content: template.content }]
 }

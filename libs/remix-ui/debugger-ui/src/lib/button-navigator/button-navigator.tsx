@@ -18,7 +18,7 @@
  */
 
 import React, { useState, useEffect } from 'react' // eslint-disable-line
-import { Tooltip } from 'antd'
+import Tooltip from 'antd/lib/tooltip'
 import './button-navigator.css'
 
 export const ButtonNavigation = ({ stepOverBack, stepIntoBack, stepIntoForward, stepOverForward, jumpOut, jumpPreviousBreakpoint, jumpNextBreakpoint, jumpToException, revertedReason, stepState, jumpOutDisabled }) => {

@@ -302,6 +302,15 @@ class GlobalSearchPanel {
     this.searchRequestId = 0
     this.flashKey = ''
     this._view = null
+    this._workspaceEpoch = 0
+    this._activeSearchIdentity = null
+    this._replaceIdentity = null
+    this._lastReplaceIdentity = null
+    this._workspaceEvents = null
+    if (this.fileManager && this.fileManager.events && typeof this.fileManager.events.on === 'function') {
+      this._workspaceEvents = () => this.invalidateWorkspaceContext()
+      this.fileManager.events.on('filesAllClosed', this._workspaceEvents)
+    }
   }
 
   render () {
@@ -394,6 +403,7 @@ class GlobalSearchPanel {
     let message = 'Type a keyword to search across workspace files'
     if (this.loading) message = this.longSearch ? 'Still searching…' : 'Searching workspace files…'
     else if (this.error && this.error.type === 'network') message = 'Search failed. Please try again.'
+    else if (this.error && this.error.type === 'workspace') message = 'Workspace changed. Search again.'
     else if (this.query.trim()) message = `${this.totalMatches}${this.truncated ? '+' : ''} results in ${this.fileMatches}${this.truncated ? '+' : ''} files · ${this.durationMs || 0}ms${this.skippedFiles ? ` · skipped ${this.skippedFiles} files` : ''}`
     return yo`
       <div class=${css.meta} data-id="globalSearchMeta">
@@ -419,6 +429,9 @@ class GlobalSearchPanel {
     }
     if (this.error && this.error.type === 'network') {
       return yo`<div class=${css.state}><div class=${css.stateTitle}>Search failed. Please try again.</div><button class="btn btn-sm btn-primary" onclick=${() => this.runSearchNow()}>Retry</button></div>`
+    }
+    if (this.error && this.error.type === 'workspace') {
+      return yo`<div class=${css.state}><div class=${css.stateTitle}>Workspace changed</div><div>Run the search again in the current workspace.</div></div>`
     }
     if (this.error && this.error.type === 'glob') {
       return yo`<div class=${css.state}><div class=${css.stateTitle}>Invalid glob pattern</div><div>Adjust Include / Exclude and search again.</div></div>`
@@ -536,6 +549,9 @@ class GlobalSearchPanel {
     this.showHistory = !query.trim()
     if (!query.trim()) {
       this.cancelSearch()
+      this.replacePreview = null
+      this._activeSearchIdentity = null
+      this._replaceIdentity = null
       this.updateState({ groups: [], results: [], totalMatches: 0, fileMatches: 0, scannedFiles: 0, skippedFiles: 0, warnings: [], error: null, loading: false, truncated: false })
       return
     }
@@ -557,7 +573,10 @@ class GlobalSearchPanel {
 
   toggleReplace () {
     this.showReplace = !this.showReplace
-    if (!this.showReplace) this.replacePreview = null
+    if (!this.showReplace) {
+      this.replacePreview = null
+      this._replaceIdentity = null
+    }
     if (this.showReplace && this.query.trim()) this.runSearchNow()
     else this.update()
   }
@@ -583,11 +602,17 @@ class GlobalSearchPanel {
     window.clearTimeout(this.searchTimer)
     const query = this.query.trim()
     if (!query) {
+      this.replacePreview = null
+      this._activeSearchIdentity = null
+      this._replaceIdentity = null
       this.updateState({ groups: [], results: [], totalMatches: 0, fileMatches: 0, scannedFiles: 0, warnings: [], error: null, loading: false, truncated: false })
       return
     }
 
     const requestId = ++this.searchRequestId
+    const searchEpoch = this._workspaceEpoch
+    const searchIdentity = this._captureWorkspaceIdentity()
+    this._activeSearchIdentity = { identity: searchIdentity, epoch: searchEpoch }
     this.longSearch = false
     this.updateState({ loading: true, error: null, warnings: [] })
     window.clearTimeout(this.longSearchTimer)
@@ -601,6 +626,10 @@ class GlobalSearchPanel {
     try {
       const files = await this.collectWorkspaceFiles()
       if (requestId !== this.searchRequestId) return
+      if (!this._isSearchContextCurrent(searchIdentity, searchEpoch)) {
+        this.invalidateWorkspaceContext()
+        return
+      }
       const searchResult = searchWorkspaceFiles(files, {
         query,
         includePattern: this.includePattern,
@@ -611,12 +640,16 @@ class GlobalSearchPanel {
         limits: DEFAULT_LIMITS
       })
       if (requestId !== this.searchRequestId) return
+      if (!this._isSearchContextCurrent(searchIdentity, searchEpoch)) {
+        this.invalidateWorkspaceContext()
+        return
+      }
       if (searchResult.error && searchResult.error.type === 'regex' && this.lastValidState) {
         this.restoreLastValidWithError(searchResult.error)
       } else {
         this.applySearchResult(searchResult)
       }
-      if (this.showReplace) this.refreshReplacePreview(files, query)
+      if (this.showReplace) this.refreshReplacePreview(files, query, searchIdentity, searchEpoch)
       if (!searchResult.error) this.saveHistory(query)
     } catch (error) {
       if (requestId !== this.searchRequestId) return
@@ -642,6 +675,62 @@ class GlobalSearchPanel {
     this.searchRequestId++
     this.loading = false
     this.longSearch = false
+    this.update()
+  }
+
+  _captureWorkspaceIdentity () {
+    try {
+      const provider = this.fileManager && typeof this.fileManager.fileProviderOf === 'function'
+        ? this.fileManager.fileProviderOf('/')
+        : null
+      const context = provider && typeof provider.captureMutationContext === 'function'
+        ? provider.captureMutationContext()
+        : null
+      return { provider, context, bound: Boolean(provider) }
+    } catch (error) {
+      return { provider: null, context: null, bound: false }
+    }
+  }
+
+  _isWorkspaceIdentityCurrent (identity) {
+    if (!identity) return false
+    const current = this._captureWorkspaceIdentity()
+    if (identity.bound !== current.bound) return false
+    if (identity.bound && identity.provider !== current.provider) return false
+    if (identity.context || current.context) {
+      return Boolean(identity.context && current.context &&
+        identity.context.workspace === current.context.workspace &&
+        identity.context.generation === current.context.generation)
+    }
+    return true
+  }
+
+  _isSearchContextCurrent (identity, epoch) {
+    return epoch === this._workspaceEpoch && this._isWorkspaceIdentityCurrent(identity)
+  }
+
+  invalidateWorkspaceContext () {
+    this._workspaceEpoch++
+    this.searchRequestId++
+    window.clearTimeout(this.searchTimer)
+    window.clearTimeout(this.longSearchTimer)
+    this.loading = false
+    this.longSearch = false
+    this._activeSearchIdentity = null
+    this._replaceIdentity = null
+    this._lastReplaceIdentity = null
+    this.replacePreview = null
+    this.lastReplaceUndo = []
+    this.results = []
+    this.groups = []
+    this.totalMatches = 0
+    this.fileMatches = 0
+    this.scannedFiles = 0
+    this.skippedFiles = 0
+    this.warnings = []
+    this.lastValidState = null
+    this.error = this.query.trim() ? { type: 'workspace', message: 'Workspace changed. Search again.' } : null
+    this.notifyStatus()
     this.update()
   }
 
@@ -680,7 +769,7 @@ class GlobalSearchPanel {
     return files
   }
 
-  refreshReplacePreview (files, query) {
+  refreshReplacePreview (files, query, identity, epoch) {
     this.replacePreview = createWorkspaceReplacePreview(files, {
       query,
       includePattern: this.includePattern,
@@ -690,29 +779,79 @@ class GlobalSearchPanel {
       useRegex: this.useRegex,
       limits: DEFAULT_LIMITS
     }, this.replacement)
+    this._replaceIdentity = { identity, epoch }
     this.update()
   }
 
   async applyReplace () {
     if (!this.replacePreview || !this.replacePreview.canApply) return
+    if (!this._replaceIdentity || !this._isSearchContextCurrent(this._replaceIdentity.identity, this._replaceIdentity.epoch)) {
+      this.invalidateWorkspaceContext()
+      return
+    }
     const updates = this.replacePreview.updates || []
     const ok = window.confirm(`Replace ${this.replacePreview.totalMatches} matches in ${updates.length} files?`)
     if (!ok) return
     const undo = updates.map((update) => ({ path: update.path, content: update.previousContent }))
-    for (const update of updates) {
-      await this.fileManager.writeFile(update.path, update.content)
+    try {
+      for (const update of updates) {
+        if (!this._isSearchContextCurrent(this._replaceIdentity.identity, this._replaceIdentity.epoch)) {
+          this.invalidateWorkspaceContext()
+          return
+        }
+        const context = this._replaceIdentity.identity.context
+        if (context) await this.fileManager.writeFile(update.path, update.content, context)
+        else await this.fileManager.writeFile(update.path, update.content)
+      }
+    } catch (error) {
+      if (!this._isSearchContextCurrent(this._replaceIdentity.identity, this._replaceIdentity.epoch)) {
+        this.invalidateWorkspaceContext()
+      } else {
+        this.error = { type: 'network', message: error && error.message ? error.message : String(error) }
+        this.update()
+      }
+      return
     }
     this.lastReplaceUndo = undo
+    // A successful write advances the provider mutation generation. Keep the
+    // undo snapshot bound to the *new* generation; retaining the pre-write
+    // identity would make our own writes look like an external workspace
+    // change and clear/disable Undo immediately.
+    this._lastReplaceIdentity = {
+      identity: this._captureWorkspaceIdentity(),
+      epoch: this._workspaceEpoch
+    }
     await this.runSearchNow()
   }
 
   async undoReplace () {
     if (!this.lastReplaceUndo.length) return
+    if (!this._lastReplaceIdentity || !this._isSearchContextCurrent(this._lastReplaceIdentity.identity, this._lastReplaceIdentity.epoch)) {
+      this.invalidateWorkspaceContext()
+      return
+    }
     const undo = this.lastReplaceUndo.slice()
-    for (const update of undo) {
-      await this.fileManager.writeFile(update.path, update.content)
+    try {
+      for (const update of undo) {
+        if (!this._isSearchContextCurrent(this._lastReplaceIdentity.identity, this._lastReplaceIdentity.epoch)) {
+          this.invalidateWorkspaceContext()
+          return
+        }
+        const context = this._lastReplaceIdentity.identity.context
+        if (context) await this.fileManager.writeFile(update.path, update.content, context)
+        else await this.fileManager.writeFile(update.path, update.content)
+      }
+    } catch (error) {
+      if (!this._isSearchContextCurrent(this._lastReplaceIdentity.identity, this._lastReplaceIdentity.epoch)) {
+        this.invalidateWorkspaceContext()
+      } else {
+        this.error = { type: 'network', message: error && error.message ? error.message : String(error) }
+        this.update()
+      }
+      return
     }
     this.lastReplaceUndo = []
+    this._lastReplaceIdentity = null
     await this.runSearchNow()
   }
 

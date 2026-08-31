@@ -22,9 +22,21 @@ test.describe('Home / landing page smoke', () => {
     await expect(page.locator('[data-id="landingWorkspaceStatus"]')).toBeVisible({ timeout: 30_000 })
     await expect(page.locator('[data-id="landingPrimaryActionsPanel"]')).toBeVisible()
     await expect(page.locator('[data-id="landingAdvancedToolsPanel"]')).toBeVisible()
+    await expect(page.locator('[data-id="landingDappStarterCard"] .fa-file-code')).toBeVisible()
+    await expect(page.locator('[data-id="landingAiTaskNileDeploy"] .fa-rocket')).toBeVisible()
+    await expect(page.locator('[data-id="landingWalletStatus"]')).toContainText(/Wallet: (Not connected|TronLink connected)/)
 
     // Surface any uncaught errors from boot
     expect(consoleErrors, consoleErrors.join('\n')).toEqual([])
+  })
+
+  test('informational Release Notes do not become the next startup tab', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('workspace', JSON.stringify(['releaseNotes'])))
+    await page.goto('/')
+    await dismissWelcomeModal(page)
+
+    await expect(page.locator('[data-id="landingRemix220Hero"]')).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-id="releaseNotesView"]')).toBeHidden()
   })
 
   test('advanced tools stay collapsed by default and can be expanded from primary actions', async ({ page }) => {
@@ -56,6 +68,66 @@ test.describe('Home / landing page smoke', () => {
     await expect.poll(() => page.evaluate(() => window.localStorage.getItem('tronide.home.advancedToolsOpen'))).toBe('true')
   })
 
+  test('TC-HOME-ACTION-1: rapid clicks trigger a Home action only once', { tag: '@gate' }, async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.removeItem('tronide.home.advancedToolsOpen'))
+    await page.goto('/')
+    await dismissWelcomeModal(page)
+
+    const toggle = page.locator('[data-id="landingAdvancedToolsToggle"]')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false', { timeout: 30_000 })
+
+    // Dispatch two clicks in the same turn. Without the leading-edge guard the
+    // second click closes the panel again; with it, the action runs only once.
+    await toggle.evaluate((element: HTMLElement) => {
+      element.click()
+      element.click()
+    })
+    await expect(page.locator('[data-id="landingAdvancedToolsContent"]')).toBeVisible()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+    // The toggle is re-rendered by the first click, so exercise the shared key:
+    // a new DOM button must still be blocked during the same cooldown window.
+    await toggle.click()
+    await expect(page.locator('[data-id="landingAdvancedToolsContent"]')).toBeVisible()
+
+    await page.waitForTimeout(700)
+    await toggle.click()
+    await expect(page.locator('[data-id="landingAdvancedToolsContent"]')).toHaveCount(0)
+  })
+
+  test('TC-HOME-ACTION-2: Create Contract suggests a Solidity file and Escape cancels it', { tag: '@gate' }, async ({ page }) => {
+    await page.goto('/')
+    await dismissWelcomeModal(page)
+
+    const createContract = page.locator('[data-id="quickStartCreateContract"]')
+    await expect(createContract).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-id="landingDappStarterCard"]')).toContainText('Add a TRON starter contract')
+
+    const walletCard = page.locator('[data-id="landingWalletConnectEntry"]')
+    const walletTitle = await page.locator('[data-id="landingWalletQuickActionTitle"]').innerText()
+    await expect(walletCard).toHaveAttribute('aria-label', walletTitle)
+
+    await createContract.click()
+    const editable = page.locator('div.remixui_items[contenteditable="true"]')
+    await expect(editable).toBeVisible({ timeout: 10_000 })
+    await expect(editable).toHaveText('NewContract.sol')
+    await expect(editable).toBeFocused()
+
+    await editable.press('Escape')
+    await expect(editable).toHaveCount(0)
+    const newContractTreeItem = page.locator('[data-id="treeViewLitreeViewItemNewContract.sol"]')
+    await expect(newContractTreeItem).toHaveCount(0)
+
+    // The Home action gate intentionally ignores a repeated click for 650 ms.
+    await page.waitForTimeout(700)
+    await createContract.click()
+    await expect(editable).toHaveText('NewContract.sol', { timeout: 10_000 })
+    await editable.press('Enter')
+
+    await expect(newContractTreeItem).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByRole('banner').getByText('NewContract.sol', { exact: true })).toBeVisible()
+  })
+
   test('tabbar compile shortcut starts disabled until a Solidity tab is active', async ({ page }) => {
     await page.goto('/')
     await dismissWelcomeModal(page)
@@ -81,10 +153,10 @@ test.describe('Home / landing page smoke', () => {
     if (await toggle.textContent().then((t) => /Show/.test(t || ''))) await toggle.click()
     await expect(page.locator('[data-id="landingGitWorkflowPanel"]')).toBeVisible()
 
-    // Export Workspace Zip → toast is sentence-case (was "preparing files ..")
+    // Export workspace ZIP → concise progress toast
     const download = page.waitForEvent('download')
     await page.locator('[data-id="landingGitPrepare"]').click()
-    await expect(page.locator('[data-shared="tooltipPopup"]').filter({ hasText: 'Preparing files for download' }).first())
+    await expect(page.locator('[data-shared="tooltipPopup"]').filter({ hasText: 'Preparing download' }).first())
       .toBeVisible({ timeout: 10_000 })
     await (await download).cancel()
 

@@ -62,8 +62,8 @@ export const listenToEvents = (editor, compileTabLogic) => (dispatch: React.Disp
     dispatch(setEditorMode('contentChanged'))
   })
 
-  compileTabLogic.compiler.event.register('loadingCompiler', () => {
-    dispatch(setCompilerMode('loadingCompiler'))
+  compileTabLogic.compiler.event.register('loadingCompiler', (url, usingWorker) => {
+    dispatch(setCompilerMode('loadingCompiler', url, usingWorker))
   })
 
   compileTabLogic.compiler.event.register('compilerLoaded', () => {

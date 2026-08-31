@@ -34,9 +34,13 @@
     margin-right: 10px;
   }
   .chat-set-content{
-    padding: 0 16px;
+    box-sizing: border-box;
+    padding: 0 16px 96px;
     overflow-y: auto;
-    max-height: calc(100vh - 146px);
+    // Keep the expanded settings above the composer. The textarea floats
+    // 20px above its 50px wrapper, so reserve that overlap plus the
+    // wrapper's 20px bottom padding on short laptop viewports.
+    max-height: calc(100vh - 186px);
   }
   .open-ai-title{
     margin-bottom: 5px;
@@ -102,6 +106,23 @@
     .ant-checkbox-label{
       color: var(--ai-text)
     }
+    .ai-local-metrics-panel,
+    .ai-local-metrics-panel p {
+      color: var(--ai-text);
+    }
+    .bank-model-load-button {
+      color: var(--ai-input-text);
+      border-color: var(--ai-input-border);
+      &:disabled,
+      &.disabled {
+        color: var(--ai-text);
+        border-color: var(--ai-input-border);
+        opacity: 0.8;
+      }
+    }
+    .bank-model-load-help {
+      color: var(--ai-text);
+    }
   }
   .context-wrap{
     margin-top: 20px;
@@ -113,6 +134,7 @@
   }
   .collapse-wrap{
     margin-top: 16px;
+    padding-bottom: 8px;
     text-align: center;
     color: var(--ai-title);
     &>span{

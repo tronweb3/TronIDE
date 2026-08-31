@@ -1,6 +1,7 @@
 import category from './categories'
 import algorithm from './algorithmCategories'
 import { AnalyzerModule, CompilationResult, ModuleAlgorithm, ModuleCategory, ReportObj, SupportedVersion } from './../../types'
+import { execution } from '@remix-project/remix-lib'
 
 type TronTransactionConfigLike = {
   feeLimit?: string | number
@@ -12,7 +13,7 @@ type TronTransactionConfigLike = {
 
 const CONFIG_KEYS: Array<keyof TronTransactionConfigLike> = ['feeLimit', 'callValue', 'tokenId', 'tokenValue', 'address']
 const MAX_SAFE_INTEGER = 9007199254740991
-const MIN_TRC10_ID = 1000000
+const MIN_TRC10_ID = execution.txIntegerUtils.TRC10_MIN_TOKEN_ID
 const BASE58_TRON_ADDRESS = /^T[1-9A-HJ-NP-Za-km-z]{33}$/
 const HEX_TRON_ADDRESS = /^41[0-9a-fA-F]{40}$/
 
@@ -79,7 +80,7 @@ function analyzeTronTransactionConfig (config: TronTransactionConfigLike): Array
     const value = config[field]
     if (value === undefined || value === null || value === '') return
     if (!isSafeIntegerLike(value)) {
-      findings.push({ ruleId: `tron-${formatRuleField(field)}-safe-integer`, message: `${String(field)} must be an integer within JavaScript safe integer range.` })
+      findings.push({ ruleId: `tron-${formatRuleField(field)}-safe-integer`, message: `${String(field)} must be a non-negative integer within JavaScript safe integer range.` })
     }
   })
 
@@ -112,7 +113,7 @@ function isSafeIntegerLike (value: string | number): boolean {
   if (value === '' || value === null || value === undefined) return false
   if (!/^-?\d+$/.test(String(value))) return false
   const numberValue = Number(value)
-  return Number.isFinite(numberValue) && Math.floor(numberValue) === numberValue && Math.abs(numberValue) <= MAX_SAFE_INTEGER
+  return Number.isFinite(numberValue) && Math.floor(numberValue) === numberValue && numberValue >= 0 && numberValue <= MAX_SAFE_INTEGER
 }
 
 function formatRuleField (field: keyof TronTransactionConfigLike): string {

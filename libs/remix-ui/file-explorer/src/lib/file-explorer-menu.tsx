@@ -18,7 +18,7 @@
  */
 
 import React, { useState, useEffect } from 'react' //eslint-disable-line
-import { Tooltip } from 'antd'
+import Tooltip from 'antd/lib/tooltip'
 import { FileExplorerMenuProps } from './types'
 
 export const FileExplorerMenu = (props: FileExplorerMenuProps) => {

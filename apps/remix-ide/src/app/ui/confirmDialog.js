@@ -35,6 +35,13 @@ var css = csjs`
 `
 
 function confirmDialog (tx, network, amount, gasEstimation, newGasPriceCb, initialParamsCb) {
+  const setConfirmHidden = function (hidden) {
+    el.modalOkHidden = hidden
+    const modal = el.closest('#modal-dialog')
+    const confirmBtn = modal && modal.querySelector('#modal-footer-ok')
+    if (confirmBtn) confirmBtn.hidden = hidden
+  }
+
   const onGasPriceChange = function () {
     var gasPrice = el.querySelector('#gasprice').value
     newGasPriceCb(gasPrice, (txFeeText, priceStatus) => {
@@ -46,25 +53,20 @@ function confirmDialog (tx, network, amount, gasEstimation, newGasPriceCb, initi
 
   const onMaxFeeChange = function () {
     var maxFee = el.querySelector('#maxfee').value
-    var confirmBtn = document.querySelector('#modal-footer-ok')
     var maxPriorityFee = el.querySelector('#maxpriorityfee').value
     if (parseInt(network.lastBlock.baseFeePerGas, 16) > Web3.utils.toWei(maxFee, 'Gwei')) {
       el.querySelector('#txfee').textContent = 'Transaction is invalid. Max fee should not be less than Base fee'
       el.gasPriceStatus = false
-      confirmBtn.hidden = true
+      setConfirmHidden(true)
       return
     } else {
       el.gasPriceStatus = true
-      confirmBtn.hidden = false
+      setConfirmHidden(false)
     }
 
     newGasPriceCb(maxFee, (txFeeText, priceStatus) => {
       el.querySelector('#txfee').textContent = txFeeText
-      if (priceStatus) {
-        confirmBtn.hidden = false
-      } else {
-        confirmBtn.hidden = true
-      }
+      setConfirmHidden(!priceStatus)
       el.gasPriceStatus = priceStatus
       el.txFee = { maxFee, maxPriorityFee, baseFeePerGas: network.lastBlock.baseFeePerGas }
     })

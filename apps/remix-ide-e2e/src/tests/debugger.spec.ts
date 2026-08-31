@@ -45,16 +45,40 @@ module.exports = {
   },
 
   'Should debug failing transaction': function (browser: NightwatchBrowser) {
+    const inputSelector = '*[data-id="string name, uint256 goal"]'
+    const inputValue = '"toast", 999'
+
     browser.waitForElementVisible('*[data-id="verticalIconsKindudapp"]')
       .clickLaunchIcon('udapp')
       .waitForElementPresent('*[data-id="universalDappUiTitleExpander"]')
       .click('*[data-id="universalDappUiTitleExpander"]')
-      .scrollAndClick('*[title="string name, uint256 goal"]')
-      .setValue('*[title="string name, uint256 goal"]', '"toast", 999')
+      .scrollAndClick(inputSelector)
+      .setValue(inputSelector, inputValue)
+      .assert.value(inputSelector, inputValue)
       .click('*[data-id="createProject - transact (not payable)"]')
+      .perform((done) => {
+        browser.waitUntil(function () {
+          return new Promise((resolve) => {
+            browser.execute(function () {
+              return document.querySelectorAll('*[data-shared="txLoggerDebugButton"]').length >= 2
+            }, [], (result) => resolve(Boolean(result.value)))
+          })
+        }, 60000, 250).perform(() => done())
+      })
+      // Prove the UI input was encoded into the transaction before inspecting
+      // debugger locals. This distinguishes input regressions from decoding bugs.
+      .testFunction('last', {
+        status: 'false Transaction mined but execution failed',
+        'decoded input': {
+          'string name': 'toast',
+          'uint256 goal': { type: 'BigNumber', hex: '0x03e7' }
+        }
+      })
       .debugTransaction(1)
       .pause(2000)
       .execute(removeWebpackDevOverlay)
+      .waitForElementContainsText('#FunctionPanel', 'createProject', 60000)
+      .waitForElementVisible('#stepdetail')
       .scrollAndClick('*[data-id="solidityLocals"]')
       .waitForElementContainsText('*[data-id="solidityLocals"]', 'toast', 60000)
       .waitForElementContainsText('*[data-id="solidityLocals"]', '999', 60000)
@@ -89,7 +113,38 @@ module.exports = {
   'Should jump through breakpoints': function (browser: NightwatchBrowser) {
     browser.waitForElementVisible('*[data-id="editorInput"]')
       .click('.ace_gutter-cell:nth-of-type(10)')
-      .click('.ace_gutter-cell:nth-of-type(20)')
+      // Ace virtualizes gutter rows. Scroll the editor before targeting line 20
+      // instead of assuming twenty gutter DOM nodes are rendered at once.
+      .executeAsync(function (done) {
+        const editor = (document.getElementById('input') as any)?.editor
+        if (!editor) return done({ found: false, reason: 'editor unavailable' })
+        editor.scrollToLine(20, true, true)
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const cells = Array.from(document.querySelectorAll('.ace_gutter-cell')) as HTMLElement[]
+          const cell = cells.find((item) => item.textContent.trim() === '20')
+          if (!cell) return done({ found: false, lines: cells.map((item) => item.textContent.trim()) })
+          const rect = cell.getBoundingClientRect()
+          cell.dispatchEvent(new MouseEvent('mousedown', {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            clientX: rect.left + 4,
+            clientY: rect.top + (rect.height / 2)
+          }))
+          cell.dispatchEvent(new MouseEvent('mouseup', {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            clientX: rect.left + 4,
+            clientY: rect.top + (rect.height / 2)
+          }))
+          done({ found: true, breakpoints: editor.session.getBreakpoints() })
+        }))
+      }, [], function (result) {
+        const value = result.value as { found: boolean, reason?: string, lines?: string[], breakpoints?: string[] }
+        this.assert.ok(value.found && value.breakpoints && value.breakpoints[19],
+          `line 20 breakpoint is registered after scrolling: ${JSON.stringify(value)}`)
+      })
       .waitForElementVisible('*[data-id="buttonNavigatorJumpPreviousBreakpoint"]')
       .click('*[data-id="buttonNavigatorJumpPreviousBreakpoint"]')
       .pause(2000)
@@ -130,7 +185,6 @@ module.exports = {
     */
     browser
       .clickLaunchIcon('solidity')
-      .setSolidityCompilerVersion('soljson-v0.6.13+commit.b8267195.js')
       .clickLaunchIcon('filePanel')
       .click('li[data-id="treeViewLitreeViewItemexternalImport.sol"')
       .testContracts('withABIEncoderV2.sol', sources[2]['withABIEncoderV2.sol'], ['test'])
@@ -177,11 +231,45 @@ module.exports = {
       .debugTransaction(6)
       .waitForElementVisible('*[data-id="slider"]')
       // .setValue('*[data-id="slider"]', '5000') // Like this, setValue doesn't work properly for input type = range
-      // eslint-disable-next-line dot-notation
-      .execute(function () { document.getElementById('slider')['value'] = '7450' }) // It only moves slider to 7450 but vm traces are not updated
-      .setValue('*[data-id="slider"]', new Array(3).fill(browser.Keys.RIGHT_ARROW)) // This will press NEXT 3 times and will update the trace details
-      .waitForElementPresent('*[data-id="treeViewDivtreeViewItemarray"]')
-      .click('*[data-id="treeViewDivtreeViewItemarray"]')
+      // Compiler versions produce different trace lengths. Walk the trace in
+      // bounded increments until the source-level locals decoder exposes the
+      // large array instead of relying on the historical hard-coded step 7450.
+      .executeAsync(function (done) {
+        const slider = document.getElementById('slider') as HTMLInputElement
+        const max = Number(slider?.max || 0)
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        const candidates = Array.from({ length: 61 }, (_, index) => Math.floor(max * (index + 1) / 62))
+        let index = 0
+        const snapshots: Array<{ step: number, value: string, locals: string }> = []
+        const visit = () => {
+          if (!slider || !setter || index >= candidates.length) return done({ max, found: null, snapshots })
+          const step = candidates[index++]
+          setter.call(slider, String(step))
+          slider.dispatchEvent(new Event('input', { bubbles: true }))
+          slider.dispatchEvent(new Event('change', { bubbles: true }))
+          setTimeout(() => {
+            const locals = document.querySelector('*[data-id="solidityLocals"]')?.textContent || ''
+            snapshots.push({ step, value: slider.value, locals })
+            const array = document.querySelector('*[data-id="treeViewDivtreeViewItemarray"]') as HTMLElement | null
+            if (!array) return visit()
+            // Expand the array and only stop once the first page contains the
+            // expected non-zero element. Early loop steps expose an array too,
+            // but all values are still zero and cannot exercise Load more.
+            array.click()
+            setTimeout(() => {
+              const expanded = document.querySelector('*[data-id="solidityLocals"]')?.textContent || ''
+              if (expanded.includes('9: 9 uint256')) return done({ max, found: step, snapshots })
+              array.click()
+              visit()
+            }, 150)
+          }, 550)
+        }
+        visit()
+      }, [], function (result) {
+        const value = result.value as { max: number, found: number | null, snapshots: Array<{ step: number, value: string, locals: string }> }
+        this.assert.ok(value.found !== null,
+          `array local is exposed at a compiler-independent trace step: ${JSON.stringify(value)}`)
+      })
       .waitForElementPresent('*[data-id="treeViewDivtreeViewLoadMore"]')
       .waitForElementContainsText('*[data-id="solidityLocals"]', '9: 9 uint256', 60000)
       .notContainsText('*[data-id="solidityLocals"]', '10: 10 uint256')
@@ -275,7 +363,7 @@ const sources = [
   {
     'withABIEncoderV2.sol': {
       content: `
-    pragma experimental ABIEncoderV2;
+    pragma solidity ^0.8.20;
 
     contract test {
     // 000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000015b38da6a701c568545dcfcb03fcb875f56beddc4

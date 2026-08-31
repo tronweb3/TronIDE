@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "release": "2.3.0",
+  "sourceDocument": {
+    "documentId": "10W-bsCqGmCmZWGOpcC-ZcLy1T_jBktW8qiUPa12vbtY",
+    "title": "TronIDE v2.3.0 功能介绍",
+    "url": "https://docs.google.com/document/d/10W-bsCqGmCmZWGOpcC-ZcLy1T_jBktW8qiUPa12vbtY/edit?tab=t.0#heading=h.n58knmiuphk4",
+    "tabId": "t.0",
+    "headingId": "h.n58knmiuphk4"
+  },
+  "sourceNote": "Representative screenshots from the v2.3.0 feature guide.",
+  "images": [
+    {
+      "id": "home-workbench",
+      "sourceImageIndex": 1,
+      "inlineObjectId": "kix.2n24cgqglayu",
+      "original": "home-workbench.png",
+      "webp": "home-workbench.webp",
+      "width": 2048,
+      "height": 1280,
+      "originalSha256": "172ea256b16b5990b67f01543403e2147f42ea1f71a438edd90e556049cb53ec",
+      "webpSha256": "e1b273de41f215d54a4de1bd7222f73b4e63f95001bf3b5d701c135637b707a3"
+    },
+    {
+      "id": "tronlink-environment",
+      "sourceImageIndex": 3,
+      "inlineObjectId": "kix.3gazrhmrv7ch",
+      "original": "tronlink-environment.png",
+      "webp": "tronlink-environment.webp",
+      "width": 640,
+      "height": 720,
+      "originalSha256": "c2fe0581e6ea05284d0ec63cebcc03c02ccd1b37b9a41a48991de55a1f01aa44",
+      "webpSha256": "3e2ff690191fa3aed10d4f314f1532dade2656b51e83911e5ae3059e5d07c926"
+    },
+    {
+      "id": "contract-verification",
+      "sourceImageIndex": 4,
+      "inlineObjectId": "kix.ip37euotmb5s",
+      "original": "contract-verification.png",
+      "webp": "contract-verification.webp",
+      "width": 640,
+      "height": 1708,
+      "originalSha256": "b580ee043828689e8cc34ebea2e8f0685254e43399330a6aa0c416323343411d",
+      "webpSha256": "4892671cecc22f9c558208362a0b53f502ddd6fae28a7820bafc74ab52cc6234"
+    },
+    {
+      "id": "ai-provider-picker",
+      "sourceImageIndex": 5,
+      "inlineObjectId": "kix.2z3tg5ismm6e",
+      "original": "ai-provider-picker.png",
+      "webp": "ai-provider-picker.webp",
+      "width": 680,
+      "height": 1708,
+      "originalSha256": "4cb3df6e0da887d2f3c3342a297d5871348aaeb3e636ccc71c57507224ae6242",
+      "webpSha256": "0b5914a1685656755c347b239e04e05eeec9b5f37b9017e23340f86e04d817fa"
+    },
+    {
+      "id": "tvm-debugger",
+      "sourceImageIndex": 10,
+      "inlineObjectId": "kix.80ibabequcx",
+      "original": "tvm-debugger.png",
+      "webp": "tvm-debugger.webp",
+      "width": 640,
+      "height": 1708,
+      "originalSha256": "c4a5c4706dfa230f4413685f7318abc5b3cd886160f40f07ba9406d1dcd3d238",
+      "webpSha256": "68a2b1d5629a76275aed459d378ebf4bac2e58ecd9d125929c0f8d7184b9664e"
+    },
+    {
+      "id": "tron-static-analysis",
+      "sourceImageIndex": 11,
+      "inlineObjectId": "kix.2i5gpljd7tok",
+      "original": "tron-static-analysis.png",
+      "webp": "tron-static-analysis.webp",
+      "width": 640,
+      "height": 1708,
+      "originalSha256": "55077c7b2e8b763446f52ebf76ccf0f96ff1715f67a9db97b5a36aa39f9a2ac4",
+      "webpSha256": "9935566e7097c6899f4dea85c22b870186e45b9cc33879914e3c694e9a8618c8"
+    }
+  ]
+}

@@ -29,6 +29,7 @@ export interface FileExplorerProps {
   contextMenuItems: MenuItems,
   removedContextMenuItems: MenuItems,
   displayInput?: boolean,
+  newFileName?: string,
   externalUploads?: EventTarget & HTMLInputElement
 }
 
@@ -68,7 +69,7 @@ export interface FileExplorerContextMenuProps {
   createNewFolder: (parentFolder?: string) => void,
   deletePath: (path: string | string[]) => void,
   renamePath: (path: string, type: string) => void,
-  hideContextMenu: () => void,
+  hideContextMenu: (restoreFocus?: boolean) => void,
   publishToGist?: (path?: string, type?: string) => void,
   pushChangesToGist?: (path?: string, type?: string) => void,
   publishFolderToGist?: (path?: string, type?: string) => void,

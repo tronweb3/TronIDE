@@ -335,6 +335,86 @@ var css = csjs`
     line-height: 1.3;
     color: #dc3545;
   }
+  .transactionAttempt {
+    margin: 4px 0;
+    padding: 7px 9px;
+    border: 1px solid color-mix(in srgb, var(--text-info) 34%, transparent);
+    border-left: 3px solid var(--info);
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--light) 94%, var(--info) 6%);
+    color: var(--text);
+    font-size: 11px;
+  }
+  .transactionAttempt[data-status='success'] {
+    border-left-color: var(--success);
+  }
+  .transactionAttempt[data-status='error'] {
+    border-left-color: var(--danger);
+  }
+  .transactionAttempt[data-status='canceled'] {
+    border-left-color: var(--warning);
+  }
+  .transactionAttemptHeader {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+  }
+  .transactionAttemptOperation {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .transactionAttemptStatus {
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, currentColor 9%, transparent);
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .transactionAttemptEvents {
+    margin: 6px 0 0;
+    padding-left: 18px;
+  }
+  .transactionAttemptEvents li {
+    display: grid;
+    grid-template-columns: 70px minmax(0, 1fr);
+    gap: 6px;
+    margin-top: 3px;
+    overflow-wrap: anywhere;
+  }
+  .transactionAttemptEvents time {
+    color: var(--text-info);
+    font-variant-numeric: tabular-nums;
+  }
+  .transactionAttemptEvents li[data-phase='error'] span {
+    color: var(--danger);
+  }
+  .transactionAttemptEvents li[data-phase='success'] span {
+    color: var(--success);
+  }
+  .transactionAttemptActions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 6px;
+  }
+  .transactionAttemptActions:empty {
+    display: none;
+  }
+  .transactionAttemptActions button {
+    min-height: 26px;
+    padding: 2px 8px;
+    border: 1px solid var(--secondary);
+    border-radius: 4px;
+    background: var(--light);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .transactionAttemptActions button:focus {
+    outline: 2px solid var(--info);
+    outline-offset: 1px;
+  }
   .extendWrapper {
     display: none;
   }

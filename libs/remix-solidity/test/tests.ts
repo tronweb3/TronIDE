@@ -5,3 +5,6 @@
 require('./runs.ts')
 require('./optimize.ts')
 require('./evm-version.ts')
+require('./compiler-input.ts')
+require('./compiler-load-race.ts')
+require('./compiler-helpers.ts')

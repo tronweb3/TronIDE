@@ -177,4 +177,57 @@ test.describe('Editor right-click context menu', () => {
     await expect(menu).toHaveCount(0)
     expect(await page.evaluate(() => (document.getElementById('input') as any).editor.getSelectedText())).toBe(before)
   })
+
+  // TC-ED-CTX-006: the menu used an undefined --text custom property with a
+  // dark fallback. On dark themes that produced dark text on a dark surface;
+  // disabled commands were effectively invisible. Exercise both a dark and a
+  // light built-in theme and measure the final, composited foreground.
+  test('TC-ED-CTX-006: menu commands stay readable in dark and light themes', { tag: '@gate' }, async ({ page }) => {
+    for (const theme of ['Dark', 'Light']) {
+      await page.addInitScript((themeName) => {
+        const key = 'config-v0.8:.remix.config'
+        const config = JSON.parse(window.localStorage.getItem(key) || '{}')
+        config['settings/theme'] = themeName
+        window.localStorage.setItem(key, JSON.stringify(config))
+      }, theme)
+      await openStorage(page)
+      await page.locator('#input .ace_content').click({ button: 'right' })
+      const menu = page.locator('[data-id="editorContextMenu"]')
+      await expect(menu).toBeVisible()
+
+      const result = await menu.evaluate((menuElement) => {
+        const parseRgb = (value: string) => {
+          const channels = (value.match(/[\d.]+/g) || []).slice(0, 3).map(Number)
+          if (channels.length !== 3) throw new Error(`Unsupported color: ${value}`)
+          return channels
+        }
+        const luminance = (channels: number[]) => channels
+          .map((value) => value / 255)
+          .map((value) => value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4))
+          .reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0)
+        const contrast = (first: number[], second: number[]) => {
+          const a = luminance(first)
+          const b = luminance(second)
+          return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
+        }
+        const background = parseRgb(getComputedStyle(menuElement).backgroundColor)
+        return Array.from(menuElement.querySelectorAll<HTMLElement>('[role="menuitem"]')).map((item) => {
+          const style = getComputedStyle(item)
+          const foreground = parseRgb(style.color)
+          const opacity = Number(style.opacity)
+          const composited = foreground.map((value, index) => (value * opacity) + (background[index] * (1 - opacity)))
+          return {
+            label: item.textContent,
+            disabled: item.getAttribute('aria-disabled') === 'true',
+            contrast: contrast(composited, background)
+          }
+        })
+      })
+
+      for (const item of result) {
+        expect(item.contrast, `${theme} ${item.label} contrast`).toBeGreaterThanOrEqual(4.5)
+      }
+      await page.keyboard.press('Escape')
+    }
+  })
 })

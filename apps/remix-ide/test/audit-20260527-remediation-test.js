@@ -20,24 +20,26 @@ function pathExists (relativePath) {
   return fs.existsSync(path.join(__dirname, '..', '..', '..', relativePath))
 }
 
-// The token is tab-scoped: sessionStorage supplies refresh continuity, while
-// localStorage/config remain forbidden so the credential does not outlive the
-// tab. These assertions pin both sides of that contract.
-test('GitHub token survives refresh only in the current tab', function (t) {
+// The browser keeps only a TronIDE BFF session handle. GitHub's access token
+// stays encrypted server-side and must never enter frontend storage or state.
+test('GitHub access uses only an opaque tab-scoped BFF session', function (t) {
   const source = readIdeSource('app/ui/landing-page/landing-page.js')
   const authSource = readIdeSource('lib/github-auth.js')
+  const bffSource = readIdeSource('lib/github-bff.js')
+  const oauthSource = readIdeSource('lib/github-oauth.js')
 
   t.notOk(/localStorage\.setItem\('tronide\.github\.token'/.test(source + authSource), 'GitHub token is never written to localStorage')
-  t.notOk(/localStorage\.setItem\('tronide\.github\.user'/.test(source + authSource), 'GitHub user metadata is never written to localStorage')
-  t.ok(/sessionStorage\.setItem\(key, value\)/.test(authSource), 'GitHub credentials are mirrored to the current tab session')
-  t.ok(/sessionStorage\.getItem\(key\)/.test(authSource), 'GitHub credentials are rehydrated after a refresh')
-  t.ok(/githubAuth\.getToken\(\)/.test(source), 'render mirrors the authoritative tab-session token store (lib/github-auth)')
-  t.notOk(/sessionStorage\.removeItem\('tronide\.github\.token'\)/.test(source), 'Home startup does not erase the refreshed session token')
-  t.notOk(/sessionStorage\.removeItem\('tronide\.github\.user'\)/.test(source), 'Home startup does not erase the refreshed session login')
+  t.notOk(/const TOKEN_KEY|function getToken|function setToken/.test(authSource), 'frontend token store API is removed')
+  t.ok(/const SESSION_KEY = 'tronide\.github\.session'/.test(authSource), 'only a TronIDE BFF session key is persisted')
+  t.ok(/githubAuth\.isConnected\(\)/.test(source), 'Home renders from BFF session state')
+  t.ok(/githubRepositoryRequest\(path, options\)/.test(source), 'Home routes GitHub REST calls through the BFF')
+  t.notOk(/https:\/\/api\.github\.com/.test(source), 'Home never calls GitHub REST directly')
+  t.ok(/X-TronIDE-Session/.test(bffSource), 'BFF requests use the opaque TronIDE session header')
+  t.notOk(/Authorization|Bearer/.test(bffSource), 'BFF client never creates a GitHub Authorization header')
+  t.notOk(/clientId|authorizeUrl|scope:/.test(oauthSource), 'OAuth client id, scopes, and authorize URL are server-owned')
+  t.notOk(/d\.token|\{ token/.test(oauthSource), 'OAuth popup never consumes or resolves a GitHub token')
   t.ok(/localStorage\.removeItem\('tronide\.github\.token'\)/.test(source), 'startup and disconnect scrub the legacy localStorage token entry')
-  t.ok(/localStorage\.removeItem\('tronide\.github\.user'\)/.test(source), 'startup and disconnect scrub the legacy localStorage user entry')
-  t.notOk(/id="githubTokenRemember"/.test(source), 'the "Remember in this browser" checkbox has been removed from the Connect Token modal')
-  t.ok(/Tokens stay in this browser tab, survive a refresh/.test(source), 'Connect Token modal advertises refresh-safe tab-only storage')
+  t.notOk(/Connect token \(PAT\)|promptPassphrase\('Connect with a GitHub token'/.test(source), 'browser PAT entry is removed')
   t.ok(/sanitizeGithubError/.test(source), 'GitHub error messages flow through a sanitizer before reaching the UI')
   t.ok(/\[redacted\]/.test(source), 'sanitizer redacts token-shaped substrings')
   t.end()
@@ -100,7 +102,8 @@ test('patched vulnerable dependencies are pinned in package.json and gist handle
   t.ok(/qs@6\.15\.2:/.test(lockfile), 'lockfile resolves qs@6.15.2')
   t.ok(/tmp@0\.2\.7:/.test(lockfile), 'lockfile resolves tmp@0.2.7')
   t.notOk(/require\(['"]request['"]\)/.test(handlerSource), 'gist-handler.js no longer imports the deprecated request module')
-  t.ok(/window\.fetch/.test(handlerSource), 'gist-handler.js fetches gists via window.fetch')
+  t.ok(/githubBff\.githubRequest/.test(handlerSource), 'authenticated gist requests use the BFF')
+  t.ok(/window\.fetch/.test(handlerSource), 'anonymous and raw gist content still use window.fetch')
   t.ok(/redirect:\s*'error'/.test(handlerSource), 'gist-handler.js disables cross-host redirects so CVE-2023-28155-style SSRF is not reachable through this path')
   t.end()
 })

@@ -135,9 +135,12 @@ function detectInjectedProvider () {
   return true
 }
 
-if (!detectInjectedProvider()) {
-  web3 = new Web3(new Web3.providers.HttpProvider('http://localhost:8545'))
-}
+// The VM provider is still needed when TronLink is already injected at module
+// load. Initializing it only when no wallet was detected left `web3` undefined,
+// so switching from Injected TronWeb to JavaScript VM produced transactions
+// without a sender and made the VM unusable until a reload without TronLink.
+web3 = new Web3(new Web3.providers.HttpProvider('http://localhost:8545'))
+detectInjectedProvider()
 
 /*
   trigger contextChanged, web3EndpointChanged
@@ -160,6 +163,13 @@ export class ExecutionContext {
     this._networkDetectionCacheKey = null
     this._networkDetectionBackoffUntil = 0
     this._lastNetworkStatus = null
+    // Monotonic identity for the active RPC context. A provider/network can
+    // move A -> B -> A between two async checks; comparing only the final
+    // provider name, network id, or host would miss that ABA transition and
+    // could attach B's RPC response to A's metadata.
+    this._providerContextEpoch = 0
+    this._providerContextObserved = false
+    this._providerContextIdentity = null
     // A TronLink re-injection (network switch / unlock / SW restart) rebinds the
     // shared tronWebInstance to a new node, so any cached network identity here is
     // stale. Flush it on rebind. This is a genuine provider identity change, not the
@@ -174,6 +184,7 @@ export class ExecutionContext {
     this._networkDetectionCacheKey = null
     this._lastNetworkStatus = null
     this._networkDetectionBackoffUntil = 0
+    if (this.executionContext === 'injected') this._observeProviderContext()
   }
 
   init (config) {
@@ -211,6 +222,30 @@ export class ExecutionContext {
     return this.executionContext
   }
 
+  _observeProviderContext () {
+    const context = this.executionContext
+    const instance = this.customWeb3[context] || (this.isVM() ? web3 : tronWebInstance)
+    const node = (instance && (instance.fullNode || instance.currentProvider || instance.solidityNode)) || null
+    const endpoint = (node && node.host) || ''
+    const identity = { context, instance, node, endpoint }
+    if (!this._providerContextObserved) {
+      this._providerContextObserved = true
+      this._providerContextIdentity = identity
+      return this._providerContextEpoch
+    }
+    const previous = this._providerContextIdentity
+    if (!previous || previous.context !== context || previous.instance !== instance || previous.node !== node || previous.endpoint !== endpoint) {
+      this._providerContextEpoch += 1
+      this._providerContextIdentity = identity
+    }
+    return this._providerContextEpoch
+  }
+
+  getProviderContextEpoch () {
+    if (this.executionContext === 'injected') detectInjectedProvider()
+    return this._observeProviderContext()
+  }
+
   getCurrentFork () {
     return this.currentFork
   }
@@ -224,8 +259,12 @@ export class ExecutionContext {
   }
 
   web3 () {
-    if (this.customWeb3[this.executionContext]) return this.customWeb3[this.executionContext]
+    if (this.customWeb3[this.executionContext]) {
+      this._observeProviderContext()
+      return this.customWeb3[this.executionContext]
+    }
     if (this.isVM()) {
+      this._observeProviderContext()
       return web3
     } else {
       // Re-sync to the live window.tronWeb before handing the instance to the
@@ -233,6 +272,7 @@ export class ExecutionContext {
       // the page sits idle (unlock / service-worker restart), and a stale
       // reference signs into a dead bridge so no popup ever appears (WAL-IDLE-1).
       if (this.executionContext === 'injected') detectInjectedProvider()
+      this._observeProviderContext()
       return tronWebInstance
     }
   }
@@ -296,6 +336,7 @@ export class ExecutionContext {
     // network probe fail and leaves the status indicator / WAL-NET-1 snapshot
     // baseline wrong (WAL-IDLE-1).
     if (this.executionContext === 'injected') detectInjectedProvider()
+    this._observeProviderContext()
     if (this.isVM()) {
       callback(null, { id: '-', name: JS_VM_TRON })
     } else if (tronWebInstance) {

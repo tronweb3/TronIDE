@@ -29,6 +29,8 @@ export interface RuntimeTransactionInput {
 export interface RuntimeTransactionSnapshot {
   account?: string
   network?: string
+  accountAtProbeStart?: string
+  accountChangedDuringProbe?: boolean
 }
 
 export interface RuntimeTransactionSummary {
@@ -161,7 +163,9 @@ export class DefaultRuntimeFacade implements RuntimeFacade {
     // Account is read synchronously from the injected provider, so a snapshot account that no
     // longer matches the current one — whether it changed OR vanished (disconnect/lock during the
     // pending signature) — must abort the broadcast. Fail closed on the fund-critical signal.
-    if (snapshot.account && snapshot.account !== current.account) {
+    if (current.accountChangedDuringProbe || (snapshot.account && current.accountAtProbeStart && snapshot.account !== current.accountAtProbeStart)) {
+      errors.push(WALLET_ERROR_MESSAGES[WALLET_ERROR_CODES.WALLET_ACCOUNT_CHANGED])
+    } else if (snapshot.account && snapshot.account !== current.account) {
       errors.push(WALLET_ERROR_MESSAGES[WALLET_ERROR_CODES.WALLET_ACCOUNT_CHANGED])
     }
 

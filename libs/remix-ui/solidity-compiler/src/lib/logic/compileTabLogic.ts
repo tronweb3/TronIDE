@@ -24,6 +24,7 @@ const Compiler = require('@remix-project/remix-solidity').Compiler
 const normalizeRuns = require('@remix-project/remix-solidity').normalizeRuns
 const parseOptimizeParam = require('@remix-project/remix-solidity').parseOptimizeParam
 const normalizeEvmVersion = require('@remix-project/remix-solidity').normalizeEvmVersion
+const parseRemappings = require('@remix-project/remix-solidity').parseRemappings
 const EventEmitter = require('events')
 const profile = {
   name: 'solidity-logic',
@@ -83,8 +84,19 @@ export class CompileTab extends Plugin {
     this.compiler.set('evmVersion', this.evmVersion)
   }
 
-  getCompilerState () {
+  async getCompilerState () {
+    await this.setCompilerMappings()
     return this.compiler.state
+  }
+
+  async setCompilerMappings () {
+    // Clear first so an unreadable file or a workspace switch can never reuse
+    // remappings loaded from the previous workspace.
+    this.compiler.set('remappings', [])
+    if (await this.fileManager.exists('remappings.txt')) {
+      const content = await this.fileManager.readFile('remappings.txt')
+      this.compiler.set('remappings', parseRemappings(content))
+    }
   }
 
   /**
@@ -95,14 +107,23 @@ export class CompileTab extends Plugin {
     this.compiler.set('language', lang)
   }
 
+  isCompilableSource (target) {
+    return typeof target === 'string' && /\.(sol|yul)$/i.test(target)
+  }
+
   /**
    * Compile a specific file of the file manager
    * @param {string} target the path to the file to compile
    */
-  compileFile (target) {
+  async compileFile (target) {
     if (!target) throw new Error('No target provided for compiliation')
+    // Markdown, JSON and other workspace files are editable but are not
+    // compiler inputs. Ignore them before touching the compiler so saving a
+    // README cannot surface a misleading Solidity parser error.
+    if (!this.isCompilableSource(target)) return Promise.resolve(false)
     const provider = this.fileManager.fileProviderOf(target)
     if (!provider) throw new Error(`cannot compile ${target}. Does not belong to any explorer`)
+    await this.setCompilerMappings()
     // Clear stale editor annotations up front. runCompiler (the toolbar path)
     // already does this, but a direct compileFile — the remix-plugin API and the
     // AI panel's compile tool — did not, so a previous compile's error markers
@@ -128,6 +149,13 @@ export class CompileTab extends Plugin {
 
   runCompiler (hhCompilation) {
     try {
+      // Ctrl/Cmd+S is also the editor's explicit save shortcut. Always persist
+      // the current buffer, but only invoke Solidity/Yul compilation for source
+      // files; non-contract files should be saved without validation noise.
+      this.fileManager.saveCurrentFile()
+      var currentFile = this.config.get('currentFile')
+      if (!this.isCompilableSource(currentFile)) return false
+
       if (this.fileManager.mode === 'localhost' && hhCompilation) {
         const { currentVersion, optimize, runs } = this.compiler.state
         if (currentVersion) {
@@ -150,9 +178,7 @@ export class CompileTab extends Plugin {
           })
         }
       }
-      this.fileManager.saveCurrentFile()
       this.event.emit('removeAnnotations')
-      var currentFile = this.config.get('currentFile')
       return this.compileFile(currentFile)
     } catch (err) {
       console.error(err)

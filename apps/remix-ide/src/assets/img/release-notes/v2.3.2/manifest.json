@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "release": "2.3.2",
+  "sourceDocument": {
+    "documentId": "13ijbhknKiCAQwEmhs52U_gCOFWGT9zCKkhdiv-FnCDI",
+    "title": "TronIDE v2.3.2 功能介绍",
+    "url": "https://docs.google.com/document/d/13ijbhknKiCAQwEmhs52U_gCOFWGT9zCKkhdiv-FnCDI/edit?tab=t.0#heading=h.5mvjj7kbg2w1",
+    "tabId": "t.0",
+    "headingId": "h.5mvjj7kbg2w1"
+  },
+  "sourceNote": "Representative screenshots from the v2.3.2 final delivery guide.",
+  "images": [
+    {
+      "id": "local-git",
+      "sourceImageIndex": 4,
+      "inlineObjectId": "kix.6bsapz78zwts",
+      "original": "local-git.jpg",
+      "webp": "local-git.webp",
+      "width": 340,
+      "height": 1015,
+      "originalSha256": "8d36aef1d5ac59fdfeafda93928c4c1786d0bb6d00d0e314a5f193eb0c7d171c",
+      "webpSha256": "aefa92d62382603461bc8c900d6dfe87be11396dbcf4658a9530b8772d3799ca"
+    },
+    {
+      "id": "github-account",
+      "sourceImageIndex": 5,
+      "inlineObjectId": "kix.thbjjol16hk",
+      "original": "github-account.jpg",
+      "webp": "github-account.webp",
+      "width": 380,
+      "height": 260,
+      "originalSha256": "49857bf371c006148feda878cfefaa3f5b8ba9e4f55c2a77258f55c3fce4ddcd",
+      "webpSha256": "c385d2965a28f6b44eed39670c902709d4c89000ae507ce426e5939272d245ab"
+    },
+    {
+      "id": "ai-tool-execution",
+      "sourceImageIndex": 7,
+      "inlineObjectId": "kix.89s9xubxbvn",
+      "original": "ai-tool-execution.jpg",
+      "webp": "ai-tool-execution.webp",
+      "width": 350,
+      "height": 1185,
+      "originalSha256": "29688296d363eb3e70f65b8ce36d7fc7e80bf76e33c4a0a40854662dad5f19d6",
+      "webpSha256": "d862221eb1f0eb9da5a98e02b381945f3dd14523fc7f4bb59ebd99390abd181b"
+    },
+    {
+      "id": "editor-context-menu",
+      "sourceImageIndex": 10,
+      "inlineObjectId": "kix.98dt4xi6l094",
+      "original": "editor-context-menu.jpg",
+      "webp": "editor-context-menu.webp",
+      "width": 900,
+      "height": 560,
+      "originalSha256": "e484be549863a3550136dc6426597cec8ada6492a90a2baca897770a0d972b2e",
+      "webpSha256": "89a189904e75574bef4a9a030dd22b55e20f0d4e6db6b4b786980555f2033ba7"
+    },
+    {
+      "id": "static-analysis-summary",
+      "sourceImageIndex": 12,
+      "inlineObjectId": "kix.whtba39uy3x7",
+      "original": "static-analysis-summary.jpg",
+      "webp": "static-analysis-summary.webp",
+      "width": 430,
+      "height": 650,
+      "originalSha256": "51df91905cc143b381b075f116837e1cf56895f6d7ed0d54a6ec341180bb0090",
+      "webpSha256": "e4aab60ee2f3237170b870099e30a564be15e4bb087f6ba97fc54ba87271d0af"
+    },
+    {
+      "id": "debugger-environment-boundary",
+      "sourceImageIndex": 17,
+      "inlineObjectId": "kix.22omccytn7mv",
+      "original": "debugger-environment-boundary.jpg",
+      "webp": "debugger-environment-boundary.webp",
+      "width": 1094,
+      "height": 576,
+      "originalSha256": "4bc2c82a132361cba606b25d379ef1c5038377776829cdf9f4e8e1645eb491a5",
+      "webpSha256": "a1c2f6e9d4fd85ce29bab0c2bbed345eda1b7c20b17418ba094677b4dcad99da"
+    }
+  ]
+}

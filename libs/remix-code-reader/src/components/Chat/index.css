@@ -1,6 +1,7 @@
 .chat-wapper {
   position: relative;
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 0 0 20px;
@@ -8,10 +9,16 @@
 .chat-wapper .chat-content-outerlayer-wrapper {
   position: relative;
   flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 .chat-wapper .chat-content-outerlayer-wrapper .chat-content-out {
   overflow: hidden;
-  height: calc(100vh - 116px);
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 46px;
 }
 .chat-wapper .chat-content-outerlayer-wrapper .ant-collapse-content-box {
   padding-left: 0 !important;
@@ -60,10 +67,10 @@
   cursor: pointer;
 }
 .chat-wapper .chat-content-wrapper {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 0 15px 40px;
-  margin-top: 46px;
 }
 .chat-wapper .chat-content-wrapper::-webkit-scrollbar {
   width: 2px;
@@ -149,7 +156,7 @@
   margin-right: 10%;
 }
 .chat-wapper .chat-content-wrapper .other-dialogue-item .dialogue-wrapper > span {
-  color: #91979D;
+  color: var(--ai-text);
   font-size: 14px;
   line-height: 20px;
 }
@@ -229,7 +236,7 @@
   margin: 54px 0;
 }
 .chat-wapper .chat-content-wrapper .session-dialogue-item-text {
-  color: #C2C9D1;
+  color: var(--ai-text);
   margin: 0 10px;
 }
 .chat-wapper .chat-content-wrapper .session-dialogue-item-line {
@@ -242,7 +249,11 @@
   position: relative;
   height: 50px;
   flex-shrink: 0;
-  z-index: 1;
+  /* Keep the composer above the expanded settings panel. The settings
+     content can be taller than the panel, so its notice must not cover the
+     input border or send button. */
+  z-index: 101;
+  background-color: var(--ai-top-bg);
 }
 .chat-wapper .chat-input-wrapper .textarea-wrapper {
   position: absolute;
@@ -360,7 +371,7 @@
   bottom: -16px;
   font-size: 12px;
   line-height: 1;
-  color: #91979D;
+  color: var(--ai-text);
 }
 .chat-wapper .chat-example-wrapper {
   position: absolute;

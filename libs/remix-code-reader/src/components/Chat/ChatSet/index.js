@@ -14,10 +14,14 @@
  * limitations under the License.
  */
 
-import React, { useState ,useRef, useEffect} from 'react'
+import React, { useState ,useRef, useEffect, useLayoutEffect} from 'react'
 import './index.css'
 import IconComponent from '../../common/IconComponent'
-import { Input, Select ,Checkbox} from 'antd'
+import Input from 'antd/lib/input'
+import Select from 'antd/lib/select'
+import Checkbox from 'antd/lib/checkbox'
+import { WORKSPACE_ACTION_VENDORS as WORKSPACE_ACTION_VENDOR_LIST } from '../../../services/aiToolProtocolAdapters'
+import { AI_ENDPOINT_TYPE, BANK_OF_AI_ACCOUNT_URL, BANK_OF_AI_ENABLED, BANK_OF_AI_KEY_URL, BANK_OF_AI_VENDOR, DEFAULT_AI_ENDPOINT_TYPE, DEFAULT_AI_MODEL, DEFAULT_AI_VENDOR, bankOfAIModelFallbacks, fetchBankOfAIModels, isBankModelLoadContextCurrent, isOfficialBankOfAIBaseUrl, isSafeAIBaseUrl, providerApiKeyBinding, providerEndpointOrigin, resolveProviderApiKey } from '../../../services/aiProviderConfig'
 
 const contextOptionsData = [
   {
@@ -43,10 +47,20 @@ const contextOptionsData = [
 ]
 
 const aiModelVendor={
+  ...(BANK_OF_AI_ENABLED ? {
+    [BANK_OF_AI_VENDOR]: {
+      defaultValue: DEFAULT_AI_MODEL,
+      findMyAPIKeyUrl: BANK_OF_AI_KEY_URL,
+      models: bankOfAIModelFallbacks[DEFAULT_AI_ENDPOINT_TYPE]
+    }
+  } : {}),
   'Anthropic':{
     defaultValue:'claude-opus-4-8',
     findMyAPIKeyUrl:'https://console.anthropic.com/settings/keys',
     models:[{
+      value:'claude-opus-5',
+      label:'Claude Opus 5',
+    },{
       value:'claude-opus-4-8',
       label:'Claude Opus 4.8',
     },{
@@ -58,9 +72,6 @@ const aiModelVendor={
     },{
       value:'claude-sonnet-4-6',
       label:'Claude Sonnet 4.6',
-    },{
-      value:'claude-sonnet-4-5',
-      label:'Claude Sonnet 4.5',
     },{
       value:'claude-haiku-4-5-20251001',
       label:'Claude Haiku 4.5',
@@ -135,17 +146,17 @@ const aiModelVendor={
       label:'Grok Code Fast 1',
     }]
   },
-  // 'DeepSeek':{
-  //   defaultValue:'',
-  //   findMyAPIKeyUrl:'https://platform.deepseek.com/api_keys',
-  //   models:[{
-  //     value:'deepseek-reasoner',
-  //     label:'DeepSeek R1',
-  //   },{
-  //     value:'deepseek-chat',
-  //     label:'DeepSeek V3',
-  //   }]
-  // },
+  'DeepSeek':{
+    defaultValue:'deepseek-chat',
+    findMyAPIKeyUrl:'https://platform.deepseek.com/api_keys',
+    models:[{
+      value:'deepseek-reasoner',
+      label:'DeepSeek Reasoner',
+    },{
+      value:'deepseek-chat',
+      label:'DeepSeek Chat',
+    }]
+  },
   'Qwen':{
     defaultValue:'',
     findMyAPIKeyUrl:'https://www.alibabacloud.com/help/zh/model-studio/first-api-call-to-qwen#5058e161041ps',
@@ -164,6 +175,14 @@ const aiModelVendor={
       label:'Qwen3 Coder Flash',
     }]
   },
+  'OpenAI-compatible':{
+    defaultValue:'gpt-4o-mini',
+    findMyAPIKeyUrl:'',
+    models:[{
+      value:'gpt-4o-mini',
+      label:'Gateway default (gpt-4o-mini)',
+    }]
+  },
 }
 
 export const aiModelName={
@@ -176,11 +195,11 @@ export const aiModelName={
   'gpt-4o':'GPT-4o',
   'gpt-4':'GPT-4',
   'gpt-3.5-turbo':'GPT-3.5',
+  'claude-opus-5':'Claude Opus 5',
   'claude-opus-4-8':'Claude Opus 4.8',
   'claude-opus-4-7':'Claude Opus 4.7',
   'claude-sonnet-5':'Claude Sonnet 5',
   'claude-sonnet-4-6':'Claude Sonnet 4.6',
-  'claude-sonnet-4-5':'Claude Sonnet 4.5',
   'claude-haiku-4-5-20251001':'Claude Haiku 4.5',
   'gemini-3.0-pro':'Gemini 3.0 Pro',
   'gemini-2.5-pro':'Gemini 2.5 Pro',
@@ -190,13 +209,16 @@ export const aiModelName={
   'grok-4':'Grok 4',
   'grok-4-fast-reasoning':'Grok 4 Fast',
   'grok-code-fast-1':'Grok Code Fast 1',
-  // 'deepseek-reasoner':'DeepSeek R1',
-  // 'deepseek-chat':'DeepSeek V3',
+  'deepseek-reasoner':'DeepSeek Reasoner',
+  'deepseek-chat':'DeepSeek Chat',
   'qwen3.7':'Qwen 3.7',
   'qwen3-max':'Qwen3 Max',
   'qwen3-coder-plus':'Qwen3 Coder Plus',
   'qwen3-coder-flash':'Qwen3 Coder Flash',
+  'gpt-4o-mini':'GPT-4o mini',
 }
+
+const WORKSPACE_ACTION_VENDORS = new Set(WORKSPACE_ACTION_VENDOR_LIST)
 
 export const apikeyRe= /^[a-zA-Z0-9-_]{35,164}$/;
 
@@ -220,15 +242,13 @@ const saveBaseUrl = (vendor, url) => {
 // non-loopback relay. Allowed: https (any host), or http on
 // localhost / 127.0.0.1 / [::1].
 export const baseUrlLooksValid = (u) => {
-  try {
-    const p = new URL(u)
-    if (p.protocol === 'https:') return true
-    return p.protocol === 'http:' && /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(p.host)
-  } catch (e) { return false }
+  const raw = String(u || '').trim()
+  return !!raw && isSafeAIBaseUrl(raw)
 }
 
 const contextOptions = contextOptionsData.map((o) => ({
   value: o.value,
+  title: o.title,
   label: (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <div style={{ fontWeight: 600 }}>{o.title}</div>
@@ -237,29 +257,148 @@ const contextOptions = contextOptionsData.map((o) => ({
   )
 }))
 
-const ChatSet = ({ gptvHandle, apiKeyHandle,contextHandle,collapseHandle,enableStreamingHandle,enableStreaming ,getAiModelVendor, baseUrlHandle, enableWorkspaceActions, workspaceActionsHandle}) => {
+const ChatSet = ({ gptvHandle, apiKeyHandle,contextHandle,collapseHandle,enableStreamingHandle,enableStreaming ,getAiModelVendor, endpointTypeHandle, baseUrlHandle, enableWorkspaceActions, workspaceActionsHandle, enableLocalMetrics, localMetrics, localMetricsHandle, clearLocalMetricsHandle, panelVisible}) => {
   const [openEye, setOpenEye] = useState(false)
   const [context, setContext] = useState('none')
-  const [modelVendor, setModelVendor] = useState('Anthropic')
-  const [modelVersion, setModelVersion] = useState(aiModelVendor[modelVendor]?.defaultValue||aiModelVendor[modelVendor]?.models[0]?.value)
+  const [modelVendor, setModelVendor] = useState(DEFAULT_AI_VENDOR)
+  const [endpointType, setEndpointType] = useState(DEFAULT_AI_ENDPOINT_TYPE)
+  const [modelVersion, setModelVersion] = useState(DEFAULT_AI_MODEL)
   const [apiKey, setApiKey] = useState('')
-  const [baseUrl, setBaseUrl] = useState(() => loadBaseUrl('Anthropic'))
+  const [baseUrl, setBaseUrl] = useState(() => loadBaseUrl(DEFAULT_AI_VENDOR))
   const [urlTip, setUrlTip] = useState(false)
+  const [bankModels, setBankModels] = useState(() => ({
+    [AI_ENDPOINT_TYPE.ANTHROPIC]: bankOfAIModelFallbacks[AI_ENDPOINT_TYPE.ANTHROPIC],
+    [AI_ENDPOINT_TYPE.OPENAI]: bankOfAIModelFallbacks[AI_ENDPOINT_TYPE.OPENAI]
+  }))
+  const [bankModelLoad, setBankModelLoad] = useState({ loading: false, error: '', loaded: false })
   const timerRef = useRef();
   const [keyTip, setKeyTip] = useState(false);
+  const apiKeyInputRef = useRef(null);
+  // Provider + endpoint-origin scoped keys live only for this mounted panel.
+  // This lets a legacy custom-gateway key survive a compatible provider switch
+  // without ever writing credentials to storage or forwarding it cross-origin.
+  const apiKeysRef = useRef({})
+  const modelVendorRef = useRef(DEFAULT_AI_VENDOR)
+  const endpointTypeRef = useRef(DEFAULT_AI_ENDPOINT_TYPE)
+  const modelVersionRef = useRef(DEFAULT_AI_MODEL)
+  const apiKeyRef = useRef('')
+  // The text field may temporarily contain an invalid URL while it is being
+  // edited. This ref mirrors the last validated URL actually passed to Chat,
+  // so key bindings follow the real request destination rather than raw text.
+  const activeBaseUrlRef = useRef(baseUrl.trim() && baseUrlLooksValid(baseUrl.trim()) ? baseUrl.trim() : '')
+  const bankModelLoadControllerRef = useRef(null)
+  const bankModelLoadGenerationRef = useRef(0)
+  const mountedRef = useRef(true)
+  const apiKeyInputNameRef = useRef(`tronide-ai-api-key-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const apiKeyEditingRef = useRef(false);
   // live mirror of the workspace-actions toggle — the streaming checkbox is
   // meaningless while the (non-streaming) tool loop is active
   const [waOn, setWaOn] = useState(!!enableWorkspaceActions);
+  const [metricsOn, setMetricsOn] = useState(enableLocalMetrics !== false);
   // auto-re-mask backstop for the revealed API key
   const revealTimerRef = useRef(null);
   useEffect(() => () => { if (revealTimerRef.current) clearTimeout(revealTimerRef.current) }, []);
+  useEffect(() => setMetricsOn(enableLocalMetrics !== false), [enableLocalMetrics]);
+
+  const endpointOriginFor = (vendor = modelVendorRef.current, requestUrl = activeBaseUrlRef.current) =>
+    providerEndpointOrigin({ vendor, baseUrl: requestUrl })
+
+  const bindingFor = (vendor = modelVendorRef.current, requestUrl = activeBaseUrlRef.current) =>
+    providerApiKeyBinding({ vendor, endpointOrigin: endpointOriginFor(vendor, requestUrl) })
+
+  const rememberApiKey = (vendor, requestUrl, value) => {
+    const binding = bindingFor(vendor, requestUrl)
+    const key = String(value || '').trim()
+    if (!binding) return
+    if (key) apiKeysRef.current[binding] = key
+    else delete apiKeysRef.current[binding]
+  }
+
+  const cancelBankModelLoad = (resetState = true) => {
+    bankModelLoadGenerationRef.current += 1
+    if (bankModelLoadControllerRef.current) bankModelLoadControllerRef.current.abort()
+    bankModelLoadControllerRef.current = null
+    if (resetState && mountedRef.current) setBankModelLoad({ loading: false, error: '', loaded: false })
+  }
+
+  useEffect(() => () => {
+    mountedRef.current = false
+    bankModelLoadGenerationRef.current += 1
+    if (bankModelLoadControllerRef.current) bankModelLoadControllerRef.current.abort()
+    bankModelLoadControllerRef.current = null
+  }, [])
+
+  const clearApiKey = () => {
+    cancelBankModelLoad()
+    // Assign the DOM property too: browsers can restore a password value after
+    // React has rendered an empty controlled input without updating React state.
+    const input = apiKeyInputRef.current && apiKeyInputRef.current.input
+    if (input) input.value = ''
+    setApiKey('')
+    apiKeyRef.current = ''
+    const binding = bindingFor()
+    if (binding) delete apiKeysRef.current[binding]
+    // Clearing a browser-restored or replaced value must also clear the
+    // advisory format hint. An empty field means no key has been entered,
+    // never an invalid key.
+    setKeyTip(false)
+    apiKeyHandle && apiKeyHandle('')
+  }
+
+  // A freshly mounted settings panel has no trustworthy provider+origin
+  // provenance for a key retained by a parent component or browser restore.
+  // Fail closed before paint instead of adopting it as a Bank credential. A
+  // normal accordion collapse does not destroy this panel, so an active
+  // in-memory session is unaffected; a true remount intentionally clears it.
+  useLayoutEffect(() => {
+    apiKeyEditingRef.current = false
+    clearApiKey()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  modelVendorRef.current = modelVendor
+  endpointTypeRef.current = endpointType
+  modelVersionRef.current = modelVersion
+  useEffect(() => {
+    // Some browsers/password managers restore the field seconds after load.
+    // Keep removing native restoration until the user intentionally focuses
+    // the field; a real pasted/typed key is then left alone.
+    const clearRestoredKey = () => {
+      const input = apiKeyInputRef.current && apiKeyInputRef.current.input
+      if (!apiKeyEditingRef.current && input?.value) clearApiKey()
+    }
+    const interval = window.setInterval(clearRestoredKey, 250)
+    return () => window.clearInterval(interval)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const clearBeforeRestore = () => {
+      apiKeysRef.current = {}
+      clearApiKey()
+    }
+    window.addEventListener('pagehide', clearBeforeRestore)
+    window.addEventListener('beforeunload', clearBeforeRestore)
+    return () => {
+      window.removeEventListener('pagehide', clearBeforeRestore)
+      window.removeEventListener('beforeunload', clearBeforeRestore)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Hiding the whole AI panel keeps this React tree mounted for fast reopen.
+  // Explicitly clear both copies of the key when that happens; collapsing only
+  // the settings accordion must keep it for the active chat session.
+  useEffect(() => {
+    if (panelVisible !== false) return
+    apiKeyEditingRef.current = false
+    setOpenEye(false)
+    setKeyTip(false)
+    apiKeysRef.current = {}
+    clearApiKey()
+  }, [panelVisible]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Push the persisted request URL for the initial vendor up on mount, so a
   // saved gateway is used even if the user never touches the field again.
   // Gate on baseUrlLooksValid: a plain-http non-loopback URL persisted by an
   // older build must not be used — fall back to the official endpoint.
   useEffect(() => {
-    const saved = loadBaseUrl('Anthropic').trim()
+    const saved = loadBaseUrl(DEFAULT_AI_VENDOR).trim()
     if (saved && baseUrlLooksValid(saved)) baseUrlHandle && baseUrlHandle(saved)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -271,6 +410,9 @@ const ChatSet = ({ gptvHandle, apiKeyHandle,contextHandle,collapseHandle,enableS
     // stored key must be trimmed too — otherwise a key can look accepted here
     // while the request goes out with the whitespace and 401s at the vendor.
     const v = raw.trim()
+    cancelBankModelLoad()
+    rememberApiKey(modelVendor, activeBaseUrlRef.current, v)
+    apiKeyRef.current = v
     apiKeyHandle && apiKeyHandle(v)
     setApiKey(raw)
     // Advisory only — never blocks; requests use the key either way. An empty
@@ -286,34 +428,134 @@ const ChatSet = ({ gptvHandle, apiKeyHandle,contextHandle,collapseHandle,enableS
     }
   }
 
-  const onSelectChange = (e) => {
+  const onSelectChange = (e, { cancelModelLoad = true } = {}) => {
+    if (cancelModelLoad) cancelBankModelLoad()
     gptvHandle && gptvHandle(e)
+    modelVersionRef.current = e
     setModelVersion(e)
     gtag("event", "click", {event_category: "ai_user_action",event_label: `select_model_${e}`})
   }
 
   const onSelectVendorChange = (e) => {
-    setModelVendor(e)
-    onSelectChange(aiModelVendor[e]?.defaultValue||aiModelVendor[e]?.models[0]?.value)
-    getAiModelVendor&&getAiModelVendor(e)
-    apiKeyHandle && apiKeyHandle('')
-    setKeyTip(false);
-    setApiKey('')
+    cancelBankModelLoad()
+    const previousVendor = modelVendorRef.current
+    const previousUrl = activeBaseUrlRef.current
+    const previousOrigin = endpointOriginFor(previousVendor, previousUrl)
+    const previousKey = String(apiKeyRef.current || '').trim()
+    rememberApiKey(previousVendor, previousUrl, previousKey)
+
     // Each vendor keeps its own saved request URL — load the new vendor's one.
-    const nextUrl = loadBaseUrl(e)
+    const savedNextUrl = loadBaseUrl(e)
+    // A legacy Anthropic key is commonly paired with a custom relay. Carry
+    // that URL across the Anthropic -> Bank of AI migration. The resolver
+    // below copies the key only when this keeps the exact same non-Bank origin.
+    const nextUrl = !savedNextUrl.trim() && e === BANK_OF_AI_VENDOR && previousVendor === 'Anthropic' && previousUrl && baseUrlLooksValid(previousUrl)
+      ? previousUrl
+      : savedNextUrl
     const nextTrimmed = nextUrl.trim()
-    setBaseUrl(nextUrl)
     const nextInvalid = !!nextTrimmed && !baseUrlLooksValid(nextTrimmed)
+    const nextActiveUrl = nextInvalid ? '' : nextTrimmed
+    const nextOrigin = endpointOriginFor(e, nextActiveUrl)
+    const nextKey = resolveProviderApiKey({
+      currentVendor: previousVendor,
+      nextVendor: e,
+      currentKey: previousKey,
+      currentEndpointOrigin: previousOrigin,
+      nextEndpointOrigin: nextOrigin,
+      rememberedKeys: apiKeysRef.current
+    })
+    rememberApiKey(e, nextActiveUrl, nextKey)
+
+    setModelVendor(e)
+    modelVendorRef.current = e
+    activeBaseUrlRef.current = nextActiveUrl
+    onSelectChange(aiModelVendor[e]?.defaultValue||aiModelVendor[e]?.models[0]?.value, { cancelModelLoad: false })
+    getAiModelVendor&&getAiModelVendor(e)
+    apiKeyHandle && apiKeyHandle(nextKey)
+    apiKeyRef.current = nextKey
+    setKeyTip(!!nextKey && !apikeyRe.test(nextKey))
+    setApiKey(nextKey)
+    apiKeyEditingRef.current = Boolean(nextKey)
+    if (e === BANK_OF_AI_VENDOR) {
+      endpointTypeRef.current = DEFAULT_AI_ENDPOINT_TYPE
+      setEndpointType(DEFAULT_AI_ENDPOINT_TYPE)
+      endpointTypeHandle && endpointTypeHandle(DEFAULT_AI_ENDPOINT_TYPE)
+    }
+    setBaseUrl(nextUrl)
     setUrlTip(nextInvalid)
     // Only push a validated (or empty) URL up; a stale plain-http non-loopback
     // relay is shown + hinted but not used — fall back to the official endpoint.
     baseUrlHandle && baseUrlHandle(nextInvalid ? '' : nextTrimmed)
+    if (!nextInvalid && nextTrimmed && nextTrimmed !== savedNextUrl.trim()) saveBaseUrl(e, nextTrimmed)
+    if (!WORKSPACE_ACTION_VENDORS.has(e)) {
+      setWaOn(false)
+      workspaceActionsHandle && workspaceActionsHandle(false)
+    }
     gtag("event", "ai_vendor", {event_category: "ai_user_action",event_label: `select_vendor_${e}`})
+  }
+
+  const onEndpointTypeChange = (nextType) => {
+    cancelBankModelLoad()
+    endpointTypeRef.current = nextType
+    setEndpointType(nextType)
+    endpointTypeHandle && endpointTypeHandle(nextType)
+    const nextModel = bankModels[nextType]?.[0]?.value || bankOfAIModelFallbacks[nextType][0].value
+    onSelectChange(nextModel, { cancelModelLoad: false })
+  }
+
+  const loadBankModels = async () => {
+    const requestUrl = activeBaseUrlRef.current
+    const endpointOrigin = endpointOriginFor(BANK_OF_AI_VENDOR, requestUrl)
+    const keyBinding = providerApiKeyBinding({ vendor: BANK_OF_AI_VENDOR, endpointOrigin })
+    const requestKey = String(apiKeyRef.current || '').trim()
+    if (modelVendorRef.current !== BANK_OF_AI_VENDOR || !isOfficialBankOfAIBaseUrl(requestUrl) || !keyBinding || apiKeysRef.current[keyBinding] !== requestKey) {
+      setBankModelLoad({ loading: false, error: 'Use a Bank of AI key entered for the official endpoint to load live models.', loaded: false })
+      return
+    }
+
+    cancelBankModelLoad(false)
+    const generation = bankModelLoadGenerationRef.current
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    bankModelLoadControllerRef.current = controller
+    const requestEndpointType = endpointTypeRef.current
+    const requestModel = modelVersionRef.current
+    const requestContext = {
+      generation,
+      vendor: BANK_OF_AI_VENDOR,
+      endpointType: requestEndpointType,
+      endpointOrigin,
+      model: requestModel,
+      keyBinding
+    }
+    const requestIsCurrent = () => isBankModelLoadContextCurrent(requestContext, {
+      mounted: mountedRef.current,
+      generation: bankModelLoadGenerationRef.current,
+      vendor: modelVendorRef.current,
+      endpointType: endpointTypeRef.current,
+      endpointOrigin: endpointOriginFor(BANK_OF_AI_VENDOR, activeBaseUrlRef.current),
+      model: modelVersionRef.current,
+      keyBinding: apiKeyRef.current === requestKey && apiKeysRef.current[keyBinding] === requestKey ? keyBinding : ''
+    })
+
+    setBankModelLoad({ loading: true, error: '', loaded: false })
+    try {
+      const models = await fetchBankOfAIModels({ apiKey: requestKey, endpointType: requestEndpointType, baseUrl: requestUrl, signal: controller?.signal })
+      if (!requestIsCurrent()) return
+      bankModelLoadControllerRef.current = null
+      setBankModels((current) => ({ ...current, [requestEndpointType]: models }))
+      if (!models.some((model) => model.value === requestModel)) onSelectChange(models[0].value, { cancelModelLoad: false })
+      setBankModelLoad({ loading: false, error: '', loaded: true })
+    } catch (error) {
+      if (!requestIsCurrent() || error?.name === 'AbortError') return
+      bankModelLoadControllerRef.current = null
+      setBankModelLoad({ loading: false, error: error?.message || 'Unable to load Bank of AI models.', loaded: false })
+    }
   }
 
   const onBaseUrlChange = (e) => {
     const raw = e.target.value
     const v = raw.trim()
+    cancelBankModelLoad()
     setBaseUrl(raw)
     // Advisory hint on a non-empty value that doesn't validate (wording below).
     const invalid = !!v && !baseUrlLooksValid(v)
@@ -323,6 +565,27 @@ const ChatSet = ({ gptvHandle, apiKeyHandle,contextHandle,collapseHandle,enableS
     // is refused so the memory-only apiKey + prompt never go out over cleartext
     // http; the previously saved/used gateway stays in effect until replaced.
     if (invalid) return
+
+    const previousUrl = activeBaseUrlRef.current
+    const previousOrigin = endpointOriginFor(modelVendorRef.current, previousUrl)
+    const currentKey = String(apiKeyRef.current || '').trim()
+    rememberApiKey(modelVendorRef.current, previousUrl, currentKey)
+    activeBaseUrlRef.current = v
+    const nextOrigin = endpointOriginFor(modelVendorRef.current, v)
+    if (nextOrigin !== previousOrigin) {
+      const nextBinding = providerApiKeyBinding({ vendor: modelVendorRef.current, endpointOrigin: nextOrigin })
+      // A URL edit chooses a destination, but it does not authorize forwarding
+      // the credential entered for the previous origin. Recall only a key that
+      // was explicitly entered for this exact provider + origin; otherwise
+      // clear the field and require re-entry. This also prevents character-by-
+      // character URL edits from leaving copied keys on intermediate origins.
+      const nextKey = String((nextBinding ? apiKeysRef.current[nextBinding] : '') || '').trim()
+      apiKeyRef.current = nextKey
+      setApiKey(nextKey)
+      apiKeyHandle && apiKeyHandle(nextKey)
+      setKeyTip(!!nextKey && !apikeyRe.test(nextKey))
+      apiKeyEditingRef.current = Boolean(nextKey)
+    }
     saveBaseUrl(modelVendor, v)
     baseUrlHandle && baseUrlHandle(v)
   }
@@ -340,6 +603,20 @@ const ChatSet = ({ gptvHandle, apiKeyHandle,contextHandle,collapseHandle,enableS
   const onChangeGPTCheckbox=(e)=>{
     enableStreamingHandle&& enableStreamingHandle(e.target.checked)
   }
+
+  const bankUsesOfficialEndpoint = modelVendor === BANK_OF_AI_VENDOR && !urlTip && isOfficialBankOfAIBaseUrl(activeBaseUrlRef.current)
+  const bankOfficialKeyBinding = providerApiKeyBinding({
+    vendor: BANK_OF_AI_VENDOR,
+    endpointOrigin: endpointOriginFor(BANK_OF_AI_VENDOR, activeBaseUrlRef.current)
+  })
+  const bankHasBoundOfficialKey = bankUsesOfficialEndpoint && Boolean(apiKeyRef.current) && apiKeysRef.current[bankOfficialKeyBinding] === apiKeyRef.current
+  const bankModelLoadHelp = bankModelLoad.loaded
+    ? `${bankModels[endpointType].length} models loaded in memory.`
+    : !bankUsesOfficialEndpoint
+      ? 'Live model discovery is disabled for custom gateways; fallback models remain available.'
+      : !bankHasBoundOfficialKey
+        ? 'Enter a Bank of AI key for the official endpoint to load the live list.'
+        : 'Uses a safe fallback until you load the live list.'
 
   return (
     <div className="chat-set-wrapper">
@@ -364,10 +641,11 @@ const ChatSet = ({ gptvHandle, apiKeyHandle,contextHandle,collapseHandle,enableS
           </div>
         </div>
         <div className="ai-model-vendor-wrap">
-          <div className="open-ai-title">Select an AI model vendor</div>
+          <div className="open-ai-title">Select an AI provider</div>
           <Select
-            defaultValue={modelVendor}
-            placeholder={'Select an AI model vendor'}
+            value={modelVendor}
+            data-id='aiModelVendorSelect'
+            placeholder={'Select an AI provider'}
             suffixIcon={<IconComponent className="tron-icon" icon={'#icon-down-arrow'} />}
             onChange={onSelectVendorChange}
             options={Object.keys(aiModelVendor).map((item)=>({
@@ -378,17 +656,25 @@ const ChatSet = ({ gptvHandle, apiKeyHandle,contextHandle,collapseHandle,enableS
         <div>
           <div className="open-ai-title">
             <span className="keySelect-title">Enter your API Key</span>
-            <a className="fz12" href={aiModelVendor[modelVendor]?.findMyAPIKeyUrl} target="_blank" rel="noopener noreferrer">
-              Where to find my API Key?
-            </a>
+            {aiModelVendor[modelVendor]?.findMyAPIKeyUrl
+              ? <a className="fz12" href={aiModelVendor[modelVendor]?.findMyAPIKeyUrl} target="_blank" rel="noopener noreferrer">
+                  {modelVendor === BANK_OF_AI_VENDOR ? 'Get a Bank of AI API Key' : 'Where to find my API Key?'}
+                </a>
+              : <span className="fz12">Use the key documented by your gateway.</span>}
           </div>
           <Input
+            ref={apiKeyInputRef}
             type={openEye ? 'text' : 'password'}
             value={apiKey}
+            onFocus={() => {
+              if (!apiKeyEditingRef.current) clearApiKey()
+              apiKeyEditingRef.current = true
+            }}
             onChange={onOpenAPIkeyChange}
             onBlur={() => setOpenEye(false)}
             placeholder={'Paste your API Key here'}
             maxLength={200}
+            name={apiKeyInputNameRef.current}
             autoComplete="off"
             spellCheck={false}
             data-id="aiApiKeyInput"
@@ -418,62 +704,134 @@ const ChatSet = ({ gptvHandle, apiKeyHandle,contextHandle,collapseHandle,enableS
             }
           />
           {
-            keyTip && !baseUrl.trim() ?<div className='key-tip' data-id='aiApiKeyHint'>This doesn't look like a complete API key — re-copy it in full from the provider console (it will still be tried as entered)</div>:null
+            keyTip && Boolean(apiKey.trim()) && !baseUrl.trim() ?<div className='key-tip' data-id='aiApiKeyHint'>This doesn't look like a complete API key — re-copy it in full from the provider console (it will still be tried as entered)</div>:null
           }
-          <div className="open-ai-title" style={{ marginTop: 8 }}>Request URL (optional)</div>
+          <div className="open-ai-title" style={{ marginTop: 8 }}>Request URL {modelVendor === 'OpenAI-compatible' ? '(required)' : '(optional)'}</div>
           <Input
             type='text'
             value={baseUrl}
             onChange={onBaseUrlChange}
-            placeholder={`Gateway/relay base URL — empty uses the official ${modelVendor} endpoint`}
+            placeholder={modelVendor === 'OpenAI-compatible' ? 'Gateway base URL, including its required path prefix' : `Gateway/relay base URL — empty uses the official ${modelVendor} endpoint`}
             maxLength={300}
             autoComplete="off"
             spellCheck={false}
             data-id="aiBaseUrlInput"
           />
           {
-            urlTip?<div className='key-tip' data-id='aiBaseUrlHint'>Use an https:// URL (plain http only for localhost). Include the path prefix your gateway requires, e.g. /v1 — it will still be tried as entered</div>:null
+            urlTip?<div className='key-tip' data-id='aiBaseUrlHint'>Use an https:// URL (plain http only for localhost). Requests keep using the last valid endpoint until this URL is corrected.</div>:null
           }
-          <div className='key-security-notice'>
-            ⚠ Your API key is kept only in browser memory — never saved to disk and cleared when you close this panel or reload. Prefer a dedicated key with a low spend limit, and do not paste production keys. If you install an untrusted plugin while this key is set, revoke it immediately at the provider console.
+          {modelVendor === BANK_OF_AI_VENDOR ? (
+            <div data-id='bankOfAIProviderNotice' style={{ marginTop: 7, fontSize: 12, color: 'var(--ai-text)' }}>
+              Bank of AI is a multi-model gateway. Your prompt and selected context are processed by Bank of AI and its upstream model provider.{' '}
+              <a href={BANK_OF_AI_ACCOUNT_URL} target='_blank' rel='noopener noreferrer'>Manage balance in Bank of AI</a>.
+            </div>
+          ) : null}
+          <div className='key-security-notice' data-id='aiKeySecurityNotice'>
+            ⚠ API key stays in memory only and clears on panel close or reload. Use a low-limit, non-production key; revoke it after using untrusted plugins.
           </div>
         </div>
         <div className="gpt-model-wrap">
+          {modelVendor === BANK_OF_AI_VENDOR ? (
+            <div style={{ marginBottom: 8 }}>
+              <div className='open-ai-title'>Bank of AI API format</div>
+              <Select
+                value={endpointType}
+                data-id='bankOfAIEndpointTypeSelect'
+                onChange={onEndpointTypeChange}
+                options={[
+                  { value: AI_ENDPOINT_TYPE.ANTHROPIC, label: 'Anthropic-compatible (recommended)' },
+                  { value: AI_ENDPOINT_TYPE.OPENAI, label: 'OpenAI-compatible' }
+                ]}
+              />
+            </div>
+          ) : null}
           <div className="open-ai-title">Select an AI model</div>
-          <Select
-            value={modelVersion}
-            placeholder={'Select an AI model'}
-            suffixIcon={<IconComponent className="tron-icon" icon={'#icon-down-arrow'} />}
-            onChange={onSelectChange}
-            options={aiModelVendor[modelVendor]?.models}
-          ></Select>
+          {modelVendor === 'OpenAI-compatible'
+            ? <Input
+                value={modelVersion}
+                onChange={(e) => onSelectChange(e.target.value.trim())}
+                placeholder='Model ID exposed by your gateway'
+                maxLength={120}
+                data-id='aiCompatibleModelInput'
+              />
+            : <Select
+                value={modelVersion}
+                data-id='aiModelSelect'
+                placeholder={'Select an AI model'}
+                suffixIcon={<IconComponent className="tron-icon" icon={'#icon-down-arrow'} />}
+                onChange={onSelectChange}
+                options={modelVendor === BANK_OF_AI_VENDOR ? bankModels[endpointType] : aiModelVendor[modelVendor]?.models}
+              ></Select>}
+          {modelVendor === BANK_OF_AI_VENDOR ? (
+            <div style={{ marginTop: 7, fontSize: 12 }}>
+              <button type='button' className='btn btn-sm btn-outline-secondary bank-model-load-button' data-id='bankOfAILoadModels' disabled={bankModelLoad.loading || !bankHasBoundOfficialKey} onClick={loadBankModels}>
+                {bankModelLoad.loading ? 'Loading models…' : 'Load available models'}
+              </button>
+              <span className='bank-model-load-help' data-id='bankOfAIModelLoadHelp' style={{ marginLeft: 8 }}>{bankModelLoadHelp}</span>
+              {bankModelLoad.error ? <div className='key-tip' data-id='bankOfAIModelLoadError'>{bankModelLoad.error}</div> : null}
+            </div>
+          ) : null}
           {
-            modelVendor==='Anthropic'?<p><Checkbox data-id="aiWorkspaceActionsToggle" onChange={(e)=>{setWaOn(e.target.checked);workspaceActionsHandle&&workspaceActionsHandle(e.target.checked)}} defaultChecked={enableWorkspaceActions}>Allow workspace actions — the AI can create/read files in this workspace (asks before every write; replies are not streamed while on)</Checkbox></p>:null
+            WORKSPACE_ACTION_VENDORS.has(modelVendor)?<p><Checkbox data-id="aiWorkspaceActionsToggle" onChange={(e)=>{setWaOn(e.target.checked);workspaceActionsHandle&&workspaceActionsHandle(e.target.checked)}} checked={waOn}>Allow workspace actions <span className="stream-toggle-note">— confirm before writes</span></Checkbox></p>:<p data-id="aiWorkspaceActionsUnavailable">Workspace actions are unavailable for this provider.</p>
           }
           {
             /* The tool loop is inherently non-streaming; a checked-but-ignored
                streaming checkbox read as a bug, so it is disabled while
                workspace actions are on. */
-            modelVendor==='DeepSeek'?null:<p><Checkbox data-id="aiStreamingToggle" disabled={modelVendor==='Anthropic'&&waOn} onChange={onChangeGPTCheckbox} defaultChecked={enableStreaming}>Enable streaming response (generate replies in real time){modelVendor==='Anthropic'&&waOn?<span className="stream-toggle-note"> — not used while workspace actions are on</span>:null}</Checkbox></p>
+            <p><Checkbox data-id="aiStreamingToggle" disabled={WORKSPACE_ACTION_VENDORS.has(modelVendor)&&waOn} onChange={onChangeGPTCheckbox} defaultChecked={enableStreaming}>Stream responses{WORKSPACE_ACTION_VENDORS.has(modelVendor)&&waOn?<span className="stream-toggle-note"> — unavailable with workspace actions</span>:null}</Checkbox></p>
           }
+          <div className='ai-local-metrics-panel' data-id='aiLocalMetricsPanel' style={{ marginTop: 8, padding: 8, border: '1px solid rgba(127,127,127,0.25)', borderRadius: 4 }}>
+            <p style={{ marginBottom: 4 }}>
+              <Checkbox
+                data-id='aiLocalMetricsToggle'
+                checked={metricsOn}
+                onChange={(event) => {
+                  const enabled = event.target.checked
+                  setMetricsOn(enabled)
+                  localMetricsHandle && localMetricsHandle(enabled)
+                }}
+              >Keep local AI task stats</Checkbox>
+            </p>
+            <p style={{ marginBottom: 6, fontSize: 12, opacity: 0.82 }}>
+              On-device counts only; never uploaded.
+            </p>
+            <div data-id='aiLocalMetricsSummary' style={{ fontSize: 12 }}>
+              {metricsOn
+                ? <>Tasks {localMetrics?.workflows?.started || 0} · completed {localMetrics?.workflows?.completed || 0} · failed {localMetrics?.workflows?.failed || 0}</>
+                : <>Off — no task stats are saved.</>}
+            </div>
+            {metricsOn ? (
+              <details data-id='aiLocalMetricsDetails' style={{ marginTop: 5, fontSize: 12 }}>
+                <summary style={{ cursor: 'pointer' }}>Details</summary>
+                <div>Tool errors {localMetrics?.tools?.failed || 0} · approved {localMetrics?.decisions?.approved || 0} · rejected {localMetrics?.decisions?.rejected || 0} · stopped {localMetrics?.decisions?.aborted || 0}</div>
+                <div>Tool durations: &lt;1s {localMetrics?.tools?.durationBuckets?.under1s || 0} · 1–5s {localMetrics?.tools?.durationBuckets?.['1to5s'] || 0} · 5–30s {localMetrics?.tools?.durationBuckets?.['5to30s'] || 0} · 30s+ {localMetrics?.tools?.durationBuckets?.['30sPlus'] || 0}</div>
+                <div>Error codes: {Object.entries(localMetrics?.tools?.errorCodes || {}).map(([code, count]) => `${code} ${count}`).join(' · ') || 'none'}</div>
+                <div data-id='bankOfAILocalMetrics'>Bank of AI requests {localMetrics?.integrations?.bankofai?.requests || 0} · succeeded {localMetrics?.integrations?.bankofai?.succeeded || 0} · failed {localMetrics?.integrations?.bankofai?.failed || 0} · cancelled {localMetrics?.integrations?.bankofai?.cancelled || 0} · tool calls {localMetrics?.integrations?.bankofai?.toolCalls || 0}</div>
+                <div>No prompts, source code, addresses, transaction arguments, API keys or wallet data.</div>
+                <button type='button' className='btn btn-sm btn-outline-secondary' data-id='aiLocalMetricsClear' style={{ marginTop: 6 }} onClick={() => clearLocalMetricsHandle && clearLocalMetricsHandle()}>
+                  Clear stats
+                </button>
+              </details>
+            ) : null}
+          </div>
           {/* <p>Please ensure this API Key has access to {modelVersion||'GPT-4'} Model.</p> */}
         </div>
 
-        <div className="context-wrap">
+        <div className="context-wrap" data-id="aiContextSelect">
           <div className="open-ai-title">Context</div>
           <Select
             value={context}
-            optionLabelProp="value"
+            optionLabelProp="title"
             placeholder={'Context'}
             suffixIcon={<IconComponent className="tron-icon" icon={'#icon-down-arrow'} />}
             onChange={onContextChange}
             options={contextOptions}
           ></Select>
         </div>
-      </div>
 
-      <div className="collapse-wrap">
-        <span onClick={onCollapseHandle}>Collapse <IconComponent className="tron-icon" icon={'#icon-down-arrow'} /></span>
+        <div className="collapse-wrap">
+          <span onClick={onCollapseHandle}>Collapse <IconComponent className="tron-icon" icon={'#icon-down-arrow'} /></span>
+        </div>
       </div>
     </div>
   )

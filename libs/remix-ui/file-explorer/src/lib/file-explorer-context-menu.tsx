@@ -17,7 +17,7 @@
  * limitations under the License.
  */
 
-import React, { useRef, useEffect, useLayoutEffect } from 'react' // eslint-disable-line
+import React, { useRef, useEffect, useLayoutEffect, useState } from 'react' // eslint-disable-line
 import { action, FileExplorerContextMenuProps } from './types'
 
 import './css/file-explorer-context-menu.css'
@@ -49,9 +49,8 @@ export const FileExplorerContextMenu = (
     ...otherProps
   } = props
   const contextMenuRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    contextMenuRef.current && contextMenuRef.current.focus()
-  }, [])
+  const menuItemRefs = useRef<Array<HTMLLIElement | null>>([])
+  const [activeIndex, setActiveIndex] = useState(0)
 
   useLayoutEffect(() => {
     const positionInsideViewport = () => {
@@ -107,6 +106,7 @@ export const FileExplorerContextMenu = (
     itemType: string,
     itemPath: string
   ) => {
+    if (typeof itemPath !== 'string') return false
     if (
       item.type &&
       Array.isArray(item.type) &&
@@ -118,12 +118,18 @@ export const FileExplorerContextMenu = (
     ) { return true } else if (
       item.extension &&
       Array.isArray(item.extension) &&
-      item.extension.findIndex((ext) => itemPath.endsWith(ext)) !== -1
+      item.extension.filter((ext) => typeof ext === 'string').findIndex((ext) => itemPath.endsWith(ext)) !== -1
     ) { return true } else if (
       item.pattern &&
       Array.isArray(item.pattern) &&
-      item.pattern.filter((value) => itemPath.match(new RegExp(value))).length >
-        0
+      item.pattern.filter((value) => {
+        if (typeof value !== 'string') return false
+        try {
+          return new RegExp(value).test(itemPath)
+        } catch (error) {
+          return false
+        }
+      }).length > 0
     ) { return true } else return false
   }
 
@@ -135,66 +141,102 @@ export const FileExplorerContextMenu = (
     }
   }
 
-  const menu = () => {
-    return actions
-      .filter(({ id }) => !['pushChangesToGist', 'publishFolderToGist', 'publishFileToGist'].includes(id))
-      .filter((item) => filterItem(item))
-      .map((item, index) => {
-        return (
-          <li
-            id={`menuitem${item.name.toLowerCase()}`}
-            key={index}
-            className="remixui_liitem"
-            onClick={(e) => {
-              e.stopPropagation()
-              switch (item.name) {
-                case 'New File':
-                  createNewFile(path)
-                  break
-                case 'New Folder':
-                  createNewFolder(path)
-                  break
-                case 'Rename':
-                  renamePath(path, type)
-                  break
-                case 'Delete':
-                  deletePath(getPath())
-                  break
-                case 'Push changes to gist':
-                  pushChangesToGist(path, type)
-                  break
-                case 'Publish folder to gist':
-                  publishFolderToGist(path, type)
-                  break
-                case 'Publish file to gist':
-                  publishFileToGist(path, type)
-                  break
-                case 'Run':
-                  runScript(path)
-                  break
-                case 'Format code':
-                  formatCode(path)
-                  break
-                case 'Copy':
-                  copy(path, type)
-                  break
-                case 'Paste':
-                  paste(path, type)
-                  break
-                case 'Delete All':
-                  deletePath(getPath())
-                  break
-                default:
-                  emit && emit({ ...item, path: [path] } as customAction)
-                  break
-              }
-              hideContextMenu()
-            }}
-          >
-            {item.label || item.name}
-          </li>
-        )
-      })
+  const visibleActions = actions.filter((item) => filterItem(item))
+
+  const focusItem = (index: number) => {
+    if (!visibleActions.length) return
+    const nextIndex = (index + visibleActions.length) % visibleActions.length
+    setActiveIndex(nextIndex)
+    menuItemRefs.current[nextIndex]?.focus()
+  }
+
+  useEffect(() => {
+    focusItem(0)
+  }, [])
+
+  const activateItem = (item: action) => {
+    switch (item.name) {
+      case 'New File':
+        createNewFile(path)
+        break
+      case 'New Folder':
+        createNewFolder(path)
+        break
+      case 'Rename':
+        renamePath(path, type)
+        break
+      case 'Delete':
+        deletePath(getPath())
+        break
+      case 'Push changes to gist':
+        pushChangesToGist(path, type)
+        break
+      case 'Publish folder to gist':
+        publishFolderToGist(path, type)
+        break
+      case 'Publish file to gist':
+        publishFileToGist(path, type)
+        break
+      case 'Run':
+        runScript(path)
+        break
+      case 'Format code':
+        formatCode(path)
+        break
+      case 'Copy':
+        copy(path, type)
+        break
+      case 'Paste':
+        paste(path, type)
+        break
+      case 'Delete All':
+        deletePath(getPath())
+        break
+      default:
+        emit && emit({ ...item, path: [path] } as customAction)
+        break
+    }
+    // Actions such as Rename and Delete deliberately move focus into an input
+    // or modal, so do not restore the tree-row focus after activation.
+    hideContextMenu(false)
+  }
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLUListElement>) => {
+    const focusedIndex = menuItemRefs.current.findIndex(item => item === document.activeElement)
+    const currentIndex = focusedIndex === -1 ? activeIndex : focusedIndex
+    switch (event.key) {
+      case 'ArrowDown':
+        event.preventDefault()
+        focusItem(currentIndex + 1)
+        break
+      case 'ArrowUp':
+        event.preventDefault()
+        focusItem(currentIndex - 1)
+        break
+      case 'Home':
+        event.preventDefault()
+        focusItem(0)
+        break
+      case 'End':
+        event.preventDefault()
+        focusItem(visibleActions.length - 1)
+        break
+      case 'Enter':
+      case ' ':
+        event.preventDefault()
+        if (visibleActions[currentIndex]) activateItem(visibleActions[currentIndex])
+        break
+      case 'Escape':
+        event.preventDefault()
+        event.stopPropagation()
+        hideContextMenu(true)
+        break
+      case 'Tab':
+        // Menus are not tab traps. Close it and let the browser continue its
+        // normal focus traversal instead of wrapping inside the menu.
+        hideContextMenu(false)
+        break
+    }
   }
 
   return (
@@ -203,11 +245,36 @@ export const FileExplorerContextMenu = (
       className="p-1 remixui_contextContainer bg-light shadow border"
       style={{ left: pageX, top: pageY }}
       ref={contextMenuRef}
-      onBlur={hideContextMenu}
-      tabIndex={500}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node)) hideContextMenu(false)
+      }}
       {...otherProps}
     >
-      <ul id="remixui_menuitems">{menu()}</ul>
+      <ul
+        id="remixui_menuitems"
+        role="menu"
+        aria-label="File actions"
+        onKeyDown={handleMenuKeyDown}
+      >
+        {visibleActions.map((item, index) => (
+          <li
+            id={`menuitem${item.name.toLowerCase()}`}
+            key={item.id || item.name}
+            ref={(element) => { menuItemRefs.current[index] = element }}
+            role="menuitem"
+            tabIndex={index === activeIndex ? 0 : -1}
+            className="remixui_liitem"
+            onMouseEnter={() => setActiveIndex(index)}
+            onFocus={() => setActiveIndex(index)}
+            onClick={(event) => {
+              event.stopPropagation()
+              activateItem(item)
+            }}
+          >
+            {item.label || item.name}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

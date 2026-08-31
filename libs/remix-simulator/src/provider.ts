@@ -82,11 +82,18 @@ export class Provider {
       callback(err, res)
     }
 
+    if (!this.connected) {
+      return cbOnce(new Error('Simulator provider is disconnected'))
+    }
+
     if (!this.initPromise) {
       this.initPromise = this.init()
     }
 
     this.initPromise.then(() => {
+      if (!this.connected) {
+        return cbOnce(new Error('Simulator provider is disconnected'))
+      }
       const method = this.methods[payload.method]
       if (this.options.logDetails) {
         info(payload)
@@ -119,11 +126,16 @@ export class Provider {
   }
 
   isConnected () {
-    return true
+    return this.connected
   }
 
   disconnect () {
-    return false
+    if (!this.connected) return true
+    this.connected = false
+    if (this.vmContext && this.vmContext.logsManager && typeof this.vmContext.logsManager.clear === 'function') {
+      this.vmContext.logsManager.clear()
+    }
+    return true
   };
 
   supportsSubscriptions () {

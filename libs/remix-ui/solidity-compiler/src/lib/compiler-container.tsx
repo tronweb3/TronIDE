@@ -21,12 +21,13 @@ import React, { useEffect, useState, useRef, useReducer } from 'react' // eslint
 import semver from 'semver'
 import { CompilerContainerProps, ConfigurationSettings } from './types'
 import * as helper from '../../../../../apps/remix-ide/src/lib/helper'
-import { canUseWorker, baseURLTron, tronCompilerSourceProvider, urlFromVersion, pathToURL, promisedMiniXhr, maybeMockCompilerSourceURL, assertAllowedCompilerURL, normalizeRuns, parseOptimizeParam, normalizeEvmVersion, BUILTIN_SOLC_VERSION } from '@remix-project/remix-solidity'
+import { canUseWorker, baseURLTron, tronCompilerSourceProvider, urlFromVersion, pathToURL, pathToIntegrity, promisedMiniXhr, maybeMockCompilerSourceURL, assertAllowedCompilerURL, normalizeRuns, parseOptimizeParam, normalizeEvmVersion, BUILTIN_SOLC_VERSION } from '@remix-project/remix-solidity'
 import { compilerReducer, compilerInitialState } from './reducers/compiler'
 import { resetEditorMode, listenToEvents } from './actions/compiler'
 import { OverlayTrigger, Tooltip } from 'react-bootstrap' // eslint-disable-line
 import axios from 'axios'
 import './css/style.css'
+import { withBoundedRetries } from './compiler-source-retry'
 
 declare global {
   interface Window {
@@ -56,30 +57,98 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
     evmVersion: '',
     // true only when we AUTO-fell back to the bundled builtin after a download
     // failure — not when the user picks 'builtin' themselves. Drives the banner.
-    builtinFallback: false
+    builtinFallback: false,
+    fallbackVersion: ''
   })
   const [disableCompileButton, setDisableCompileButton] = useState<boolean>(false)
   const [isCompilerLoading, setIsCompilerLoading] = useState<boolean>(false)
+  const [loadingCompilerVersion, setLoadingCompilerVersion] = useState<string>('')
   const compileIcon = useRef(null)
   const promptMessageInput = useRef(null)
+  // A user can click Compile in the short window between the compiler panel
+  // appearing and the selected binary becoming ready. Keep that intent and
+  // replay it once the worker/script reports compilerLoaded instead of
+  // returning the fail-closed "Compiler is still loading" result and silently
+  // dropping the click.
+  const pendingCompileRef = useRef(false)
   // the compiler load we most recently asked for, so a load failure can be
   // attributed (and the builtin fallback can refuse to loop on itself)
   const lastCompilerLoadRef = useRef<{ url: string, isBuiltin: boolean } | null>(null)
   const [hhCompilation, sethhCompilation] = useState(false)
   const [compilerContainer, dispatch] = useReducer(compilerReducer, compilerInitialState)
 
+  const resolveRequestedVersion = (spec: string, allversions: any[]): string => {
+    const raw = String(spec || '')
+    if (raw.length > 512) return ''
+    let requested: string
+    try {
+      // QueryParams deliberately preserves raw fragment values. Decode this
+      // validated consumer exactly once so URLSearchParams-generated links
+      // containing `%2Bcommit...` select the requested manifest build.
+      requested = decodeURIComponent(raw).trim()
+    } catch (error) {
+      return ''
+    }
+    if (!requested) return ''
+    if (requested === 'builtin') return 'builtin'
+
+    const releases = (allversions || []).filter((build) => {
+      return build && build.path && build.path !== 'builtin' && build.version &&
+        build.longVersion && !build.longVersion.includes('nightly')
+    })
+    const direct = releases.find((build) => build.path === requested || build.longVersion === requested)
+    if (direct) return direct.path
+
+    // Shared links and external callers may use a bare semantic version. Map
+    // it to a concrete manifest path before entering the stricter loader.
+    const bare = requested.replace(/^v/, '')
+    if (!/^\d+\.\d+(?:\.\d+)?$/.test(bare)) return ''
+    const exact = releases.filter((build) => build.version === bare)
+    const compatible = exact.length
+      ? exact
+      : releases.filter((build) => build.version.startsWith(`${bare}.`))
+    if (!compatible.length) return ''
+    return compatible.slice().sort((left, right) => left.version.localeCompare(right.version, undefined, { numeric: true })).pop().path
+  }
+
+  const compilerVersionLabel = (spec: string): string => {
+    const value = String(spec || '').trim()
+    const version = /(?:^|[^\d])(\d+\.\d+\.\d+)(?:[^\d]|$)/.exec(value)
+    const source = value.split('/').pop() || value
+    return version ? version[1] : source.slice(0, 120)
+  }
+
   useEffect(() => {
-    fetchAllVersion((allversions, selectedVersion, isURL) => {
+    fetchAllVersion((allversions, selectedVersion, isURL, fallbackVersion = '') => {
+      const hashVersion = queryParams.get().version
+      // A compiler version in a shared URL is an explicit user choice. Do not
+      // replace it with the legacy default merely because the manifest request
+      // completed after the component mounted.
+      const requestedVersion = hashVersion && hashVersion !== 'null' && hashVersion !== 'undefined'
+        ? hashVersion
+        : ''
+      const resolvedRequestedVersion = resolveRequestedVersion(requestedVersion, allversions)
+      const resolvedDefaultVersion = resolveRequestedVersion(state.defaultVersion, allversions) || 'builtin'
+      const versionToSelect = fallbackVersion ? 'builtin' : (selectedVersion || resolvedRequestedVersion || resolvedDefaultVersion)
+      if (requestedVersion && !resolvedRequestedVersion && !fallbackVersion) {
+        tooltip(`Compiler ${requestedVersion.slice(0, 120)} is unavailable. Using ${versionToSelect === 'builtin' ? `built-in compiler (${BUILTIN_SOLC_VERSION})` : versionToSelect}.`)
+      }
       setState(prevState => {
-        return { ...prevState, allversions }
+        return {
+          ...prevState,
+          allversions,
+          ...(fallbackVersion
+            ? { builtinFallback: true, fallbackVersion }
+            : {})
+        }
       })
       if (isURL) _updateVersionSelector(state.defaultVersion, selectedVersion)
       else {
         setState(prevState => {
-          return { ...prevState, selectedVersion }
+          return { ...prevState, selectedVersion: versionToSelect }
         })
-        updateCurrentVersion(selectedVersion)
-        _updateVersionSelector(selectedVersion)
+        updateCurrentVersion(versionToSelect)
+        _updateVersionSelector(versionToSelect, '', fallbackVersion ? { preserveQuery: true } : undefined)
       }
     })
     const currentFileName = config.get('currentFile')
@@ -170,24 +239,27 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
   const fetchAllVersion = async callback => {
     let selectedVersion
     let allVersions: any = [
-      { path: 'builtin', longVersion: `latest local version - ${BUILTIN_SOLC_VERSION}` }
+      { path: 'builtin', longVersion: `Built-in compiler (local) - ${BUILTIN_SOLC_VERSION}` }
     ]
     try {
       // pass the declared timeout so a hung (not refused) connection rejects
       // and falls through to the builtin compiler instead of leaving the
       // version dropdown disabled forever.
-      const binRes: any = await axios.get(`${baseURLTron}/list.json`, { timeout: tronCompilerSourceProvider.timeoutMs })
+      const binRes: any = await withBoundedRetries(
+        () => axios.get(tronCompilerSourceProvider.versionListURL, { timeout: tronCompilerSourceProvider.timeoutMs }),
+        tronCompilerSourceProvider.retries,
+        (error: any) => error && error.code !== 'ECONNABORTED' && error.code !== 'ETIMEDOUT'
+      )
       try {
         const versions = binRes.data.builds.slice().reverse()
         allVersions = [...allVersions, ...versions]
         allVersions.forEach(_ => {
           pathToURL[_.path] = baseURLTron
+          if (_.sha256) pathToIntegrity[_.path] = _.sha256
         })
       } catch (e) {
-        tooltip(
-          'Cannot load compiler version list. It might have been blocked by an advertisement blocker. Please try deactivating any of them from this page and reload. Error: ' +
-            e
-        )
+        console.error('Could not read the compiler version list:', e)
+        tooltip('Compiler versions could not be read. Reload the page or try again later.')
       }
       return callback(allVersions, selectedVersion)
     } catch (e) {
@@ -195,9 +267,13 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
       // to the bundled builtin compiler, but tell the user instead of silently
       // downgrading (silent-failure class).
       console.error('Could not fetch the compiler version list, using the built-in compiler:', e)
-      tooltip('Could not fetch the compiler version list (offline or blocked). Using the built-in compiler.')
+      tooltip(`Compiler versions are unavailable. Using built-in compiler (${BUILTIN_SOLC_VERSION}).`)
       selectedVersion = 'builtin'
-      return callback(allVersions, selectedVersion)
+      const requestedVersion = queryParams.get().version
+      const fallbackVersion = requestedVersion && requestedVersion !== 'builtin' && requestedVersion !== 'null' && requestedVersion !== 'undefined'
+        ? requestedVersion
+        : ''
+      return callback(allVersions, selectedVersion, false, fallbackVersion)
     }
   }
 
@@ -280,8 +356,10 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
   }
 
   const loadingCompiler = () => {
-    if (!compileIcon.current) return
     setIsCompilerLoading(true)
+    const loadingURL = compilerContainer.compiler.args ? compilerContainer.compiler.args[0] : ''
+    setLoadingCompilerVersion(loadingURL && !isBuiltinCompilerUrl(loadingURL) ? compilerVersionLabel(loadingURL) : '')
+    if (!compileIcon.current) return
     compileIcon.current.removeAttribute('title')
     compileIcon.current.parentElement?.querySelectorAll('.sr-only').forEach(el => el.remove())
     compileIcon.current.classList.add('remixui_spinningIcon')
@@ -290,20 +368,24 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
   }
 
   const compilerLoaded = () => {
-    if (!compileIcon.current) return
     setIsCompilerLoading(false)
+    setLoadingCompilerVersion('')
+    if (!compileIcon.current) return
     compileIcon.current.removeAttribute('title')
     compileIcon.current.parentElement?.querySelectorAll('.sr-only').forEach(el => el.remove())
     compileIcon.current.classList.remove('remixui_spinningIcon')
-    if (state.autoCompile) compile()
+    const shouldCompile = pendingCompileRef.current || state.autoCompile
+    pendingCompileRef.current = false
+    if (shouldCompile) window.setTimeout(() => compileNow(), 0)
     const isDisabled = !compiledFileName || (compiledFileName && !isSolFileSelected(compiledFileName))
 
     setDisableCompileButton(isDisabled)
   }
 
   const compilerLoadFailed = () => {
-    if (!compileIcon.current) return
     setIsCompilerLoading(false)
+    setLoadingCompilerVersion('')
+    if (!compileIcon.current) return
     compileIcon.current.setAttribute('title', 'compiler load failed')
     compileIcon.current.parentElement?.querySelectorAll('.sr-only').forEach(el => el.remove())
     compileIcon.current.classList.remove('remixui_spinningIcon')
@@ -314,8 +396,9 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
   }
 
   const compilationFinished = () => {
-    if (!compileIcon.current) return
     setIsCompilerLoading(false)
+    setLoadingCompilerVersion('')
+    if (!compileIcon.current) return
     compileIcon.current.removeAttribute('title')
     compileIcon.current.parentElement?.querySelectorAll('.sr-only').forEach(el => el.remove())
     compileIcon.current.classList.remove('remixui_spinningIcon')
@@ -338,7 +421,7 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
     })
   }
 
-  const compile = () => {
+  const compileNow = () => {
     const currentFile = config.get('currentFile')
 
     if (!isSolFileSelected()) return
@@ -346,6 +429,15 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
     _setCompilerVersionFromPragma(currentFile)
     compileTabLogic.runCompiler(hhCompilation)
     window?.gtag('event', 'click', { event_category: 'compiler_user_action', event_label: 'compile' })
+  }
+
+  const compile = () => {
+    const compilerState = compileTabLogic && compileTabLogic.compiler && compileTabLogic.compiler.state
+    if (isCompilerLoading || !compilerState || !compilerState.currentVersion || typeof compilerState.compileJSON !== 'function') {
+      pendingCompileRef.current = true
+      return
+    }
+    compileNow()
   }
 
   const _retrieveVersion = (version?) => {
@@ -385,26 +477,33 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
     if (failedUrl && normalizedCompilerUrl(failedUrl) !== normalizedCompilerUrl(lastLoad.url)) return
     if (lastLoad.isBuiltin || (failedUrl && isBuiltinCompilerUrl(failedUrl))) return
     lastCompilerLoadRef.current = null
-    tooltip(`Could not download the selected compiler version (network problem) — switched to the built-in compiler (${BUILTIN_SOLC_VERSION}). Re-select a version in the dropdown to retry.`)
+    const requestedVersion = state.selectedVersion && state.selectedVersion !== 'builtin'
+      ? state.selectedVersion
+      : (queryParams.get().version || '')
+    tooltip(`Selected compiler unavailable. Using built-in compiler (${BUILTIN_SOLC_VERSION}).`)
     setState(prevState => {
-      return { ...prevState, selectedVersion: 'builtin', builtinFallback: true }
+      return { ...prevState, selectedVersion: 'builtin', builtinFallback: true, fallbackVersion: requestedVersion }
     })
-    _updateVersionSelector('builtin')
+    // Keep the requested version in the URL. This makes a shared link honest
+    // and lets a reload retry the requested binary instead of silently
+    // canonicalising the link to `version=builtin`.
+    _updateVersionSelector('builtin', '', { preserveQuery: true })
   }
 
-  const _updateVersionSelector = (version, customUrl = '') => {
+  const _updateVersionSelector = (version, customUrl = '', options: { preserveQuery?: boolean } = {}) => {
     try {
-      _updateVersionSelectorInternal(version, customUrl)
+      _updateVersionSelectorInternal(version, customUrl, options)
     } catch (e) {
       // a rejected/unreachable compiler source must degrade gracefully, not
       // throw uncaught — fall back to the bundled builtin compiler.
       console.error('Compiler version load failed, falling back to builtin:', e)
-      tooltip('Could not load the selected compiler version. Using the built-in compiler.')
-      try { _updateVersionSelectorInternal('builtin') } catch (inner) { console.error(inner) }
+      tooltip(`Selected compiler unavailable. Using built-in compiler (${BUILTIN_SOLC_VERSION}).`)
+      try { _updateVersionSelectorInternal('builtin', '', { preserveQuery: true }) } catch (inner) { console.error(inner) }
     }
   }
 
-  const _updateVersionSelectorInternal = (version, customUrl = '') => {
+  const _updateVersionSelectorInternal = (version, customUrl = '', options: { preserveQuery?: boolean } = {}) => {
+    const { preserveQuery = false } = options
     // update selectedversion of previous one got filtered out
     let selectedVersion = version
     let isBuiltinLoad = false
@@ -415,7 +514,7 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
       })
     }
     updateCurrentVersion(selectedVersion)
-    queryParams.update({ version: selectedVersion })
+    if (!preserveQuery) queryParams.update({ version: selectedVersion })
     let url
 
     if (customUrl !== '') {
@@ -425,7 +524,7 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
       })
       updateCurrentVersion(selectedVersion)
       url = customUrl
-      queryParams.update({ version: selectedVersion })
+      if (!preserveQuery) queryParams.update({ version: selectedVersion })
     } else if (selectedVersion === 'builtin') {
       let location: string | Location = window.document.location
       let path = location.pathname
@@ -520,11 +619,19 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
     warnIfChromiumIncompatible(value)
     setState(prevState => {
       // A deliberate pick clears the auto-fallback banner (retrying a download).
-      return { ...prevState, selectedVersion: value, builtinFallback: false }
+      return { ...prevState, selectedVersion: value, builtinFallback: false, fallbackVersion: '' }
     })
     updateCurrentVersion(value)
     _updateVersionSelector(value)
     _updateLanguageSelector()
+  }
+
+  const retryFallbackVersion = () => {
+    const resolved = resolveRequestedVersion(state.fallbackVersion, state.allversions)
+    if (resolved) return handleLoadVersion(resolved)
+    // A failed manifest leaves no safe version-to-URL mapping. Preserve the
+    // requested hash and reload so fetchAllVersion can rebuild that mapping.
+    window.location.reload()
   }
 
   // 0.4.x are asm.js builds that overflow the V8 call stack on compile in
@@ -539,7 +646,7 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
       const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
       const isChromium = /Chrome|Chromium|Edg\//.test(ua) && !/Firefox/.test(ua)
       if (isChromium) {
-        tooltip(`Solidity ${v} (0.4.x) is an asm.js build that crashes the compiler on Chromium-based browsers. Use Firefox, or pick a 0.5.x+ version.`)
+        tooltip(`Solidity ${v} is not supported in Chromium. Use Firefox or Solidity 0.5.x+.`)
       }
     } catch (e) { /* a warning must never block selection */ }
   }
@@ -646,7 +753,23 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
           { state.builtinFallback &&
             <div className="alert alert-warning p-2 mb-2 small" data-id="compilerBuiltinFallbackNotice" role="alert">
               <i className="fas fa-exclamation-triangle mr-1" aria-hidden="true"></i>
-              Using the built-in compiler ({BUILTIN_SOLC_VERSION}) — the selected version could not be downloaded (offline or blocked network). Contracts requiring a Solidity newer than {BUILTIN_SOLC_VERSION} will report “requires different compiler version” until a version loads. This is an environment/network issue, not a code error. Re-select a version above once you are online to retry.
+              { state.fallbackVersion
+                ? <><strong>Requested compiler {compilerVersionLabel(state.fallbackVersion)} is not active.</strong>{' '}It could not be downloaded or verified, so TronIDE switched to the built-in compiler ({BUILTIN_SOLC_VERSION}). Compilations now use {BUILTIN_SOLC_VERSION}.</>
+                : <><strong>Online compiler versions are unavailable.</strong>{' '}TronIDE is using the built-in compiler ({BUILTIN_SOLC_VERSION}).</> }
+              {' '}Contracts requiring another compiler version may not compile.
+              { state.fallbackVersion &&
+                <button
+                  type="button"
+                  className="btn btn-sm btn-link p-0 ml-1 align-baseline"
+                  data-id="compilerRetryRequestedVersion"
+                  onClick={retryFallbackVersion}
+                >Retry {compilerVersionLabel(state.fallbackVersion)}</button> }
+            </div>
+          }
+          { loadingCompilerVersion &&
+            <div className="alert alert-info p-2 mb-2 small" data-id="compilerRemoteLoadingNotice" role="status" aria-live="polite">
+              <i className="fas fa-circle-notch fa-spin mr-1" aria-hidden="true"></i>
+              <strong>Loading TVM compiler {loadingCompilerVersion}…</strong>{' '}Compilation is temporarily unavailable while TronIDE downloads and verifies it.
             </div>
           }
           <div className="mb-2">
@@ -667,17 +790,20 @@ export const CompilerContainer = (props: CompilerContainerProps) => {
             </select>
             { state.allversions.length > 0 && getRecommendedBuilds().length > 0 &&
               <div className="d-flex flex-wrap align-items-center mt-1" data-id="compilerRecommendedVersions">
-                <span className="text-muted mr-2 small">Recommended (TVM):</span>
-                { getRecommendedBuilds().map((build, i) =>
-                  <button
+                <span className="text-muted mr-2 small">Recommended (TVM — online):</span>
+                { getRecommendedBuilds().map((build, i) => {
+                  const isLoading = loadingCompilerVersion === build.version
+                  return <button
                     key={i}
                     type="button"
                     className="btn btn-sm btn-secondary py-0 px-2 mr-1 mb-1"
                     data-id={`compilerRecommendedVersion-${build.version}`}
-                    title={`Use Tron Solidity ${build.version}`}
+                    title={`Download and use Tron Solidity ${build.version}`}
+                    disabled={isLoading}
+                    aria-busy={isLoading}
                     onClick={() => handleLoadVersion(build.path)}
-                  >{build.version}</button>
-                )}
+                  >{isLoading ? `Loading ${build.version}…` : build.version}</button>
+                })}
               </div>
             }
           </div>

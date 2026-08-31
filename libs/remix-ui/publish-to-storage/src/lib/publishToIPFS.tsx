@@ -38,11 +38,11 @@ export const publishToIPFS = async (contract, fileManager) => {
     throw new Error(e)
   }
 
-  if (metadata === undefined) {
-    throw new Error('No metadata')
+  if (metadata === undefined || !metadata.sources || typeof metadata.sources !== 'object') {
+    throw new Error('No metadata sources')
   }
 
-  await Promise.all(Object.keys(metadata.sources).map(fileName => {
+  const sourceFiles = await Promise.all(Object.keys(metadata.sources).map(async fileName => {
     // find hash
     let hash = null
     try {
@@ -61,18 +61,14 @@ export const publishToIPFS = async (contract, fileManager) => {
       throw new Error('Error while extracting the hash from metadata.json')
     }
 
-    fileManager.fileProviderOf(fileName).get(fileName, (error, content) => {
-      if (error) {
-        console.log(error)
-      } else {
-        sources.push({
-          content: content,
-          hash: hash,
-          filename: fileName
-        })
-      }
-    })
+    const content = await readProviderFile(fileManager.fileProviderOf(fileName), fileName)
+    return {
+      content,
+      hash,
+      filename: fileName
+    }
   }))
+  sources.push(...sourceFiles)
   // publish the list of sources in order, fail if any failed
   await Promise.all(sources.map(async (item) => {
     try {
@@ -81,7 +77,7 @@ export const publishToIPFS = async (contract, fileManager) => {
       try {
         item.hash = result.url.match('dweb:/ipfs/(.+)')[1]
       } catch (e) {
-        item.hash = '<Metadata inconsistency> - ' + item.fileName
+        item.hash = '<Metadata inconsistency> - ' + item.filename
       }
       item.output = result
       uploaded.push(item)
@@ -113,6 +109,18 @@ export const publishToIPFS = async (contract, fileManager) => {
 
   return { uploaded, item }
 }
+
+const readProviderFile = (provider, path): Promise<string> => new Promise((resolve, reject) => {
+  try {
+    provider.get(path, (error, content) => {
+      if (error) return reject(error)
+      if (content === null || content === undefined) return reject(new Error(`Source file not found: ${path}`))
+      resolve(content)
+    })
+  } catch (error) {
+    reject(error)
+  }
+})
 
 const ipfsVerifiedPublish = async (content, expectedHash) => {
   try {

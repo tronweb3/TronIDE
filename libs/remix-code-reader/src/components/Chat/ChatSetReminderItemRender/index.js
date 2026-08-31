@@ -42,4 +42,4 @@ class ChatSetReminderItemRender extends Component {
   }
 }
 
-export default ChatSetReminderItemRender
+export default React.memo(ChatSetReminderItemRender)

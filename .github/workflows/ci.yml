@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main, master, 'release/**']
+    tags: ['**']
   pull_request:
-    branches: [main, master]
+    branches: [main, master, 'release/**']
   workflow_dispatch:
   schedule:
     - cron: '31 2 * * 1'
@@ -14,23 +15,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
+  github-oauth-bff:
+    name: GitHub OAuth BFF checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@e95548e56dfa95d4e1a28d6f422fafe75c4c26fb # v2.0.3
+        with:
+          deno-version: v2.4.2
+
+      - name: Check and test BFF
+        working-directory: services/github-oauth
+        run: |
+          deno task check
+          deno task test
+
+  required-lint:
+    name: Required lint and type checks
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Pre-existing lint debt across several libs (lint was historically disabled on main);
-    # report but don't block the build gate. Tighten back to blocking once the debt is cleared.
-    continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
         with:
           version: 10.12.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 20.19.2
           cache: pnpm
@@ -38,11 +54,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Audit production dependencies
-        run: pnpm audit --prod
+      - name: Lint Remix IDE
+        run: pnpm nx lint remix-ide --skip-nx-cache
 
-      - name: Lint libs
-        run: pnpm lint:libs
+      - name: Lint Nightwatch E2E
+        run: pnpm nx lint remix-ide-e2e --skip-nx-cache
 
       - name: Check compiler source consistency
         run: pnpm lint:compiler-source
@@ -50,20 +66,114 @@ jobs:
       - name: Check Remix IDE entry consistency
         run: pnpm lint:remix-ide-entry
 
+      - name: Type-check Nightwatch E2E
+        run: pnpm build:e2e
+
+  legacy-lint:
+    name: Legacy library lint and audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Library lint and dependency audit are required release gates.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+        with:
+          version: 10.12.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20.19.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit dependencies
+        run: pnpm audit
+
+      - name: Lint libraries
+        run: pnpm lint:libs
+
+  unit:
+    name: Required unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+        with:
+          version: 10.12.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20.19.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build remix-solidity
+        run: pnpm nx build remix-solidity --skip-nx-cache
+
+      - name: Test Remix IDE
+        run: node apps/remix-ide/test/index.js
+
+      - name: Test remix-astwalker
+        run: pnpm nx test remix-astwalker --skip-nx-cache
+
+      - name: Test remix-tests
+        run: pnpm nx test remix-tests --skip-nx-cache
+
+      - name: Test remix-debug
+        run: pnpm nx test remix-debug --skip-nx-cache
+
+      - name: Test remix-analyzer
+        run: pnpm nx test remix-analyzer --skip-nx-cache
+
+  tronbox-handoff:
+    name: Required TronBox handoff compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+        with:
+          version: 10.12.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20.19.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Compile and dry-run exported fixture with TronBox 4.8.0
+        run: pnpm test:tronbox-handoff
+
   build:
-    name: Build
+    name: Production build
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
         with:
           version: 10.12.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 20.19.2
           cache: pnpm
@@ -71,29 +181,31 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build libs
-        env:
-          NODE_OPTIONS: --max-old-space-size=4096
-        run: pnpm build:libs
+      - name: Download pinned Solidity compiler asset
+        run: pnpm downloadsolc_assets
 
-  e2e-smoke:
-    name: Playwright smoke
+      - name: Build production application
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: pnpm build:prod
+
+      - name: Check production artifact hygiene
+        run: pnpm check:prod-artifact
+
+  e2e-gate:
+    name: Required Playwright release gate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Lightweight headless Playwright smoke covering the critical user flows.
-    # Informational for now — kept off the blocking gate.
-    continue-on-error: true
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release/')
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
         with:
           version: 10.12.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 20.19.2
           cache: pnpm
@@ -101,17 +213,86 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Pre-build libs so the Playwright webServer (nx serve) boots faster.
-      - name: Build libs
+      - name: Download pinned Solidity compiler asset
+        run: pnpm downloadsolc_assets
+
+      - name: Build libraries
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm build:libs
 
-      # Playwright manages its own Chromium — no selenium/chromedriver version matching.
       - name: Install Playwright Chromium
         run: pnpm test:pw:install
 
-      - name: Playwright smoke
+      - name: Run deterministic Playwright gate
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          TRONIDE_GITHUB_BFF_ORIGIN: https://tronide-github-bff.test
+        run: pnpm test:pw:gate
+
+  e2e-remixd-gate:
+    name: Required real remixd integration gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+        with:
+          version: 10.12.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20.19.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run real remixd filesystem integration gate
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm e2e:remixd
+
+  e2e-smoke:
+    name: Playwright full regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # The complete suite remains informational; the deterministic @gate subset
+    # above is the required release check.
+    continue-on-error: true
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+        with:
+          version: 10.12.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20.19.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download pinned Solidity compiler asset
+        run: pnpm downloadsolc_assets
+
+      - name: Build libraries
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm build:libs
+
+      - name: Install Playwright Chromium
+        run: pnpm test:pw:install
+
+      - name: Playwright full regression
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm test:pw

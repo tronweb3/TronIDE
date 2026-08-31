@@ -19,6 +19,7 @@
 
 'use strict'
 import { NightwatchBrowser } from 'nightwatch'
+import { TronWeb } from 'tronweb'
 import init from '../helpers/init'
 
 module.exports = {
@@ -31,7 +32,7 @@ module.exports = {
   },
 
   'Test Recorder': function (browser: NightwatchBrowser) {
-    let addressRef
+    let replayContractAddress: string
     browser.addFile('scenario.json', { content: records })
       .pause(5000)
       .clickLaunchIcon('udapp')
@@ -48,10 +49,12 @@ module.exports = {
       .waitForElementPresent('div[class^="contractActionsContainer"] div[class^="value"] ul')
       .getAddressAtPosition(1, (address) => {
         console.log('Test Recorder ' + address)
-        addressRef = address
+        replayContractAddress = address
       })
       .perform((done) => {
-        browser.verifyCallReturnValue(addressRef, ['0:uint256: 1', '0:uint256: 3456', '0:address: T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb'])
+        browser.assert.ok(/^0x[0-9a-f]{40}$/i.test(replayContractAddress), 'Replay created a contract with a valid hex address')
+        const replayContractBase58 = TronWeb.address.fromHex(replayContractAddress)
+        browser.verifyCallReturnValue(replayContractAddress, ['0:uint256: 1', '0:uint256: 3456', `0:address: ${replayContractBase58}`])
           .perform(() => done())
       })
       .click('*[data-id="deployAndRunClearInstances"]')
@@ -87,7 +90,8 @@ module.exports = {
       .selectContract('t1est')
       .pause(1000)
       .createContract('')
-      .clickInstance(0)
+      // clickInstance uses CSS nth-last-of-type, whose index is one-based.
+      .clickInstance(1)
       .selectContract('t2est')
       .pause(1000)
       .createContract('')
@@ -101,7 +105,7 @@ module.exports = {
       .clickFunction('set2 - transact (not payable)', { types: 'uint256 _po', values: '10' })
       .testFunction('last',
         {
-          status: 'true Transaction mined and execution succeed',
+          status: 'true Transaction mined and execution succeeded',
           'decoded input': { 'uint256 _po': '10' }
         })
       .end()

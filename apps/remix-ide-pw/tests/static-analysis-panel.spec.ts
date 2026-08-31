@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
-import { gotoHome, readSavedFile } from './helpers'
+import { gotoHome, readSavedFile, useBuiltinCompiler } from './helpers'
 
 // TC-SA-001 (v2.3.2): the Solidity Static Analysis panel renders with the
 // "Hide results from imported libraries" control (on by default) and does not
@@ -29,6 +29,9 @@ test.describe('Solidity Static Analysis panel', () => {
     await expect(page.getByText('Hide results from imported libraries')).toBeVisible()
     // Core controls still render alongside it.
     await expect(page.getByText('Select all')).toBeVisible()
+    await expect(page.locator('#staticanalysisButton button')).toBeDisabled()
+    await expect(page.locator('[data-id="staticAnalysisDisabledReason"]'))
+      .toContainText('Open a Solidity (.sol) file and compile it first')
 
     // Toggling it off/on must not crash the panel (no compilation loaded, so the
     // re-run is a no-op, but the effect + render path is exercised). The Bootstrap
@@ -40,6 +43,40 @@ test.describe('Solidity Static Analysis panel', () => {
     await expect(toggle).toBeChecked()
 
     expect(errors, 'the static analysis panel must render without an uncaught error').toEqual([])
+  })
+
+  // TC-SA-005: compiling the active file before opening the panel must still
+  // leave the analyzer runnable. The panel used to lose the file-manager
+  // context during initialization, so Run stayed disabled until the user
+  // clicked the file a second time.
+  test('TC-SA-005: Run remains enabled for the active file after a prior compile', { tag: '@gate' }, async ({ page }) => {
+    await gotoHome(page)
+    const file = page.locator('[data-id="treeViewLitreeViewItemcontracts/1_Storage.sol"]')
+    if (!await file.isVisible().catch(() => false)) {
+      const folder = page.locator('[data-id="treeViewLitreeViewItemcontracts"]')
+      await folder.waitFor({ state: 'visible', timeout: 15_000 })
+      await folder.click()
+    }
+    await file.click()
+    await page.locator('#input').waitFor({ timeout: 10_000 })
+
+    await page.locator('#icon-panel div[plugin="solidity"]').click()
+    await useBuiltinCompiler(page)
+    await page.locator('[data-id="compilerContainerCompileBtn"]').click()
+    await expect(page.locator('[data-id="compiledContracts"]')).toContainText('Storage', { timeout: 60_000 })
+
+    await openStaticAnalysis(page)
+    await expect(page.locator('#staticanalysisButton button')).toBeEnabled({ timeout: 20_000 })
+    await expect(page.locator('[data-id="staticAnalysisDisabledReason"]')).toHaveCount(0)
+
+    // A disabled Run button must always explain the next action. Deselecting
+    // every built-in category is valid, but should not look like a dead panel.
+    await page.getByText('Select all', { exact: true }).click()
+    await expect(page.locator('#staticanalysisButton button')).toBeDisabled()
+    await expect(page.locator('[data-id="staticAnalysisDisabledReason"]'))
+      .toContainText('Select at least one analysis category to enable Run')
+    await page.getByText('Select all', { exact: true }).click()
+    await expect(page.locator('#staticanalysisButton button')).toBeEnabled()
   })
 
   // TC-SA-002 (v2.3.2): the panel shows a per-category summary bar, and the
@@ -78,6 +115,7 @@ test.describe('Solidity Static Analysis panel', () => {
     // last one), and autorun then analyzes on that event.
     await openStaticAnalysis(page)
     await page.locator('#icon-panel div[plugin="solidity"]').click()
+    await useBuiltinCompiler(page)
     await page.locator('[data-id="compilerContainerCompileBtn"]').click()
     await expect(page.locator('[data-id="compiledContracts"]')).toContainText('Mixed', { timeout: 60_000 })
     await openStaticAnalysis(page)
@@ -137,6 +175,7 @@ test.describe('Solidity Static Analysis panel', () => {
     })
     await openStaticAnalysis(page)
     await page.locator('#icon-panel div[plugin="solidity"]').click()
+    await useBuiltinCompiler(page)
     await page.locator('[data-id="compilerContainerCompileBtn"]').click()
     await expect(page.locator('[data-id="compiledContracts"]')).toContainText('Mixed', { timeout: 60_000 })
   }

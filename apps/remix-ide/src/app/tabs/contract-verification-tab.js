@@ -145,39 +145,150 @@ const profile = {
 const css = csjs`
   .container {
     color: var(--text);
-    padding: 0 16px 20px;
+    padding: 0 12px 24px;
   }
   .intro {
+    position: relative;
+    overflow: hidden;
     border: 1px solid var(--light);
-    border-left: 4px solid #C8302D;
     background: var(--body-bg);
-    padding: 12px;
+    border-radius: 6px;
+    padding: 12px 12px 12px 14px;
     margin-bottom: 12px;
+  }
+  .intro::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: #C8302D;
+  }
+  .introHeader {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 7px;
+  }
+  .introIcon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 26px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: rgba(200, 48, 45, .14);
+    color: #E05B58;
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .introEyebrow {
+    color: var(--secondary);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    line-height: 1.2;
+    text-transform: uppercase;
+  }
+  .introTitle {
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.25;
+  }
+  .introCopy {
+    color: var(--secondary);
+    font-size: 12px;
     line-height: 1.45;
   }
   .form {
     display: flex;
     flex-direction: column;
+    gap: 12px;
+  }
+  .statusBlock {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .statusLabel {
+    color: var(--secondary);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .section {
+    display: flex;
+    flex-direction: column;
     gap: 10px;
+    border: 1px solid var(--light);
+    border-radius: 6px;
+    background: var(--body-bg);
+    padding: 12px;
+  }
+  .sectionHeader {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    border-bottom: 1px solid var(--light);
+    padding-bottom: 9px;
+  }
+  .stepNumber {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
+    border: 1px solid rgba(200, 48, 45, .45);
+    border-radius: 50%;
+    background: rgba(200, 48, 45, .1);
+    color: #E05B58;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .sectionHeading {
+    min-width: 0;
+  }
+  .sectionTitle {
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .sectionDescription {
+    color: var(--secondary);
+    font-size: 11px;
+    line-height: 1.4;
+    margin-top: 2px;
   }
   .field {
     display: flex;
     flex-direction: column;
     gap: 5px;
-    font-size: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .02em;
     color: var(--secondary);
   }
   .input,
   .select {
-    border: 1px solid var(--secondary);
+    box-sizing: border-box;
+    min-height: 36px;
+    border: 1px solid var(--light);
+    border-radius: 4px;
     background: var(--input, #35384C);
     color: var(--text, #dfe1ea);
     padding: 8px 10px;
     width: 100%;
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: normal;
   }
   .input::placeholder {
     color: var(--secondary);
-    opacity: 1;
+    opacity: .8;
   }
   .input:focus,
   .select:focus {
@@ -186,18 +297,36 @@ const css = csjs`
     color: var(--text, #dfe1ea);
     outline: 1px solid rgba(200, 48, 45, .25);
   }
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
+  .select:disabled,
+  .input:disabled {
+    cursor: not-allowed;
+    opacity: .65;
+  }
+  .actionGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
+  }
+  .actionWide {
+    grid-column: 1 / -1;
   }
   .button,
   .linkButton {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 34px;
     border: 1px solid var(--light);
+    border-radius: 4px;
     background: var(--body-bg);
     color: var(--text);
-    padding: 7px 10px;
+    padding: 7px 8px;
     cursor: pointer;
+    font-size: 12px;
+    line-height: 1.25;
+    text-align: center;
     text-decoration: none;
   }
   .button:hover,
@@ -206,48 +335,138 @@ const css = csjs`
     color: #C8302D;
     text-decoration: none;
   }
+  .button:focus-visible,
+  .linkButton:focus-visible,
+  .guideSummary:focus-visible {
+    outline: 2px solid rgba(200, 48, 45, .55);
+    outline-offset: 2px;
+  }
+  .primaryButton {
+    border-color: #C8302D;
+    background: #C8302D;
+    color: #fff;
+    font-weight: 600;
+  }
+  .primaryButton:hover {
+    border-color: #E05B58;
+    background: #E05B58;
+    color: #fff;
+  }
   .button:disabled {
     border-color: var(--light);
+    background: var(--body-bg);
     color: var(--secondary);
     cursor: not-allowed;
-    opacity: .55;
+    opacity: .5;
   }
   .status {
     border: 1px solid var(--light);
+    border-left: 3px solid var(--secondary);
+    border-radius: 4px;
     background: var(--body-bg);
-    padding: 10px;
-    min-height: 42px;
+    padding: 9px 10px;
+    min-height: 0;
+    font-size: 12px;
     line-height: 1.45;
     color: var(--secondary);
     word-break: break-word;
   }
   .status[data-status="ready"] {
     border-color: #28a745;
+    color: var(--text);
   }
   .status[data-status="error"] {
     border-color: #dc3545;
     color: #dc3545;
   }
+  .status[data-status="loading"] {
+    border-color: #4C8BF5;
+  }
   .note {
     color: var(--secondary);
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1.45;
   }
-  .checklist {
+  .hint {
+    border-left: 2px solid var(--secondary);
+    padding-left: 8px;
+  }
+  .subgroup {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .subgroup + .subgroup {
+    border-top: 1px solid var(--light);
+    padding-top: 10px;
+  }
+  .subgroupTitle {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .subgroupDescription {
+    color: var(--secondary);
+    font-size: 11px;
+    line-height: 1.4;
+    margin-top: -4px;
+  }
+  .noteCallout {
+    border-radius: 4px;
+    background: rgba(127, 127, 127, .09);
+    padding: 8px 9px;
+  }
+  .guide {
     border: 1px solid var(--light);
+    border-radius: 6px;
     background: var(--body-bg);
-    padding: 10px 12px;
+  }
+  .guideSummary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 11px 12px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    list-style: none;
+  }
+  .guideSummary::-webkit-details-marker {
+    display: none;
+  }
+  .guideSummary::after {
+    content: '+';
+    color: var(--secondary);
+    font-size: 16px;
+    font-weight: 400;
+  }
+  .guide[open] .guideSummary::after {
+    content: '−';
+  }
+  .guideContent {
+    border-top: 1px solid var(--light);
+    padding: 10px 12px 12px;
+  }
+  .checklist {
+    padding: 0 0 0 18px;
     margin: 0;
     color: var(--secondary);
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1.5;
   }
   .checklist li {
-    margin: 2px 0;
+    margin: 4px 0;
+  }
+  .scopeNote {
+    border-left: 2px solid var(--light);
+    padding-left: 9px;
   }
   .metadataCard {
     border: 1px solid var(--light);
     background: var(--body-bg);
+    border-radius: 4px;
     padding: 10px;
     color: var(--secondary);
     font-size: 12px;
@@ -1481,51 +1700,97 @@ export class ContractVerificationTab extends ViewPlugin {
     return yo`
       <div class=${css.container} data-id="contractVerificationPlugin">
         <div class=${css.intro}>
-          <strong>TronScan verification MVP</strong><br />
-          Select the deployed main contract, download a flattened Solidity file, then upload that .sol and match its compiler settings manually on TronScan.
+          <div class=${css.introHeader}>
+            <span class=${css.introIcon} aria-hidden="true">✓</span>
+            <div>
+              <div class=${css.introEyebrow}>TronScan workflow</div>
+              <div class=${css.introTitle}>Verify a deployed contract</div>
+            </div>
+          </div>
+          <div class=${css.introCopy}>Prepare the exact source and compiler settings in three focused steps, then finish the submission on TronScan.</div>
         </div>
         <div class=${css.form} aria-label="TronScan verification MVP">
-          <div class=${css.status} data-id="contractVerificationStatusResult" data-status=${this.state.statusType} role="status" aria-live="polite" aria-busy=${this.state.compiling || this.state.checking}>${this.state.status}</div>
-          <label class=${css.field}>
-            Network
-            <select class=${css.select} data-id="contractVerificationNetworkSelect" onchange=${(event) => this.setNetwork(event.target.value)}>
-              ${Object.keys(this.tronScanTargets).map((key) => yo`<option value=${key} selected=${this.state.network === key}>${this.tronScanTargets[key].label}</option>`)}
-            </select>
-          </label>
-          <label class=${css.field}>
-            Contract address
-            <input class=${css.input} data-id="contractVerificationAddressInput" placeholder="Base58 T... or 41... hex" value=${this.state.contractAddress} oninput=${(event) => this.setContractAddress(event.target.value)} />
-          </label>
-          <label class=${css.field}>
-            Compiled main contract
-            <select class=${css.select} data-id="contractVerificationContractSelect" disabled=${workflowDisabled} onchange=${(event) => this.selectContract(event.target.value)}>
-              ${hasDeployableContract
-                ? compilationChoices.map((choice) => yo`<option value=${choice.id} selected=${choice.id === compilation.selection} disabled=${!choice.deployable}>${choice.contractName} — ${choice.fileName}${choice.deployable ? '' : ' (interface/abstract — no bytecode)'}</option>`)
-                : yo`<option value="">${compilationChoices.length ? 'No deployable contract found' : 'Compile a contract first'}</option>`}
-            </select>
-          </label>
-          <div class=${css.actions}>
-            <button class=${css.button} data-id="contractVerificationCompileCurrent" disabled=${!this.state.workspaceReady || this.state.compiling || this.state.checking} onclick=${() => this.compileCurrentFile()}>${this.state.compiling ? 'Compiling...' : 'Compile current .sol'}</button>
+          <div class=${css.statusBlock}>
+            <div class=${css.statusLabel}>Workflow status</div>
+            <div class=${css.status} data-id="contractVerificationStatusResult" data-status=${this.state.statusType} role="status" aria-live="polite" aria-busy=${this.state.compiling || this.state.checking}>${this.state.status}</div>
           </div>
-          ${this.state.compileNeedsSuccess && !this.state.compiling
-            ? yo`<div class=${css.note} data-id="contractVerificationCompileHint">The latest compile attempt did not produce a fresh deployable artifact. Fix the source, then click “Compile current .sol” here before using verification outputs.</div>`
-            : (!hasDeployableContract ? yo`<div class=${css.note} data-id="contractVerificationCompileHint">${compilationChoices.length ? 'The latest compilation contains only interfaces or abstract contracts. Open the deployed implementation .sol and compile it.' : 'No compiled artifact is available yet. Open the deployed contract\'s .sol file, then click “Compile current .sol”.'}</div>` : '')}
-          <div class=${css.actions}>
-            <button class=${css.button} data-id="contractVerificationCheckStatus" disabled=${this.state.checking || this.state.compiling} onclick=${() => this.checkStatus()}>${this.state.checking ? 'Checking...' : 'Check status'}</button>
-            <a class=${css.linkButton} data-id="contractVerificationOpenTronScan" aria-label="Open verification lookup" target="_blank" rel="noopener noreferrer" href=${this.getTarget().verify}>Open TronScan</a>
-          </div>
-          <div class=${css.actions} aria-label="Flatten sources">
-            <button class=${css.button} data-id="contractVerificationFlatten" disabled=${workflowDisabled} onclick=${() => this.flatten()}>Preview flattened source</button>
-            <button class=${css.button} data-id="contractVerificationCopyFlatten" disabled=${workflowDisabled} onclick=${() => this.copyFlatten()}>Copy flattened</button>
-            <button class=${css.button} data-id="contractVerificationDownloadFlatten" disabled=${workflowDisabled} onclick=${() => this.downloadFlatten()}>Download flattened .sol</button>
-            <button class=${css.button} data-id="contractVerificationSaveFlatten" disabled=${workflowDisabled} onclick=${() => this.saveFlatten()}>Save flattened .sol to workspace</button>
-          </div>
-          <div class=${css.actions} aria-label="Verification metadata">
-            <button class=${css.button} data-id="contractVerificationGeneratePackage" disabled=${workflowDisabled} onclick=${() => this.generatePackage()}>Show settings reference</button>
-            <button class=${css.button} data-id="contractVerificationCopyPackage" disabled=${workflowDisabled} onclick=${() => this.copyPackage()}>Copy settings JSON</button>
-            <button class=${css.button} data-id="contractVerificationDownloadPackage" disabled=${workflowDisabled} onclick=${() => this.downloadPackage()}>Download settings JSON</button>
-          </div>
-          <div class=${css.note}>Optional reference only: use these values to match TronScan's compiler settings. This JSON is not uploaded to TronScan.</div>
+
+          <section class=${css.section} data-id="contractVerificationStepCompile">
+            <div class=${css.sectionHeader}>
+              <span class=${css.stepNumber} aria-hidden="true">1</span>
+              <div class=${css.sectionHeading}>
+                <div class=${css.sectionTitle}>Compile the deployed source</div>
+                <div class=${css.sectionDescription}>Use the same implementation contract and compiler configuration as the deployment.</div>
+              </div>
+            </div>
+            <label class=${css.field}>
+              Compiled main contract
+              <select class=${css.select} data-id="contractVerificationContractSelect" disabled=${workflowDisabled} onchange=${(event) => this.selectContract(event.target.value)}>
+                ${hasDeployableContract
+                  ? compilationChoices.map((choice) => yo`<option value=${choice.id} selected=${choice.id === compilation.selection} disabled=${!choice.deployable}>${choice.contractName} — ${choice.fileName}${choice.deployable ? '' : ' (interface/abstract — no bytecode)'}</option>`)
+                  : yo`<option value="">${compilationChoices.length ? 'No deployable contract found' : 'Compile a contract first'}</option>`}
+              </select>
+            </label>
+            <div class=${css.actionGrid}>
+              <button class="${css.button} ${css.primaryButton} ${css.actionWide}" data-id="contractVerificationCompileCurrent" disabled=${!this.state.workspaceReady || this.state.compiling || this.state.checking} onclick=${() => this.compileCurrentFile()}>${this.state.compiling ? 'Compiling...' : 'Compile current .sol'}</button>
+            </div>
+            ${this.state.compileNeedsSuccess && !this.state.compiling
+              ? yo`<div class="${css.note} ${css.hint}" data-id="contractVerificationCompileHint">The latest compile produced no deployable artifact. Fix the source, then compile it again.</div>`
+              : (!hasDeployableContract ? yo`<div class="${css.note} ${css.hint}" data-id="contractVerificationCompileHint">${compilationChoices.length ? 'Only interfaces or abstract contracts were compiled. Open and compile the deployed implementation.' : 'No compiled artifact is available. Open and compile the deployed contract.'}</div>` : '')}
+          </section>
+
+          <section class=${css.section} data-id="contractVerificationStepStatus">
+            <div class=${css.sectionHeader}>
+              <span class=${css.stepNumber} aria-hidden="true">2</span>
+              <div class=${css.sectionHeading}>
+                <div class=${css.sectionTitle}>Check the deployed address</div>
+                <div class=${css.sectionDescription}>Choose the exact network before querying the public TronScan record.</div>
+              </div>
+            </div>
+            <label class=${css.field}>
+              Network
+              <select class=${css.select} data-id="contractVerificationNetworkSelect" onchange=${(event) => this.setNetwork(event.target.value)}>
+                ${Object.keys(this.tronScanTargets).map((key) => yo`<option value=${key} selected=${this.state.network === key}>${this.tronScanTargets[key].label}</option>`)}
+              </select>
+            </label>
+            <label class=${css.field}>
+              Contract address
+              <input class=${css.input} data-id="contractVerificationAddressInput" placeholder="Base58 T... or 41... hex" value=${this.state.contractAddress} oninput=${(event) => this.setContractAddress(event.target.value)} />
+            </label>
+            <div class=${css.actionGrid}>
+              <button class="${css.button} ${css.primaryButton}" data-id="contractVerificationCheckStatus" disabled=${this.state.checking || this.state.compiling} onclick=${() => this.checkStatus()}>${this.state.checking ? 'Checking...' : 'Check status'}</button>
+              <a class=${css.linkButton} data-id="contractVerificationOpenTronScan" aria-label="Open verification lookup" target="_blank" rel="noopener noreferrer" href=${this.getTarget().verify}>Open TronScan ↗</a>
+            </div>
+          </section>
+
+          <section class=${css.section} data-id="contractVerificationStepFiles">
+            <div class=${css.sectionHeader}>
+              <span class=${css.stepNumber} aria-hidden="true">3</span>
+              <div class=${css.sectionHeading}>
+                <div class=${css.sectionTitle}>Prepare verification files</div>
+                <div class=${css.sectionDescription}>Export the Solidity upload first; use the JSON only as a settings reference.</div>
+              </div>
+            </div>
+            <div class=${css.subgroup}>
+              <div class=${css.subgroupTitle}>Flattened Solidity source</div>
+              <div class=${css.subgroupDescription}>This is the contract file you upload to TronScan.</div>
+              <div class=${css.actionGrid} aria-label="Flatten sources">
+                <button class=${css.button} data-id="contractVerificationFlatten" disabled=${workflowDisabled} onclick=${() => this.flatten()}>Preview source</button>
+                <button class=${css.button} data-id="contractVerificationCopyFlatten" disabled=${workflowDisabled} onclick=${() => this.copyFlatten()}>Copy source</button>
+                <button class=${css.button} aria-label="Download flattened .sol" data-id="contractVerificationDownloadFlatten" disabled=${workflowDisabled} onclick=${() => this.downloadFlatten()}>Download .sol</button>
+                <button class=${css.button} aria-label="Save flattened .sol to workspace" data-id="contractVerificationSaveFlatten" disabled=${workflowDisabled} onclick=${() => this.saveFlatten()}>Save to workspace</button>
+              </div>
+            </div>
+            <div class=${css.subgroup}>
+              <div class=${css.subgroupTitle}>Compiler settings reference</div>
+              <div class=${css.subgroupDescription}>Keep this beside TronScan while matching compiler and optimizer fields.</div>
+              <div class=${css.actionGrid} aria-label="Verification metadata">
+                <button class="${css.button} ${css.actionWide}" data-id="contractVerificationGeneratePackage" disabled=${workflowDisabled} onclick=${() => this.generatePackage()}>Preview settings</button>
+                <button class=${css.button} data-id="contractVerificationCopyPackage" disabled=${workflowDisabled} onclick=${() => this.copyPackage()}>Copy JSON</button>
+                <button class=${css.button} data-id="contractVerificationDownloadPackage" disabled=${workflowDisabled} onclick=${() => this.downloadPackage()}>Download JSON</button>
+              </div>
+              <div class="${css.note} ${css.noteCallout}">Reference only — do not upload the settings JSON to TronScan.</div>
+            </div>
           ${packagePreview ? yo`
             <div class=${css.metadataCard} data-id="contractVerificationMetadataPreview">
               <strong>Verification settings reference (not for upload)</strong>
@@ -1549,20 +1814,26 @@ export class ContractVerificationTab extends ViewPlugin {
               <textarea class=${css.input} readonly rows="14" data-id="contractVerificationFlattenText" style="width:100%;font-family:monospace;white-space:pre">${this.state.flattenText}</textarea>
             </details>
           ` : ''}
-          <ul class=${css.checklist} data-id="contractVerificationPackageChecklist">
-            <li>Compile the exact source that was deployed.</li>
-            <li>Select the actual deployable main contract — not an imported interface or abstract contract.</li>
-            <li>Download the flattened .sol and upload it under "Contract File(s)" on TronScan.</li>
-            <li>Match the compiler version, optimizer runs, VM version, license, and main contract name.</li>
-            <li>The metadata JSON is a reference checklist only; TronScan does not accept it as an upload.</li>
-          </ul>
+          </section>
+
+          <details class=${css.guide}>
+            <summary class=${css.guideSummary}>Manual submission checklist</summary>
+            <div class=${css.guideContent}>
+              <ul class=${css.checklist} data-id="contractVerificationPackageChecklist">
+                <li>Compile the exact source that was deployed.</li>
+                <li>Select the actual deployable main contract — not an imported interface or abstract contract.</li>
+                <li>Download the flattened .sol and upload it under "Contract File(s)" on TronScan.</li>
+                <li>Match the compiler version, optimizer runs, VM version, license, and main contract name.</li>
+                <li>The metadata JSON is a reference checklist only; TronScan does not accept it as an upload.</li>
+              </ul>
+            </div>
+          </details>
           ${this.getPackageHistory().length ? yo`
             <div class=${css.note} data-id="contractVerificationPackageHistory">
               Recent settings references: ${this.getPackageHistory().map((item) => `${item.contractName || 'contract'} · ${item.network || 'network'} · ${item.generatedAt || ''}`).join(' | ')}
             </div>
           ` : ''}
-          <div class=${css.note}>TronScan source submission remains a manual external step. Upload the generated .sol file; there is no full-package JSON paste field. TronIDE does not store API keys or verification receipts in this MVP.</div>
-          <div class=${css.note}>Sourcify, Etherscan, Blockscout, and Routescan are EVM services and are not marked available for TRON verification in this release.</div>
+          <div class="${css.note} ${css.scopeNote}">TronScan submission is manual: upload the generated .sol file. TronIDE does not store API keys or verification receipts.<br />Sourcify, Etherscan, Blockscout, and Routescan are EVM-only services and are unavailable here.</div>
         </div>
       </div>
     `

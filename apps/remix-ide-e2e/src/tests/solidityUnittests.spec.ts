@@ -49,13 +49,96 @@ module.exports = {
       .clickLaunchIcon('filePanel')
       .openFile('simple_storage.sol')
       .click('*[data-id="verticalIconsKindsolidityUnitTesting"]')
-      .waitForElementPresent('*[data-id="testTabGenerateTestFile"]')
+      .waitForElementVisible('*[data-id="testTabGenerateTestFile"]')
+      .execute(function () {
+        const win = window as any
+        const fs = win.remixFileSystem
+        const collectFiles = (directory: string): string[] => {
+          if (!fs.existsSync(directory)) return []
+          return fs.readdirSync(directory).reduce((files: string[], name: string) => {
+            const path = `${directory.replace(/\/$/, '')}/${name}`
+            return fs.statSync(path).isDirectory() ? files.concat(collectFiles(path)) : files.concat(path)
+          }, [])
+        }
+        win.__unitGenerateFilesBefore = collectFiles('/.workspaces')
+        win.__unitGenerateErrors = []
+        window.addEventListener('error', (event) => win.__unitGenerateErrors.push(`error: ${event.message}`))
+        window.addEventListener('unhandledrejection', (event) => win.__unitGenerateErrors.push(`rejection: ${String(event.reason && event.reason.message ? event.reason.message : event.reason)}`))
+        const editor = document.getElementById('input') as any
+        return {
+          buttonDisabled: (document.querySelector('[data-id="testTabGenerateTestFile"]') as HTMLButtonElement).disabled,
+          inputPath: (document.querySelector('[data-id="uiPathInput"]') as HTMLInputElement).value,
+          activeTab: document.querySelector('remix-tabs remix-tab.active')?.textContent?.trim(),
+          editorContainsSimpleStorage: !!(editor && editor.editor && editor.editor.getValue().includes('contract SimpleStorage')),
+          files: win.__unitGenerateFilesBefore
+        }
+      }, [], function (result) {
+        const value = result.value as { buttonDisabled: boolean, inputPath: string, activeTab?: string, editorContainsSimpleStorage: boolean, files: string[] }
+        this.assert.equal(value.buttonDisabled, false, `Generate is enabled for the existing test folder: ${JSON.stringify(value)}`)
+        this.assert.equal(value.inputPath, 'tests', `Generate targets the default tests folder: ${JSON.stringify(value)}`)
+        this.assert.ok(value.editorContainsSimpleStorage && /simple_storage/i.test(value.activeTab || ''), `the selected Solidity file is current before Generate: ${JSON.stringify(value)}`)
+      })
       .click('*[data-id="testTabGenerateTestFile"]')
-      .waitForElementPresent('*[title="tests/simple_storage_test.sol"]')
+      .executeAsync(function (done) {
+        const win = window as any
+        const fs = win.remixFileSystem
+        const before = win.__unitGenerateFilesBefore || []
+        const collectFiles = (directory: string): string[] => {
+          if (!fs.existsSync(directory)) return []
+          return fs.readdirSync(directory).reduce((files: string[], name: string) => {
+            const path = `${directory.replace(/\/$/, '')}/${name}`
+            return fs.statSync(path).isDirectory() ? files.concat(collectFiles(path)) : files.concat(path)
+          }, [])
+        }
+        const deadline = Date.now() + 10000
+        const poll = () => {
+          const files = collectFiles('/.workspaces')
+          const created = files.filter((path: string) => !before.includes(path) && path.endsWith('_test.sol'))
+          if (created.length || Date.now() >= deadline) {
+            const modal = document.querySelector('.modal.show, [data-id$="ModalDialogContainer-react"]')
+            const editor = document.getElementById('input') as any
+            return done({
+              created,
+              files,
+              errors: win.__unitGenerateErrors,
+              modalText: modal && modal.textContent,
+              buttonDisabled: (document.querySelector('[data-id="testTabGenerateTestFile"]') as HTMLButtonElement).disabled,
+              inputPath: (document.querySelector('[data-id="uiPathInput"]') as HTMLInputElement).value,
+              activeTab: document.querySelector('remix-tabs remix-tab.active')?.textContent?.trim(),
+              editorContainsSimpleStorage: !!(editor && editor.editor && editor.editor.getValue().includes('contract SimpleStorage'))
+            })
+          }
+          window.setTimeout(poll, 100)
+        }
+        poll()
+      }, [], function (result) {
+        const value = result.value as { created: string[], files: string[], errors: string[], modalText?: string }
+        this.assert.deepEqual(value.created, ['/.workspaces/default_workspace/tests/simple_storage_test.sol'], `Generate creates exactly the expected workspace file: ${JSON.stringify(value)}`)
+        this.assert.deepEqual(value.errors, [], `Generate raises no page errors: ${JSON.stringify(value)}`)
+        this.assert.ok(!value.modalText, `Generate raises no failure modal: ${JSON.stringify(value)}`)
+      })
+      .execute(function () {
+        return (window as any).remixFileSystem.readFileSync('/.workspaces/default_workspace/tests/simple_storage_test.sol', 'utf8')
+      }, [], function (result) {
+        const content = result.value as string
+        this.assert.ok(content.includes('import "../simple_storage.sol";'), 'generated workspace file imports the selected contract')
+        this.assert.ok(content.includes('contract testSuite'), 'generated workspace file contains the executable test-suite scaffold')
+      })
       .clickLaunchIcon('filePanel')
-      .pause(10000)
+      .waitForElementVisible('*[data-id="treeViewLitreeViewItemtests"]', 60000)
+      .execute(function () {
+        const generated = document.querySelector('[data-path="tests/simple_storage_test.sol"]')
+        const testsFolder = document.querySelector('*[data-id="treeViewLitreeViewItemtests"]') as HTMLElement
+        if (!generated && testsFolder) testsFolder.click()
+      })
+      .waitForElementVisible('*[data-id="treeViewLitreeViewItemtests/simple_storage_test.sol"]', 60000)
       .openFile('tests/simple_storage_test.sol')
+      .getEditorValue((content) => {
+        browser.assert.ok(content.includes('import "../simple_storage.sol";'), 'opened generated test imports the selected contract')
+        browser.assert.ok(content.includes('contract testSuite'), 'opened generated test contains the executable test-suite scaffold')
+      })
       .removeFile('tests/simple_storage_test.sol', 'default_workspace')
+      .waitForElementNotPresent('*[data-id="treeViewLitreeViewItemtests/simple_storage_test.sol"]')
   },
 
   'Should run simple unit test `simple_storage_test.sol` ': function (browser: NightwatchBrowser) {
@@ -152,14 +235,33 @@ module.exports = {
       .addFile('myTests/simple_storage_test.sol', sources[0]['tests/simple_storage_test.sol'])
       .clickLaunchIcon('solidityUnitTesting')
       .setValue('*[data-id="uiPathInput"]', 'myTests')
-      .click('*[data-id="testTabGenerateTestFolder"]')
-      .clickElementAtPosition('.singleTestLabel', 0)
+      // myTests already exists because the fixture was just created. Commit
+      // the path with Enter rather than clicking the disabled Create button.
+      .sendKeys('*[data-id="uiPathInput"]', browser.Keys.ENTER)
+      .waitForElementContainsText('.singleTestLabel', '/myTests/simple_storage_test.sol', 15000)
+      .execute(function () {
+        return {
+          inputPath: (document.querySelector('[data-id="uiPathInput"]') as HTMLInputElement).value,
+          labels: Array.from(document.querySelectorAll('.singleTestLabel')).map((label) => label.textContent.trim()),
+          checked: Array.from(document.querySelectorAll('.singleTest')).filter((input: HTMLInputElement) => input.checked).length,
+          runDisabled: (document.querySelector('[data-id="testTabRunTestsTabRunAction"]') as HTMLButtonElement).disabled
+        }
+      }, [], function (result) {
+        const value = result.value as { inputPath: string, labels: string[], checked: number, runDisabled: boolean }
+        this.assert.deepEqual(value, {
+          inputPath: 'myTests',
+          labels: ['/myTests/simple_storage_test.sol'],
+          checked: 1,
+          runDisabled: false
+        }, `the existing test directory is selected without deselecting its only test: ${JSON.stringify(value)}`)
+      })
       .scrollAndClick('*[data-id="testTabRunTestsTabRunAction"]')
       .waitForElementPresent('*[data-id="testTabSolidityUnitTestsOutputheader"]', 60000)
-      .waitForElementPresent('*[data-id="testTabSolidityUnitTestsOutput"]')
+      .waitForElementContainsText('*[data-id="testTabSolidityUnitTestsOutput"]', 'MyTest (/myTests/simple_storage_test.sol)', 60000)
       .clearValue('*[data-id="uiPathInput"]')
       .setValue('*[data-id="uiPathInput"]', 'tests')
-      .click('*[data-id="testTabGenerateTestFolder"]')
+      .sendKeys('*[data-id="uiPathInput"]', browser.Keys.ENTER)
+      .waitForElementContainsText('.singleTestLabel', '/tests/4_Ballot_test.sol', 15000)
   },
 
   'Changing current path when workspace changed': function (browser: NightwatchBrowser) {

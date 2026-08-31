@@ -79,15 +79,15 @@ module.exports = {
       // eslint-disable-next-line dot-notation
       .execute(function () { document.querySelector('*[data-id="modalDialogCustomPromptTextRename"]')['value'] = 'workspace_name_renamed' })
       .click('*[data-id="workspacesModalDialogModalDialogModalFooter-react"] .modal-ok')
-      .click('*[data-id="workspacesSelect"] option[value="workspace_name_1"]')
+      .selectWorkspace('workspace_name_1')
       .waitForElementNotPresent('*[data-id="treeViewLitreeViewItemtest.sol"]')
-      .click('*[data-id="workspacesSelect"] option[value="workspace_name_renamed"]')
+      .selectWorkspace('workspace_name_renamed')
       .waitForElementVisible('*[data-id="treeViewLitreeViewItemtest.sol"]')
   },
 
   'Should delete a workspace': function (browser: NightwatchBrowser) {
     browser
-      .click('*[data-id="workspacesSelect"] option[value="workspace_name_1"]')
+      .selectWorkspace('workspace_name_1')
       .click('*[data-id="workspaceDelete"]') // delete workspace_name_1
       .waitForElementVisible('*[data-id="workspacesModalDialogModalDialogModalFooter-react"] .modal-ok')
       .click('*[data-id="workspacesModalDialogModalDialogModalFooter-react"] .modal-ok')

@@ -21,13 +21,13 @@ async function createWorkspace (page: Page, name: string) {
 }
 
 async function dismissModal (page: Page) {
-  // App modals expose an OK/Close button as `<id>-modal-footer-ok-react`. Click it
-  // via evaluate to bypass the fade animation (which fails Playwright stability).
-  await page.evaluate(() => {
-    const el = document.querySelector('[data-id$="-modal-footer-ok-react"]') as HTMLElement | null
-    if (el) el.click()
-  })
-  await page.waitForTimeout(500)
+  // Validation failures use a Close-only dialog rather than the standard
+  // confirmation footer. Prefer the accessible button so both modal shapes
+  // are dismissed reliably after the fade animation.
+  const modal = page.locator('[role="dialog"]:visible').last()
+  const close = modal.getByRole('button', { name: /^(Close|OK)$/ }).first()
+  await close.evaluate((element) => (element as HTMLElement).click())
+  await expect(modal).toBeHidden({ timeout: 5_000 })
 }
 
 test.beforeAll(() => fs.mkdirSync(tmpDir, { recursive: true }))

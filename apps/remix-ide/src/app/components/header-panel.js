@@ -34,14 +34,15 @@ const profile = {
 }
 
 export class HeaderPanel extends Plugin {
-  constructor (appManager, mainview) {
+  constructor (appManager, mainview, verticalIcons) {
     super(profile)
     this.events = new EventEmitter()
     this.appManager = appManager
     this._deps = {
       themeModule: globalRegistry.get('themeModule').api,
       fileProviders: globalRegistry.get('fileproviders').api,
-      mainview
+      mainview,
+      verticalIcons
     }
   }
 

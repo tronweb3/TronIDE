@@ -23,8 +23,8 @@ import { addressToHex, tConvertAddresses, tConvertTypes } from '../util'
 
 export function makeFullTypeDefinition (typeDef) {
   if (typeDef && typeDef.type.indexOf('tuple') === 0 && typeDef.components) {
-    const innerTypes = typeDef.components.map((innerType) => { return this.makeFullTypeDefinition(innerType) })
-    return `tuple(${innerTypes.join(',')})${this.extractSize(typeDef.type)}`
+    const innerTypes = typeDef.components.map((innerType) => { return makeFullTypeDefinition(innerType) })
+    return `tuple(${innerTypes.join(',')})${extractSize(typeDef.type)}`
   }
   return typeDef.type
 }
@@ -211,7 +211,7 @@ export function getFunction (abi, fnName) {
     const fn = abi[i]
     if (fn.type === 'function' && fnName === fn.name + '(' + fn.inputs.map((value) => {
       if (value.components) {
-        const fullType = this.makeFullTypeDefinition(value)
+        const fullType = makeFullTypeDefinition(value)
         return fullType.replace(/tuple/g, '') // return of makeFullTypeDefinition might contain `tuple`, need to remove it cause `methodIdentifier` (fnName) does not include `tuple` keyword
       } else {
         return value.type

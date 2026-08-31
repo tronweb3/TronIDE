@@ -20,26 +20,40 @@
 'use strict'
 import { NightwatchBrowser } from 'nightwatch'
 import init from '../helpers/init'
+import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
+
+const JSZip = require('jszip')
 
 const testData = {
   testFile1: path.resolve(__dirname + '/editor.spec.js'), // eslint-disable-line
   testFile2: path.resolve(__dirname + '/fileExplorer.test.js'), // eslint-disable-line
   testFile3: path.resolve(__dirname + '/generalSettings.test.js'), // eslint-disable-line
-  restoreBackupZip: '/tmp/tronide-restore-e2e.zip'
+  restoreBackupZip: path.join(os.tmpdir(), 'tronide-restore-e2e.zip')
 }
 
 module.exports = {
 
-  before: function (browser: NightwatchBrowser, done: VoidFunction) {
-    init(browser, done)
+  before: async function (browser: NightwatchBrowser) {
+    const archive = new JSZip()
+    archive.file('.workspaces/RestoreE2E/contracts/Restored.sol', 'contract Restored { function value() public pure returns (uint) { return 12345; } }')
+    archive.file('.workspaces/RestoreE2E/README.txt', 'restore backup e2e marker')
+    fs.writeFileSync(testData.restoreBackupZip, await archive.generateAsync({ type: 'nodebuffer' }))
+
+    await new Promise<void>((resolve) => init(browser, resolve))
+  },
+
+  after: function (browser: NightwatchBrowser, done: VoidFunction) {
+    fs.rmSync(testData.restoreBackupZip, { force: true })
+    done()
   },
 
   'Should create a new file `5_New_contract.sol` in file explorer': function (browser: NightwatchBrowser) {
     browser.waitForElementVisible('div[data-id="remixIdeSidePanel"]')
       .clickLaunchIcon('filePanel')
       .assert.containsText('h6[data-id="sidePanelSwapitTitle"]', 'FILE EXPLORERS')
-      .clickIfPresent('li[data-id="treeViewLitreeViewItemREADME.txt"]') // focus on root directory when present
+      .focusWorkspaceRoot()
       .click('*[data-id="fileExplorerNewFilecreateNewFile"]')
       .pause(1000)
       .waitForElementVisible('*[data-id$="/blank"]')
@@ -59,13 +73,54 @@ module.exports = {
   'Should delete file `5_Renamed_Contract.sol` from file explorer': function (browser: NightwatchBrowser) {
     browser
       .waitForElementVisible('*[data-id="treeViewLitreeViewItem5_Renamed_Contract.sol"]')
-      .removeFile('5_Renamed_Contract.sol', 'default_workspace')
+      // rightClickElement deliberately emits the keyboard/WebDriver-style
+      // (0, 0) contextmenu event that used to put Delete under the fixed logo.
+      .rightClickElement('[data-path="5_Renamed_Contract.sol"]')
+      .waitForElementVisible('#menuitemdelete')
+      .execute(function () {
+        const deleteItem = document.querySelector('#menuitemdelete') as HTMLElement
+        const boundary = deleteItem.getBoundingClientRect()
+        const hit = document.elementFromPoint(
+          boundary.left + boundary.width / 2,
+          boundary.top + boundary.height / 2
+        )
+        return {
+          top: boundary.top,
+          bottom: boundary.bottom,
+          viewportHeight: window.innerHeight,
+          hitIsDelete: !!hit && (hit === deleteItem || deleteItem.contains(hit))
+        }
+      }, [], function (result) {
+        const value = result.value as { top: number, bottom: number, viewportHeight: number, hitIsDelete: boolean }
+        this.assert.ok(value.top >= 0 && value.bottom <= value.viewportHeight, `top-edge Delete stays inside the viewport: ${JSON.stringify(value)}`)
+        this.assert.equal(value.hitIsDelete, true, `top-edge Delete is the actual pointer target: ${JSON.stringify(value)}`)
+      })
+      // Keep a real WebDriver click: a DOM .click() would hide header overlap.
+      .click('#menuitemdelete')
+      .waitForElementVisible('*[data-id="default_workspaceModalDialogContainer-react"]', 60000)
+      .execute(function () {
+        const fs = (window as any).remixFileSystem
+        return fs.existsSync('/.workspaces/default_workspace/5_Renamed_Contract.sol')
+      }, [], function (result) {
+        this.assert.equal(result.value, true, 'the file still exists until deletion is confirmed')
+      })
+      // The modal content owns the Enter handler and is focused when shown.
+      // Use a real keyboard action: the span-based OK control is intermittently
+      // reported non-interactable by ChromeDriver even while visibly centered.
+      .sendKeys('*[data-id="default_workspaceModalDialogContainer-react"] .modal-content', browser.Keys.ENTER)
+      .waitForElementNotVisible('*[data-id="default_workspaceModalDialogContainer-react"]', 10000)
       .waitForElementNotPresent('*[data-id="treeViewLitreeViewItem5_Renamed_Contract.sol"]')
+      .execute(function () {
+        const fs = (window as any).remixFileSystem
+        return fs.existsSync('/.workspaces/default_workspace/5_Renamed_Contract.sol')
+      }, [], function (result) {
+        this.assert.equal(result.value, false, 'keyboard confirmation removes the requested filesystem path')
+      })
   },
 
   'Should create a new folder': function (browser: NightwatchBrowser) {
     browser
-      .clickIfPresent('li[data-id="treeViewLitreeViewItemREADME.txt"]') // focus on root directory when present
+      .focusWorkspaceRoot()
       .click('[data-id="fileExplorerNewFilecreateNewFolder"]')
       .pause(1000)
       .waitForElementVisible('*[data-id$="/blank"]')
@@ -104,7 +159,7 @@ module.exports = {
       .waitForElementVisible('#menuitemcopy')
       .click('#menuitemcopy')
       .pause(3000)
-      .rightClickElement('[data-path="contracts"]')
+      .rightClickElement('li[data-id^="treeViewLitreeViewItem"][data-id$="contracts"]')
       .waitForElementVisible('#menuitempaste')
       .click('#menuitempaste')
       .waitForElementVisible('*[data-id="treeViewLitreeViewItemcontracts/Copy_CopySource.sol"]', 60000)
@@ -117,7 +172,7 @@ module.exports = {
 
     browser
       .clickLaunchIcon('filePanel')
-      .clickIfPresent('li[data-id="treeViewLitreeViewItemREADME.txt"]')
+      .focusWorkspaceRoot()
       .click('[data-id="fileExplorerNewFilecreateNewFolder"]')
       .pause(3000)
       .waitForElementVisible('*[data-id$="/blank"]')
@@ -132,7 +187,8 @@ module.exports = {
       .sendKeys('*[data-id$="/blank"] .remixui_items', browser.Keys.ENTER)
       .waitForElementVisible('*[data-id="treeViewLitreeViewItemCopyFolder/Nested.sol"]', 60000)
       .setEditorValue(nestedContent)
-      .pause(5500)
+      // Copy immediately: FileManager must durably flush the active source
+      // instead of depending on the editor's five-second autosave timer.
       .openFile('CopyFolder/Nested.sol')
       .testEditorValue(nestedContent)
       .rightClickElement('[data-path="CopyFolder"]')
@@ -141,7 +197,7 @@ module.exports = {
         ;(document.querySelector('#menuitemcopy') as HTMLElement).click()
       })
       .pause(3000)
-      .rightClickElement('[data-path="contracts"]')
+      .rightClickElement('li[data-id^="treeViewLitreeViewItem"][data-id$="contracts"]')
       .waitForElementVisible('#menuitempaste')
       .execute(function () {
         ;(document.querySelector('#menuitempaste') as HTMLElement).click()
@@ -160,10 +216,10 @@ module.exports = {
 
     browser
       .clickLaunchIcon('filePanel')
-      .clickIfPresent('li[data-id="treeViewLitreeViewItemREADME.txt"]')
+      .focusWorkspaceRoot()
       .addFile('LargeCopyUnrelated.sol', { content: unrelated })
       .clickLaunchIcon('filePanel')
-      .clickIfPresent('li[data-id="treeViewLitreeViewItemREADME.txt"]')
+      .focusWorkspaceRoot()
       .click('[data-id="fileExplorerNewFilecreateNewFolder"]')
       .pause(3000)
       .waitForElementVisible('*[data-id$="/blank"]')
@@ -195,7 +251,25 @@ module.exports = {
         ;(document.querySelector('#menuitemcopy') as HTMLElement).click()
       })
       .pause(3000)
-      .rightClickElement('[data-path="contracts"]')
+      // Rendering eight children leaves a tall expanded subtree. Collapse it
+      // before targeting a root sibling and require the destination row to be
+      // present instead of letting rightClickElement fail inside executeScript.
+      .execute(function () {
+        const folder = document.querySelector('[data-path="LargeCopyFolder"]') as HTMLElement
+        const row = folder && folder.closest('li')
+        const expanded = !!(row && row.querySelector(':scope > div .fa-folder-open'))
+        if (expanded) folder.click()
+        return { folderFound: !!folder, collapsedExpandedFolder: expanded }
+      }, [], function (result) {
+        const value = result.value as { folderFound: boolean, collapsedExpandedFolder: boolean }
+        this.assert.equal(value.folderFound, true, `large copy source remains rendered after Copy: ${JSON.stringify(value)}`)
+      })
+      // A prior nested copy can legitimately re-render this row with its
+      // workspace-qualified internal key (`default_workspace/contracts`).
+      // Match the TreeView row by its stable path suffix in both forms.
+      .waitForElementVisible('li[data-id^="treeViewLitreeViewItem"][data-id$="contracts"]', 15000)
+      .scrollInto('li[data-id^="treeViewLitreeViewItem"][data-id$="contracts"]')
+      .rightClickElement('li[data-id^="treeViewLitreeViewItem"][data-id$="contracts"]')
       .waitForElementVisible('#menuitempaste')
       .execute(function () {
         ;(document.querySelector('#menuitempaste') as HTMLElement).click()
@@ -220,7 +294,7 @@ module.exports = {
       .waitForElementVisible('#menuitemcopy')
       .click('#menuitemcopy')
       .pause(3000)
-      .rightClickElement('[data-path="contracts"]')
+      .rightClickElement('li[data-id^="treeViewLitreeViewItem"][data-id$="contracts"]')
       .waitForElementVisible('#menuitempaste')
       .click('#menuitempaste')
       .waitForElementVisible('*[data-id="treeViewLitreeViewItemcontracts/Copy_CollisionSource.sol"]', 60000)
@@ -228,7 +302,7 @@ module.exports = {
       .waitForElementVisible('#menuitemcopy')
       .click('#menuitemcopy')
       .pause(3000)
-      .rightClickElement('[data-path="contracts"]')
+      .rightClickElement('li[data-id^="treeViewLitreeViewItem"][data-id$="contracts"]')
       .waitForElementVisible('#menuitempaste')
       .click('#menuitempaste')
       .pause(5000)
@@ -271,9 +345,10 @@ module.exports = {
       })
   },
 
-  'Should create TronIDE backup zip artifact from landing download workflow': function (browser: NightwatchBrowser) {
+  'Should create TronIDE backup zip artifact from header workspace workflow': function (browser: NightwatchBrowser) {
     browser
       .url(process.env.E2E_BASE_URL || 'http://127.0.0.1:8080')
+      .refresh()
       .pause(5000)
       .execute(function () {
         const skip = document.querySelector('[id="remixTourSkipbtn"]') as HTMLElement
@@ -295,16 +370,12 @@ module.exports = {
           return originalDispatch.call(this, event)
         }
       })
-      .waitForElementVisible('*[data-id="landingPageHomeContainer"]', 60000)
-      .execute(function () {
-        const buttons = Array.from(document.querySelectorAll('button, a, u, span')) as HTMLElement[]
-        const downloadButton = buttons.find((node) => /download all files/i.test(node.textContent || ''))
-        if (downloadButton) downloadButton.click()
-        return { clicked: !!downloadButton, labels: buttons.map((node) => (node.textContent || '').trim()).filter(Boolean).slice(0, 80) }
-      }, [], function (result) {
-        const value = result.value as { clicked: boolean, labels: string[] }
-        this.assert.equal(value.clicked, true, `Download all files control is reachable: ${JSON.stringify(value.labels)}`)
-      })
+      .waitForElementVisible('*[data-id="headerWorkspaceDropdown"]', 60000)
+      .click('*[data-id="headerWorkspaceDropdown"]')
+      .waitForElementVisible('*[data-id="headerBackupWorkspace"]', 10000)
+      .assert.containsText('*[data-id="headerBackupWorkspace"]', 'Backup')
+      .click('*[data-id="headerBackupWorkspace"]')
+      .waitForElementNotPresent('*[data-id="headerBackupWorkspace"]', 10000)
       .pause(5000)
       .execute(function () {
         const win = window as unknown as { __tronideBackupBlob?: Blob, __tronideBackupName?: string }

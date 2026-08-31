@@ -17,7 +17,6 @@
  * limitations under the License.
  */
 
-
 // const https = require('https')
 
 export default function sauce (callback: VoidFunction): void {

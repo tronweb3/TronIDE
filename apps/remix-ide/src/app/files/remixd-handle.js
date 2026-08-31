@@ -18,22 +18,13 @@
  */
 
 import isElectron from 'is-electron'
-import { WebsocketPlugin } from '@remixproject/engine-web'
+import { SecureWebsocketPlugin, requestLocalSessionUrl } from '../components/secure-websocket-plugin'
 import * as packageJson from '../../../../../package.json'
 import { version as remixdVersion } from '../../../../../libs/remixd/package.json'
 var yo = require('yo-yo')
 var modalDialog = require('../ui/modaldialog')
 var modalDialogCustom = require('../ui/modal-dialog-custom')
 var copyToClipboard = require('../ui/copy-to-clipboard')
-
-function createSessionToken () {
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    const bytes = new Uint8Array(16)
-    crypto.getRandomValues(bytes)
-    return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('')
-  }
-  return String(Date.now()) + String(Math.random()).slice(2)
-}
 
 var csjs = require('csjs-inject')
 
@@ -48,6 +39,12 @@ var css = csjs`
   }
 `
 const LOCALHOST = ' - connect to localhost - '
+// A direct Remixd activation can race the workspace selector's initial
+// restore. Keep the provider handshake alive while that mutation finishes,
+// but still fail closed instead of leaving an apparently-connected plugin
+// with no workspace.
+const LOCALHOST_WORKSPACE_RETRY_MS = 100
+const LOCALHOST_WORKSPACE_WAIT_MS = 15000
 
 const profile = {
   name: 'remixd',
@@ -60,15 +57,57 @@ const profile = {
   version: packageJson.version
 }
 
-export class RemixdHandle extends WebsocketPlugin {
+export class RemixdHandle extends SecureWebsocketPlugin {
   constructor (localhostProvider, appManager) {
     super(profile)
     this.localhostProvider = localhostProvider
     this.appManager = appManager
+    this.connectionMonitor = null
+    this._activationGeneration = 0
+    this._pendingActivation = false
+    this._workspaceActivationRequested = false
+    this._providerInitPromise = null
+    // PluginManager adds a plugin to `actives` only after its activate hook
+    // resolves. Do the provider handshake from the manager's activation event
+    // instead of from activate(), otherwise RemixDProvider.init() calls back
+    // into manager.call while remixd is still considered inactive and starts a
+    // second activation of the same plugin.
+    this._onManagerActivated = (activatedProfile) => {
+      if (!activatedProfile || activatedProfile.name !== this.name || !this._pendingActivation) return
+      this._pendingActivation = false
+      const generation = this._activationGeneration
+      this._providerInitPromise = this._initialiseProvider(generation)
+      // Direct manager activation (Electron or Plugin Manager) does not have
+      // a FilePanel.setWorkspace caller waiting for readiness. Consume errors
+      // here so they are reported without an unhandled rejection; callers that
+      // requested localhost also await the same promise via whenReady().
+      this._providerInitPromise.catch(async (error) => {
+        if (generation !== this._activationGeneration) return
+        await reportConnectionFailure(error)
+        if (this.appManager.actives.includes(this.name)) {
+          // This is an internal rollback, not a plugin request. Calling the
+          // permission-checked API here can be denied when the activation
+          // event has no requestFrom; toggleActive is the manager's internal
+          // fail-closed path.
+          this.appManager.toggleActive(this.name).catch(() => {})
+        }
+      })
+    }
+    if (this.appManager.event && typeof this.appManager.event.on === 'function') {
+      this.appManager.event.on('activate', this._onManagerActivated)
+    }
   }
 
-  deactivate () {
-    if (super.socket) super.deactivate()
+  async deactivate () {
+    this._activationGeneration++
+    this._pendingActivation = false
+    this._workspaceActivationRequested = false
+    this._providerInitPromise = null
+    if (this.connectionMonitor) {
+      clearInterval(this.connectionMonitor)
+      this.connectionMonitor = null
+    }
+    if (this.socket) await super.deactivate()
     // this.appManager.deactivatePlugin('git') // plugin call doesn't work.. see issue https://github.com/ethereum/remix-plugin/issues/342
     if (this.appManager.actives.includes('hardhat')) this.appManager.deactivatePlugin('hardhat')
     if (this.appManager.actives.includes('slither')) this.appManager.deactivatePlugin('slither')
@@ -78,7 +117,27 @@ export class RemixdHandle extends WebsocketPlugin {
   }
 
   activate () {
-    this.connectToLocalhost()
+    return this.connectToLocalhost()
+  }
+
+  connect (url) {
+    // The per-session token is transport state, not plugin identity. Keeping it
+    // out of profile.url lets the manager retain an immutable permission-bound
+    // profile while the websocket still connects to the authenticated endpoint.
+    return super.connect(this.sessionUrl || url)
+  }
+
+  requestWorkspaceActivation () {
+    this._workspaceActivationRequested = true
+  }
+
+  clearWorkspaceActivationRequest () {
+    this._workspaceActivationRequested = false
+  }
+
+  async whenReady () {
+    if (this._providerInitPromise) await this._providerInitPromise
+    if (!this.localhostProvider.isConnected()) throw new Error('Remixd provider is not connected.')
   }
 
   async canceled () {
@@ -93,82 +152,101 @@ export class RemixdHandle extends WebsocketPlugin {
     * @param {String} txHash - hash of the transaction
     */
   async connectToLocalhost () {
-    const connection = (error) => {
-      if (error) {
-        console.log(error)
-        modalDialogCustom.alert(
-          'Cannot connect to the remixd daemon. ' +
-          'Please make sure you have the remixd running in the background.'
-        )
-        this.canceled()
-      } else {
-        const intervalId = setInterval(() => {
-          if (!this.socket || (this.socket && this.socket.readyState === 3)) { // 3 means connection closed
-            clearInterval(intervalId)
-            console.log(error)
-            modalDialogCustom.alert(
-              'Connection to remixd terminated. ' +
-              'Please make sure remixd is still running in the background.'
-            )
-            this.canceled()
-          }
-        }, 3000)
-        this.localhostProvider.init(() => {
-          this.call('filePanel', 'setWorkspace', { name: LOCALHOST, isLocalhost: true }, true)
-        })
-        this.call('manager', 'activatePlugin', 'hardhat')
-        this.call('manager', 'activatePlugin', 'slither')
-      }
-    }
-    if (this.localhostProvider.isConnected()) {
-      this.deactivate()
-    } else if (!isElectron()) {
-      // warn the user only if he/she is in the browser context
-      modalDialog(
-        'Connect to localhost',
-        remixdDialog(),
-        {
-          label: 'Connect',
-          fn: () => {
-            try {
-              this.localhostProvider.preInit()
-              const token = createSessionToken()
-              this.profile.url = `ws://127.0.0.1:65520?remixdToken=${encodeURIComponent(token)}`
-              super.activate()
-              setTimeout(() => {
-                if (!this.socket || (this.socket && this.socket.readyState === 3)) { // 3 means connection closed
-                  connection(new Error('Connection with daemon failed.'))
-                } else {
-                  connection()
-                }
-              }, 3000)
-            } catch (error) {
-              connection(error)
-            }
-          }
-        },
-        {
-          label: 'Cancel',
-          fn: () => {
-            this.canceled()
-          }
+    const connection = async () => {
+      this.localhostProvider.preInit()
+      this.sessionUrl = await requestLocalSessionUrl('ws://127.0.0.1:65520')
+      // SecureWebsocketPlugin resolves only after the daemon's plugin handshake.
+      await super.activate()
+      // The manager marks remixd active only after this hook returns. Provider
+      // init must therefore be deferred to _onManagerActivated above; calling
+      // localhostProvider.init() here makes its manager.call('remixd', ...)
+      // recursively activate the plugin while it is still inactive.
+      this._pendingActivation = true
+      this.connectionMonitor = setInterval(() => {
+        if (!this.socket || this.socket.readyState === 3) {
+          clearInterval(this.connectionMonitor)
+          this.connectionMonitor = null
+          modalDialogCustom.alert(
+            'Connection to remixd terminated. ' +
+            'Please make sure remixd is still running in the background.'
+          )
         }
-      )
-    } else {
-      try {
-        const token = createSessionToken()
-        this.profile.url = `ws://127.0.0.1:65520?remixdToken=${encodeURIComponent(token)}`
-        super.activate()
-        setTimeout(() => { connection() }, 2000)
-      } catch (error) {
-        connection(error)
+      }, 3000)
+    }
+
+    if (this.localhostProvider.isConnected()) {
+      return this.deactivate()
+    }
+
+    if (!isElectron()) {
+      // warn the user only if he/she is in the browser context
+      return new Promise((resolve, reject) => {
+        modalDialog(
+          'Connect to localhost',
+          remixdDialog(),
+          {
+            label: 'Connect',
+            fn: async () => {
+              try {
+                await connection()
+                resolve()
+              } catch (error) {
+                await reportConnectionFailure(error)
+                reject(error)
+              }
+            }
+          },
+          {
+            label: 'Cancel',
+            fn: () => reject(new Error('Remixd connection cancelled.'))
+          }
+        )
+      })
+    }
+
+    try {
+      await connection()
+    } catch (error) {
+      await reportConnectionFailure(error)
+      throw error
+    }
+  }
+
+  async _initialiseProvider (generation) {
+    await new Promise((resolve, reject) => {
+      this.localhostProvider.init((error) => error ? reject(error) : resolve())
+    })
+    if (generation !== this._activationGeneration) return
+    if (!this._workspaceActivationRequested) {
+      const deadline = Date.now() + LOCALHOST_WORKSPACE_WAIT_MS
+      while (generation === this._activationGeneration) {
+        try {
+          await this.call('filePanel', 'setWorkspace', { name: LOCALHOST, isLocalhost: true }, true)
+          break
+        } catch (error) {
+          const message = error && error.message ? error.message : String(error)
+          if (!message.includes('Another workspace change is already in progress') || Date.now() >= deadline) throw error
+          await new Promise(resolve => setTimeout(resolve, LOCALHOST_WORKSPACE_RETRY_MS))
+        }
       }
     }
+    if (generation !== this._activationGeneration) return
+    this.call('manager', 'activatePlugin', 'hardhat').catch(() => {})
+    this.call('manager', 'activatePlugin', 'slither').catch(() => {})
   }
 }
 
+async function reportConnectionFailure (error) {
+  console.log(error)
+  modalDialogCustom.alert(
+    'Cannot connect to the remixd daemon. ' +
+    'Please make sure remixd is running in the background and this site has ' +
+    'Local Network Access permission in your browser.'
+  )
+}
+
 function remixdDialog () {
-  const commandText = 'remixd -s <path-to-the-shared-folder> -u <remix-ide-instance-URL>'
+  const commandText = `remixd -s <path-to-the-shared-folder> -u ${window.location.origin}`
   return yo`
     <div class=${css.dialog}>
       <div class=${css.dialogParagraph}>
@@ -183,6 +261,7 @@ function remixdDialog () {
       <div class=${css.dialogParagraph}>
         When connected, a session will be started between <em>${window.location.origin}</em> and your local file system at <i>ws://127.0.0.1:65520</i>.
          The shared folder will be in the "File Explorers" workspace named "localhost".
+        <br/>If your browser asks for Local Network Access, choose <b>Allow</b>. If it was denied earlier, enable it for this site in the browser's site settings and retry.
         <br/>Read more about other <a target="_blank" rel="noopener noreferrer" href="https://remix-ide.readthedocs.io/en/latest/remixd.html#ports-usage">Remixd ports usage</a>
       </div>
       <div class=${css.dialogParagraph}>

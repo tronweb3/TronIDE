@@ -21,6 +21,7 @@ var registry = require('../../global/registry')
 var remixLib = require('@remix-project/remix-lib')
 var yo = require('yo-yo')
 var EventsDecoder = remixLib.execution.EventsDecoder
+var transactionStatus = require('../ui/transaction-status')
 
 const transactionDetailsLinks = {
   TRON: {
@@ -108,7 +109,10 @@ export function makeUdapp (blockchain, compilersArtefacts, logHtmlCallback) {
           contractAddress,
           gasUsed: fee,
           logs: log,
-          status: true,
+          // Preserve the provider's actual TRON result. Previously every
+          // resolved receipt was marked successful, even when the full-node
+          // response contained receipt.result = FAILED.
+          status: transactionStatus.receiptStatus(txn),
           transactionHash: tx.hash
         }
         tx.returnValue = contractResult.length ? `0x${contractResult[0]}` : ''

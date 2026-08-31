@@ -76,14 +76,31 @@ class WorkspaceFileProvider extends FileProvider {
     const token = typeof context === 'number' ? context : context && context.rewriteToken
     const previous = this._gitRewriteAuthorization
     if (this._gitRewriteToken !== null && token === this._gitRewriteToken) this._gitRewriteAuthorization = token
-    try { return fn() } finally { this._gitRewriteAuthorization = previous }
+    try {
+      const result = fn()
+      if (result && typeof result.then === 'function') {
+        return result.then((value) => {
+          this._gitRewriteAuthorization = previous
+          return value
+        }, (error) => {
+          this._gitRewriteAuthorization = previous
+          throw error
+        })
+      }
+      this._gitRewriteAuthorization = previous
+      return result
+    } catch (error) {
+      this._gitRewriteAuthorization = previous
+      throw error
+    }
   }
 
   // Guard at the workspace-provider boundary, not only FileManager's async
   // entry points. File uploads and several legacy callers write through the
   // provider directly; an operation that started before checkout can also
-  // resume after an await. These mutations are synchronous in BrowserFS, so
-  // checking in the same JS stack as the actual write closes that TOCTOU.
+  // resume after an await. The AsyncMirror mutation is synchronous in memory,
+  // so checking in the same JS stack as that write closes the TOCTOU; the
+  // returned Promise then keeps authorization until IndexedDB is durable.
   set (path, content, cb, mutationContext) {
     try {
       return this._withGitWriteAuthorization(mutationContext, 'write files', () => super.set(path, content, cb))
@@ -111,7 +128,7 @@ class WorkspaceFileProvider extends FileProvider {
 
   setWorkspace (workspace) {
     this._assertGitWriteAllowed('switch workspaces')
-    workspace = workspace.replace(/^\/|\/$/g, '') // remove first and last slash
+    workspace = normalizeWorkspaceName(workspace)
     if (workspace !== this.workspace) this._writeGeneration++
     this.workspace = workspace
     // restore-on-boot marker: the file panel prefers this over the first
@@ -155,9 +172,9 @@ class WorkspaceFileProvider extends FileProvider {
       cb(error)
       return false
     }
-    // FileProvider#set performs a synchronous BrowserFS write. Calling it in
-    // this same stack makes the state comparison and mutation indivisible with
-    // respect to normal UI events/workspace switches.
+    // FileProvider#set changes the synchronous mirror in this stack, making
+    // the comparison and mutation indivisible with respect to normal UI
+    // events/workspace switches. Its Promise separately waits for durability.
     return this.set(path, content, cb, mutationContext)
   }
 
@@ -173,15 +190,38 @@ class WorkspaceFileProvider extends FileProvider {
 
   removePrefix (path) {
     if (!this.workspace) this.createWorkspace()
-    path = path.replace(/^\/|\/$/g, '') // remove first and last slash
-    if (path.startsWith(this.workspacesPath + '/' + this.workspace)) return path
-    if (path.startsWith(this.workspace)) return path.replace(this.workspace, this.workspacesPath + '/' + this.workspace)
-    path = super.removePrefix(path)
-    let ret = this.workspacesPath + '/' + this.workspace + '/' + (path === '/' ? '' : path)
+    if (typeof path !== 'string') throw new Error('Workspace paths must be strings')
+    if (path.includes('\\')) throw new Error('Workspace paths must use POSIX separators')
 
-    ret = ret.replace(/^\/|\/$/g, '')
-    if (!this.isSubDirectory(this.workspacesPath + '/' + this.workspace, ret)) throw new Error('Cannot read/write to path outside workspace')
+    const root = this._workspaceRoot()
+    const unwrapped = path.replace(/^\/+|\/+$/g, '')
+    const input = unwrapped || '/'
+    let ret
+
+    // A caller may hand the provider an already-scoped BrowserFS path. Match
+    // only the complete scope prefix; a workspace named "foo" must never make
+    // "foobar/..." resolve to the sibling workspace "foobar".
+    if (input === root || input.startsWith(root + '/')) {
+      ret = input
+    } else if (input === this.workspace || input.startsWith(this.workspace + '/')) {
+      ret = root + input.slice(this.workspace.length)
+    } else {
+      const relative = super.removePrefix(input)
+      ret = relative === '/' ? root : `${root}/${relative.replace(/^\/+/, '')}`
+    }
+
+    ret = this._normalizeWorkspacePath(ret)
+    if (!this.isSubDirectory(root, ret)) throw new Error('Cannot read/write to path outside workspace')
     return ret
+  }
+
+  _workspaceRoot () {
+    return this._normalizeWorkspacePath(`${this.workspacesPath}/${this.workspace}`)
+  }
+
+  _normalizeWorkspacePath (path) {
+    const posix = pathModule.posix || pathModule
+    return posix.normalize(path).replace(/^\/+|\/+$/g, '')
   }
 
   isSubDirectory (parent, child) {
@@ -207,14 +247,27 @@ class WorkspaceFileProvider extends FileProvider {
   async copyFolderToJson (directory, visitFile, visitFolder) {
     visitFile = visitFile || (() => {})
     visitFolder = visitFolder || (() => {})
-    const regex = new RegExp(`.workspaces/${this.workspace}/`, 'g')
     let json = await super._copyFolderToJsonInternal(directory, ({ path, content }) => {
-      visitFile({ path: path.replace(regex, ''), content })
+      visitFile({ path: this._stripWorkspacePrefix(path), content })
     }, ({ path }) => {
-      visitFolder({ path: path.replace(regex, '') })
+      visitFolder({ path: this._stripWorkspacePrefix(path) })
     })
-    json = JSON.stringify(json).replace(regex, '')
-    return JSON.parse(json)
+    return this._stripWorkspaceJson(json)
+  }
+
+  _stripWorkspacePrefix (value) {
+    if (typeof value !== 'string') return value
+    const prefix = `${this.workspacesPath}/${this.workspace}/`
+    return value.startsWith(prefix) ? value.slice(prefix.length) : value
+  }
+
+  _stripWorkspaceJson (value) {
+    if (!value || typeof value !== 'object') return value
+    if (Array.isArray(value)) return value.map(item => this._stripWorkspaceJson(item))
+    return Object.keys(value).reduce((result, key) => {
+      result[this._stripWorkspacePrefix(key)] = this._stripWorkspaceJson(value[key])
+      return result
+    }, {})
   }
 
   _normalizePath (path) {
@@ -224,9 +277,18 @@ class WorkspaceFileProvider extends FileProvider {
 
   createWorkspace (name) {
     this._assertGitWriteAllowed('create workspaces')
-    if (!name) name = 'default_workspace'
+    name = normalizeWorkspaceName(name || 'default_workspace')
     this.event.emit('createWorkspace', name)
   }
+}
+
+function normalizeWorkspaceName (workspace) {
+  if (typeof workspace !== 'string') throw new Error('Workspace name must be a string')
+  const normalized = workspace.replace(/^\/+|\/+$/g, '')
+  if (!normalized || normalized === '.' || normalized === '..' || normalized.includes('/') || normalized.includes('\\')) {
+    throw new Error('Workspace name must be a single safe path segment')
+  }
+  return normalized
 }
 
 module.exports = WorkspaceFileProvider

@@ -59,11 +59,13 @@ export class TraceAnalyser {
       const size = 2 * parseInt(step.stack[step.stack.length - 2], 16)
       const memory = this.trace[this.traceCache.memoryChanges[this.traceCache.memoryChanges.length - 1]].memory
       const noOfReturnParams = size / 64
-      const memoryInString = memory.join('')
+      // Memory is represented as 32-byte words. Joining the complete memory
+      // for every RETURN copied the whole trace snapshot even when only a few
+      // return words were needed. Slice the requested range word-by-word.
+      const memoryInString = this.sliceMemory(memory, offset, size)
       const returnParamsObj = []
       for (let i = 0; i < noOfReturnParams; i++) {
-        returnParamsObj.push('0x' + memoryInString.substring(offset, offset + 64))
-        offset += 64
+        returnParamsObj.push('0x' + memoryInString.substring(i * 64, (i + 1) * 64))
       }
 
       this.traceCache.pushReturnValue(index, returnParamsObj)
@@ -102,9 +104,19 @@ export class TraceAnalyser {
         offset = 2 * parseInt(stack[stack.length - 4], 16)
         size = 2 * parseInt(stack[stack.length - 5], 16)
       }
-      calldata = '0x' + memory.join('').substr(offset, size)
+      calldata = '0x' + this.sliceMemory(memory, offset, size)
       this.traceCache.pushCallDataChanges(index + 1, calldata)
     }
+  }
+
+  sliceMemory (memory, offset, size) {
+    if (!Array.isArray(memory) || !Number.isFinite(offset) || !Number.isFinite(size) || size <= 0) return ''
+    const firstWord = Math.max(0, Math.floor(offset / 64))
+    const lastWord = Math.ceil((offset + size) / 64)
+    const words = []
+    for (let i = firstWord; i < lastWord && i < memory.length; i++) words.push(memory[i] || '')
+    const start = offset - (firstWord * 64)
+    return words.join('').substring(Math.max(0, start), Math.max(0, start) + size)
   }
 
   buildMemory (index, step) {

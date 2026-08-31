@@ -23,14 +23,16 @@ async function addFirstTemplate (page: Page) {
   await page.locator('[data-id="landingDappStarterCard"]').click()
   const select = page.locator('[data-id="landingTemplateSelect"]')
   await expect(select).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('#modal-footer-ok')).toHaveJSProperty('tagName', 'BUTTON')
+  await expect(page.locator('#modal-footer-cancel')).toHaveJSProperty('tagName', 'BUTTON')
   await select.selectOption({ index: 0 }) // same template both times → same path
   await page.locator('#modal-footer-ok').click()
 }
 
 test.describe('Home "Use TRON Template"', () => {
-  // TC-HOME-TPL-001: re-adding the same template reports "already exists
-  // (unchanged)" instead of a misleading "created", and does not raise the
-  // overwrite confirm (content is identical).
+  // TC-HOME-TPL-001: re-adding the same template reports that it is unchanged
+  // instead of a misleading "created", and does not raise the overwrite confirm
+  // (content is identical).
   test('TC-HOME-TPL-001: re-adding an unchanged template file is reported honestly', { tag: '@gate' }, async ({ page }) => {
     await openHome(page)
 
@@ -42,11 +44,11 @@ test.describe('Home "Use TRON Template"', () => {
     // adding opened the file in the editor — get back to the Home tab.
     await focusHomeTab(page)
 
-    // second add of the SAME template — must honestly report it already exists,
-    // unchanged, and must NOT show the overwrite confirm.
+    // second add of the SAME template — must honestly report it is unchanged,
+    // and must NOT show the overwrite confirm.
     await addFirstTemplate(page)
     await expect(
-      page.locator('[data-shared="tooltipPopup"]').filter({ hasText: /already exists in this workspace \(unchanged\)/i }).first()
+      page.locator('[data-shared="tooltipPopup"]').filter({ hasText: /is unchanged\. Opened .+/i }).first()
     ).toBeVisible({ timeout: 10_000 })
     await expect(page.locator('[data-id="landingTemplateOverwriteBody"]')).toHaveCount(0)
   })

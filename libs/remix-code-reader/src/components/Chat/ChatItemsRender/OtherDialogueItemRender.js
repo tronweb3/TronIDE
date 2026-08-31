@@ -25,8 +25,7 @@ const OtherDialogueItemRender = ({
   error,
   chatKey,
   toReAnswer,
-  chatList,
-  index,
+  isLastChat,
   loadingCompleted,
 }) => {
   const itemClass = classNames("other-dialogue-item", {
@@ -42,8 +41,8 @@ const OtherDialogueItemRender = ({
       <div className="dialogue-wrapper">
         {aiModelName[gptv]?<span>{aiModelName[gptv]}</span>:null}
         <div className="dialogue">
-          <CodeHighlight isLastChat={index === chatList?.length - 1} text={text} index={index} loadingCompleted={loadingCompleted} />
-          {error === "1" && chatKey === chatList?.length && (
+          <CodeHighlight isLastChat={isLastChat} text={text} index={chatKey} loadingCompleted={loadingCompleted} />
+          {error === "1" && isLastChat && (
             <span className="re-answer-wrapper">
               Then, you can
               <span onClick={toReAnswer} className="re-answer">
@@ -57,4 +56,4 @@ const OtherDialogueItemRender = ({
   );
 };
 
-export default OtherDialogueItemRender;
+export default React.memo(OtherDialogueItemRender);

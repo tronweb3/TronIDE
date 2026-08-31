@@ -51,6 +51,15 @@ function createPreWrappedTextNode (text) {
 var ghostbar = yo`<div class=${css.ghostbar} bg-secondary></div>`
 
 const TERMINAL_ALLOWED_LINK_PROTOCOLS = ['http:', 'https:', 'mailto:']
+const PLUGIN_TERMINAL_LOG_TYPES = new Set(['html', 'log', 'info', 'warn', 'error'])
+
+function assertSafePluginTerminalMessage (message) {
+  if (!message || typeof message !== 'object' || Array.isArray(message) ||
+    !PLUGIN_TERMINAL_LOG_TYPES.has(message.type)) {
+    throw new Error('Plugins may write only display messages to the terminal.')
+  }
+  return message
+}
 
 function sanitizeTerminalLinks (el) {
   el.querySelectorAll('a[href]').forEach((anchor) => {
@@ -185,6 +194,12 @@ class Terminal extends Plugin {
   }
 
   log (message) {
+    // `script` is a real terminal command which delegates to scriptRunner and
+    // executes code. Engine-dispatched log calls must never reach command-like
+    // handlers: otherwise Terminal becomes a trusted hop around scriptRunner's
+    // own external-call permission gate. Direct host UI use has no
+    // currentRequest and retains the complete command set.
+    if (this.currentRequest) assertSafePluginTerminalMessage(message)
     var command = this.commands[message.type]
     if (typeof command === 'function') {
       if (typeof message.value === 'string' && message.type === 'html') {
@@ -387,7 +402,6 @@ class Terminal extends Plugin {
     var inserted = false
 
     window.addEventListener('resize', function (event) {
-      self.event.trigger('resize', [])
       self.event.trigger('resize', [])
     })
 
@@ -606,6 +620,11 @@ class Terminal extends Plugin {
           self._cmdIndex = -1
           self._cmdTemp = ''
           event.preventDefault()
+          // A command can synchronously open a modal (for example
+          // remix.loadgist('')). Do not let the same Enter continue bubbling
+          // to the modal's document-level key handler and immediately accept
+          // and close a prompt the user has not seen yet.
+          event.stopPropagation()
           var script = self._view.input.innerText.trim()
           self._view.input.innerText = '\n'
           if (script.length) {
@@ -840,18 +859,20 @@ class Terminal extends Plugin {
       }
     }
     try {
-      let result
-      if (script.trim().startsWith('git')) {
-        // result = await this.call('git', 'execute', script)
-      } else {
-        result = await this.call('scriptRunner', 'execute', script)
+      if (isTerminalGitCommand(script)) {
+        throw new Error('Terminal Git commands are unavailable. Use the Git panel for workspace version control.')
       }
+      const result = await this.call('scriptRunner', 'execute', script)
       if (result) self.commands.html(yo`<pre>${result}</pre>`)
       done()
     } catch (error) {
       done(error.message || error)
     }
   }
+}
+
+function isTerminalGitCommand (script) {
+  return /^git(?:\s|$)/.test(String(script).trim())
 }
 
 function domTerminalFeatures (self, scopedCommands, blockchain) {
@@ -863,3 +884,5 @@ function domTerminalFeatures (self, scopedCommands, blockchain) {
 function blockify (el) { return yo`<div class="px-4 ${css.block}" data-id="block_${el.getAttribute ? el.getAttribute('id') : ''}">${el}</div>` }
 
 module.exports = Terminal
+module.exports.assertSafePluginTerminalMessage = assertSafePluginTerminalMessage
+module.exports.isTerminalGitCommand = isTerminalGitCommand
