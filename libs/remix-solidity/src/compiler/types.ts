@@ -162,6 +162,7 @@ export interface Source {
 export interface CompilerInputOptions {
     optimize: boolean | number,
     runs: number,
+    remappings?: string[],
     libraries?: {
         [fileName: string]: Record<string, string>
     },
@@ -178,7 +179,8 @@ export interface CompilerState {
     worker: any,
     currentVersion: string| null| undefined,
     optimize: boolean,
-    runs: number
+    runs: number,
+    remappings: string[],
     evmVersion: EVMVersion| null,
     language: Language,
     compilationStartTime: number| null,

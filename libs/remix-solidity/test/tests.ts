@@ -5,3 +5,4 @@
 require('./runs.ts')
 require('./optimize.ts')
 require('./evm-version.ts')
+require('./remappings.ts')

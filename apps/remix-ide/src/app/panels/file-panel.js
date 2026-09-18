@@ -243,6 +243,7 @@ module.exports = class Filepanel extends ViewPlugin {
         // deep link must not strand the user in an empty `code-sample`
         // workspace, and UTF-8 bytes must not be interpreted as Latin-1.
         const decodedCode = params.code ? decodeUrlBase64(params.code) : null
+        const decodedRemappings = params.remaps ? decodeUrlBase64(params.remaps) : null
         await this.processCreateWorkspace('code-sample')
         const workspaceProvider = this._deps.fileProviders.workspace
         workspaceProvider.setWorkspace('code-sample')
@@ -261,6 +262,9 @@ module.exports = class Filepanel extends ViewPlugin {
           path = 'contract-' + hash.replace('0x', '').substring(0, 10) + '.sol'
           content = decodedCode
           await writeDeepLinkFile(path, content)
+        }
+        if (decodedRemappings !== null) {
+          await writeDeepLinkFile('remappings.txt', decodedRemappings)
         }
         if (safeImportUrl) {
           const data = await this.call('contentImport', 'resolve', safeImportUrl)
