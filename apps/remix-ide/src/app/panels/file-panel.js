@@ -42,7 +42,7 @@ const getTronTemplate = (id) => {
 const GistHandler = require('../../lib/gist-handler')
 const QueryParams = require('../../lib/query-params')
 const { normalizeUrlImport } = require('../../lib/url-param-security')
-const { decodeUrlBase64 } = require('../../lib/url-base64')
+const { DEEP_LINK_LIMITS, decodeUrlBase64 } = require('../../lib/url-base64')
 const lastWorkspace = require('../../lib/last-workspace')
 const modalDialogCustom = require('../ui/modal-dialog-custom')
 /*
@@ -242,8 +242,8 @@ module.exports = class Filepanel extends ViewPlugin {
         // Validate and decode before creating/switching workspaces. A malformed
         // deep link must not strand the user in an empty `code-sample`
         // workspace, and UTF-8 bytes must not be interpreted as Latin-1.
-        const decodedCode = params.code ? decodeUrlBase64(params.code) : null
-        const decodedRemappings = params.remaps ? decodeUrlBase64(params.remaps) : null
+        const decodedCode = params.code ? decodeUrlBase64(params.code, DEEP_LINK_LIMITS.code) : null
+        const decodedRemappings = params.remaps ? decodeUrlBase64(params.remaps, DEEP_LINK_LIMITS.remaps) : null
         await this.processCreateWorkspace('code-sample')
         const workspaceProvider = this._deps.fileProviders.workspace
         workspaceProvider.setWorkspace('code-sample')
