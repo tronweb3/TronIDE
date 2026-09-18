@@ -42,6 +42,9 @@ export default (sources: Source, opts: CompilerInputOptions): string => {
   if (opts.evmVersion) {
     o.settings.evmVersion = opts.evmVersion
   }
+  if (Array.isArray(opts.remappings) && opts.remappings.length > 0) {
+    o.settings.remappings = opts.remappings
+  }
   if (opts.language) {
     o.language = opts.language
   }

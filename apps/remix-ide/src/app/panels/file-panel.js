@@ -42,6 +42,7 @@ const getTronTemplate = (id) => {
 const GistHandler = require('../../lib/gist-handler')
 const QueryParams = require('../../lib/query-params')
 const { normalizeUrlImport } = require('../../lib/url-param-security')
+const { DEEP_LINK_LIMITS, decodeUrlBase64 } = require('../../lib/url-base64')
 const lastWorkspace = require('../../lib/last-workspace')
 const modalDialogCustom = require('../ui/modal-dialog-custom')
 /*
@@ -238,6 +239,11 @@ module.exports = class Filepanel extends ViewPlugin {
           )
           return
         }
+        // Validate and decode before creating/switching workspaces. A malformed
+        // deep link must not strand the user in an empty `code-sample`
+        // workspace, and UTF-8 bytes must not be interpreted as Latin-1.
+        const decodedCode = params.code ? decodeUrlBase64(params.code, DEEP_LINK_LIMITS.code) : null
+        const decodedRemappings = params.remaps ? decodeUrlBase64(params.remaps, DEEP_LINK_LIMITS.remaps) : null
         await this.processCreateWorkspace('code-sample')
         const workspaceProvider = this._deps.fileProviders.workspace
         workspaceProvider.setWorkspace('code-sample')
@@ -254,8 +260,11 @@ module.exports = class Filepanel extends ViewPlugin {
         if (params.code) {
           var hash = bufferToHex(keccakFromString(params.code))
           path = 'contract-' + hash.replace('0x', '').substring(0, 10) + '.sol'
-          content = atob(params.code)
+          content = decodedCode
           await writeDeepLinkFile(path, content)
+        }
+        if (decodedRemappings !== null) {
+          await writeDeepLinkFile('remappings.txt', decodedRemappings)
         }
         if (safeImportUrl) {
           const data = await this.call('contentImport', 'resolve', safeImportUrl)
@@ -267,6 +276,7 @@ module.exports = class Filepanel extends ViewPlugin {
         await this._deps.fileManager.openFile(path)
       } catch (e) {
         console.error(e)
+        modalDialogCustom.alert('Unable to import source', e && e.message ? e.message : 'The source link could not be decoded.')
       }
       return
     }

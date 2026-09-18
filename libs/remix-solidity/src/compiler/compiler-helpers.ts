@@ -30,6 +30,7 @@ export const compile = async (compilationTargets, settings, contentResolverCallb
       compiler.set('optimize', settings.optimize)
       compiler.set('language', settings.language)
       compiler.set('runs', settings.runs)
+      compiler.set('remappings', Array.isArray(settings.remappings) ? settings.remappings : [])
       await compiler.loadVersion(canUseWorker(settings.version), urlFromVersion(settings.version))
       compiler.event.register('compilationFinished', (success, compilationData, source) => {
         resolve(new CompilerAbstract(settings.version, compilationData, source))

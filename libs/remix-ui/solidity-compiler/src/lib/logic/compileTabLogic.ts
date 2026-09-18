@@ -24,6 +24,7 @@ const Compiler = require('@remix-project/remix-solidity').Compiler
 const normalizeRuns = require('@remix-project/remix-solidity').normalizeRuns
 const parseOptimizeParam = require('@remix-project/remix-solidity').parseOptimizeParam
 const normalizeEvmVersion = require('@remix-project/remix-solidity').normalizeEvmVersion
+const parseRemappings = require('@remix-project/remix-solidity').parseRemappings
 const EventEmitter = require('events')
 const profile = {
   name: 'solidity-logic',
@@ -83,8 +84,19 @@ export class CompileTab extends Plugin {
     this.compiler.set('evmVersion', this.evmVersion)
   }
 
-  getCompilerState () {
+  async getCompilerState () {
+    await this.setCompilerMappings()
     return this.compiler.state
+  }
+
+  async setCompilerMappings () {
+    // Clear first so a workspace switch or unreadable file cannot reuse
+    // mappings loaded from a previous workspace.
+    this.compiler.set('remappings', [])
+    if (await this.fileManager.exists('remappings.txt')) {
+      const content = await this.fileManager.readFile('remappings.txt')
+      this.compiler.set('remappings', parseRemappings(content))
+    }
   }
 
   /**
@@ -99,10 +111,11 @@ export class CompileTab extends Plugin {
    * Compile a specific file of the file manager
    * @param {string} target the path to the file to compile
    */
-  compileFile (target) {
+  async compileFile (target) {
     if (!target) throw new Error('No target provided for compiliation')
     const provider = this.fileManager.fileProviderOf(target)
     if (!provider) throw new Error(`cannot compile ${target}. Does not belong to any explorer`)
+    await this.setCompilerMappings()
     // Clear stale editor annotations up front. runCompiler (the toolbar path)
     // already does this, but a direct compileFile — the remix-plugin API and the
     // AI panel's compile tool — did not, so a previous compile's error markers
