@@ -35,7 +35,7 @@ Quality gates covered by the home parity test include missing-section fallbacks,
 Operational boundaries:
 
 - No new runtime dependencies or environment variables are required for this Home page surface.
-- Clean bootstrap uses the pinned root engines (`node` 20.19.2 and `pnpm` 10.12.4) and the repository postinstall (`build:libs` plus `downloadsolc_assets`). Network access to `https://binaries.soliditylang.org/wasm/soljson-v0.8.20+commit.a1b79de6.js` is required for a fresh checkout.
+- Recommended bootstrap: Node.js **24.22.1** and pnpm **10.12.4**, matching the pinned root engines and the repository postinstall (`build:libs` plus `downloadsolc_assets`). Network access to `https://binaries.soliditylang.org/wasm/soljson-v0.8.20+commit.a1b79de6.js` is required for a fresh checkout.
 - Account sign-in is token-only in local builds, GitHub OAuth is deferred until backend resources exist, private GitHub read/write uses user-provided fine-grained browser tokens, and automated verification receipts plus TronScan submit/API credentials are shown only as explicit unavailable or configuration-gated states unless the corresponding real backend is configured. RemixAI model switching, audio input, and history are not duplicated on Home; use the outer AI panel for AI controls.
 - The Home page does not accept free-form security-sensitive input for the new 2.2.0 parity controls. Walkthrough search filters only local walkthrough metadata; workspace creation uses generated local names; the verification plugin only accepts network/address for public lookup and opens TronScan with `noopener` for manual source submission.
 - Workspace status refreshes are debounced and use the existing workspace provider directory traversal. This avoids adding new polling loops, network calls, background jobs, or unbounded external integration work to the Home page.
@@ -48,10 +48,10 @@ Operational boundaries:
 Getting TronIDE running on your local machine is straightforward.
 
 1.  **Prerequisites**
-    * Ensure you have **Node.js v20.x** installed (we highly recommend using `nvm` for version management).
+    * Recommended: **Node.js 24.22.1** (use `nvm` for version management).
         ```bash
-        nvm install 20
-        nvm use 20
+        nvm install 24.22.1
+        nvm use 24.22.1
         ```
     * Install the `pnpm` package manager globally.
         ```bash

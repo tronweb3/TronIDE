@@ -8,7 +8,7 @@
 
 <p align="center">
     <a href="https://nodejs.org/">
-        <img alt="Node.js" src="https://img.shields.io/badge/Node.js-v20.x-blue?logo=nodedotjs">
+        <img alt="Node.js" src="https://img.shields.io/badge/Node.js-v24.22.1-blue?logo=nodedotjs">
     </a>
     <a href="./LICENSE">
         <img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg">
@@ -38,10 +38,10 @@ It is a platform for development tools that uses a plugin architecture, dedicate
 Getting TronIDE running on your local machine is straightforward.
 
 1.  **Prerequisites**
-    * Ensure you have **Node.js v20.x** installed (we highly recommend using `nvm` for version management).
+    * Recommended: **Node.js 24.22.1** (use `nvm` for version management).
         ```bash
-        nvm install 20
-        nvm use 20
+        nvm install 24.22.1
+        nvm use 24.22.1
         ```
     * Install the `pnpm` package manager globally.
         ```bash
