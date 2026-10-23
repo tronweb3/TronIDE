@@ -17,7 +17,7 @@ Issues labeled **`good first issue`** or **`help wanted`** are good starting poi
 
 ### Prerequisites
 
-- Node.js `20.19.2` (use `nvm install 20.19.2 && nvm use 20.19.2`)
+- Recommended: Node.js **24.22.1** (use `nvm install 24.22.1 && nvm use 24.22.1`)
 - `pnpm` `10.12.4` (`npm i -g pnpm@10.12.4` or `corepack enable`)
 
 ### Install & build
